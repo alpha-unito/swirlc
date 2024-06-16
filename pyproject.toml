@@ -1,0 +1,88 @@
+[build-system]
+requires = ["setuptools", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "swirl"
+authors = [
+    {name = "Iacopo Colonnelli", email = "iacopo.colonnelli@unito.it"},
+    {name = "Doriana Medić", email = "doriana.medic@unito.it"},
+    {name = "Alberto Mulone", email = "alberto.mulone@unito.it"}
+]
+description = "Scientific Workflow Intermediate Representation Language"
+readme = "README.md"
+requires-python = ">=3.8"
+license = {text = "LGPL-3.0-or-later"}
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "License :: OSI Approved :: GNU Lesser General Public License v3 (LGPLv3)",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Topic :: Scientific/Engineering",
+    "Topic :: System :: Distributed Computing"
+]
+dynamic = ["dependencies", "optional-dependencies", "version"]
+
+[project.scripts]
+swirl = "swirl.main:run"
+
+[project.urls]
+Package = "https://pypi.org/project/swirl"
+Repository = "https://github.com/alpha-unito/swirl"
+
+[tool.setuptools]
+packages = [
+    "swirl",
+    "swirl.antlr",
+    "swirl.compiler",
+    "swirl.config",
+    "swirl.core",
+    "swirl.translator"
+]
+zip-safe = true
+
+[tool.setuptools.package-data]
+"swirl.config" = ["schemas/v1.0/*.json"]
+
+[tool.setuptools.dynamic]
+dependencies = {file = "requirements.txt"}
+version = {attr = "swirl.version.VERSION"}
+
+[tool.setuptools.dynamic.optional-dependencies]
+bandit = {file = "bandit-requirements.txt"}
+lint = {file = "lint-requirements.txt"}
+test = {file = "test-requirements.txt"}
+
+[tool.coverage.run]
+branch = true
+source_pkgs = ["swirl"]
+omit = ["swirl/antlr/*"]
+
+[tool.coverage.report]
+exclude_lines = [
+    # Exclude not implemented methods
+    "raise NotImplementedError",
+    # Exclude abstract methods
+    "@(abc\\.)?abstractmethod",
+    # Exclude Python script entrypoints
+    "if __name__ == .__main__.:",
+    # Exclude type checking lines
+    "if TYPE_CHECKING:",
+    # Exclude log messages
+    "if logger.isEnabledFor"
+]
+ignore_errors = true
+omit = [
+    "swirl/__main__.py",
+    "tests/*"
+]
+
+[tool.black]
+exclude = "swirl/antlr"

@@ -1,0 +1,154 @@
+{
+  "$schema": "https://json-schema.org/draft/2019-09/schema",
+  "$id": "schemas/config/v1.0/config_schema.json",
+  "type": "object",
+  "$defs": {
+    "dependency": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": [
+            "string",
+            "int",
+            "bool",
+            "file"
+          ],
+          "description": "Data type. Valid types: (string, int, bool, file)"
+        },
+        "value": {
+          "type": "string",
+          "description": "Value of the data if it is input workflow data"
+        }
+      },
+      "required": [
+        "type"
+      ],
+      "additionalProperties": false
+    },
+    "location": {
+      "type": "object",
+      "properties": {
+        "hostname": {
+          "type": "string",
+          "description": "The IP address to connect to."
+        },
+        "port": {
+          "type": "integer",
+          "description": "The port on which to open the connection."
+        },
+        "workdir": {
+          "type": "string",
+          "description": "Path to the working directory."
+        },
+        "connectionType": {
+          "type": "string",
+          "enum": [
+            "ssh",
+            "docker"
+          ],
+          "description": "It declares how to access to the location."
+        }
+      },
+      "required": [
+        "hostname",
+        "port"
+      ],
+      "additionalProperties": false
+    },
+    "step": {
+      "type": "object",
+      "properties": {
+        "displayName": {
+          "type": "string",
+          "description": "User-friendly step name"
+        },
+        "command": {
+          "type": "string",
+          "description": "Application which step executes"
+        },
+        "arguments": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "patternProperties": {
+              "^value(From)?$": {
+                "type": "string"
+              }
+            },
+            "description": "Arguments. If it is static use 'value' keyword. If it is a data of a previous step use 'valueFrom' and the port name",
+            "additionalProperties": false
+          }
+        },
+        "initialWorkDir": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "additionalProperties": false
+          },
+          "description": "List of input ports which data (in case of file or directory) must be in output directory."
+        },
+        "outputs": {
+          "type": "object",
+          "patternProperties": {
+              "[a-z][a-zA-Z0-9]": {
+                "type": "object",
+                "properties": {
+                  "dataName": {
+                    "type": "string"
+                  },
+                  "glob": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "dataName"
+                ],
+                "additionalProperties": false
+              }
+            }
+        }
+      },
+      "required": [
+        "command"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "properties": {
+    "dependencies": {
+      "type": "object",
+      "patternProperties": {
+        "^[a-z][a-zA-Z0-9]*$": {
+          "$ref": "#/$defs/dependency"
+        }
+      },
+      "additionalProperties": false
+    },
+    "locations":  {
+      "type": "object",
+      "patternProperties": {
+        "^[a-z][a-zA-Z0-9]*$": {
+          "$ref": "#/$defs/location"
+        }
+      },
+      "additionalProperties": false
+    },
+    "steps": {
+      "type": "object",
+      "patternProperties": {
+        "^[a-z][a-zA-Z0-9]*$": {
+          "$ref": "#/$defs/step"
+        }
+      },
+      "additionalProperties": false
+    },
+    "version": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "version"
+  ],
+  "additionalProperties": false
+}

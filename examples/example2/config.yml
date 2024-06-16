@@ -1,0 +1,44 @@
+version: v1.0
+steps:
+  s1:
+    displayName: "FirstStep"
+    command: cat
+    arguments:
+      - valueFrom: p1
+      - value: "> hello.txt"
+    outputs:
+      p2:
+        dataName: d2
+        glob: "hello.txt"
+  s2:
+    displayName: "SecondStep"
+    command: cat
+    arguments:
+      - valueFrom: p2
+  s3:
+    displayName: "ThirdStep"
+    command: cat
+    arguments:
+      - valueFrom: p2
+
+locations:
+  ld:
+    hostname: 127.0.0.1
+    port: 8080
+  l1:
+    hostname: 127.0.0.1
+    port: 8081
+  l2:
+    hostname: 127.0.0.1
+    port: 8082
+  l3:
+    hostname: 127.0.0.1
+    port: 8083
+
+dependencies:
+  d1:
+    type: file
+    value: "world.txt"
+  d2:
+    type: file
+
