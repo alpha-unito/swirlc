@@ -106,14 +106,7 @@ class DAXTranslator(AbstractTranslator):
                     swirl_output_steps.setdefault(swirl_step_name, []).append(
                         swirl_data_name
                     )
-                # keyword not used: stageOut, registerReplica
-                # stageOut means that the data is an output of the workflow
-            swirl_step_args[swirl_step_name] = [
-                # todo se vuoi reintrodurre le port, decommenta qui
-                # data_binding_dax_swirl.get(arg, arg) for arg in replica["arguments"]
-                arg
-                for arg in replica["arguments"]
-            ]
+            swirl_step_args[swirl_step_name] = [arg for arg in replica["arguments"]]
 
         # Create the steps
         for dax_id, swirl_step_name in step_binding_dax_swirl.items():
@@ -193,12 +186,12 @@ class DAXTranslator(AbstractTranslator):
 
         # Initial dataset
         replicas_config = _open_yml(self.replicas_path.as_posix())
+        # data_locations = {
+        #   logical_data_name : [ (location_name, physical_data_name) ]
+        # }
         data_locations = {}
         for replica in replicas_config["replicas"]:
             for physical_path in replica["pfns"]:
-                # data_locations = {
-                #   logical_data_name : [ (location_name, physical_data_name) ]
-                # }
                 data_locations.setdefault(replica["lfn"], []).append(
                     (physical_path["site"], physical_path["pfn"])
                 )
@@ -213,9 +206,7 @@ class DAXTranslator(AbstractTranslator):
         transformations_config = _open_yml(self.transformations_path.as_posix())
         for transformation in transformations_config["transformations"]:
             for binding in transformation["sites"]:
-                # keyword not used: type -> sharedScratch | localStorage
                 location_name = location_binding_dax_swirl[binding["name"]]
-
                 for dax_step_id in dax_step_name_id[transformation["name"]]:
                     step_name = step_binding_dax_swirl[dax_step_id]
                     step = workflow.steps[step_name]

@@ -125,7 +125,7 @@ class CompileVisitor(SWIRLVisitor, ABC):
             self.workflow.add_location(
                 Location(
                     name,
-                    name,  # settings["displayName"],
+                    name,
                     {},
                     hostname=settings["hostname"],
                     port=settings["port"],
@@ -160,11 +160,6 @@ class CompileVisitor(SWIRLVisitor, ABC):
     def visitLocation(self, ctx: SWIRLParser.LocationContext):
         name = utils.get_name(ctx.name())
         location = self.workflow.locations[name]
-        # for el in ctx.dataSet().dataPair():
-        #     _, data_name = utils.get_pair(el)
-        #     location.data[data_name] = self.metadata["locations"][name].get(
-        #         data_name, None
-        #     )
         self.compiler.begin_location(location)
         val = self.visitChildren(ctx)
         self.compiler.end_location()
@@ -197,7 +192,7 @@ class CompileVisitor(SWIRLVisitor, ABC):
                     port_name,
                     Port(
                         port_name,
-                        port_name,  # self.metadata["ports"][port_name]["displayName"],
+                        port_name,
                         set(),
                     ),
                 )
@@ -207,7 +202,7 @@ class CompileVisitor(SWIRLVisitor, ABC):
                     port_name,
                     Port(
                         port_name,
-                        port_name,  # self.metadata["ports"][port_name]["displayName"],
+                        port_name,
                         set(),
                     ),
                 )

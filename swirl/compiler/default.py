@@ -78,15 +78,15 @@ accept_function = """def _accept(sock: socket):
 """
 
 exec_function = """def _exec(step_name: str, step_display_name: str, input_port_names: MutableSequence[str], output_port_name: str, data_type: str, glob_regex: str | None, cmd: str, args: MutableSequence[str], args_from: MutableSequence[tuple[str, str]], initial_work_dir: MutableSequence[str] | None):
-    # wait all the data
+    # Wait all the data
     for port_name in input_port_names:
         available_port_data[port_name].wait()
-    # prepare working directory
+    # Prepare working directory
     os.mkdir(f"{step_display_name}_{step_name}")
     workdir = os.path.abspath(f"{step_display_name}_{step_name}")
     for port_name in initial_work_dir:
         os.symlink(os.path.abspath(ports[port_name]), os.path.join(workdir, os.path.basename(ports[port_name])))
-    # populate the arguments
+    # Populate the arguments
     arguments = []
     if (len_args := len(args)) > 0:
         args = iter(args)
@@ -262,76 +262,32 @@ class DefaultTarget(BaseCompiler):
     def __init__(self):
         super().__init__()
         self.current_location: Location | None = None
+        self.functions = []
+        self.function_counter = 0
+        self.parallel_step_counter = 0
+        # If `parathetized` attribute is to True it means that an open bracket has been encountered
+        # but not yet its corresponding closed bracket
+        self.parathetized = False
         self.programs: MutableMapping[str, TextIO] = {}
         self.workflow: DistributedWorkflow | None = None
         self.thread_stacks: MutableMapping[str, ThreadStack] = {}
 
-        self.parallel_step_counter = 0
-        self.functions = []
-        self.function_counter = 0
-        self.parathetized = False
+    def _get_indentation(self):
+        return " " * 4 if self.parallel_step_counter > 0 else ""
 
     def _get_thread(self, location: str) -> str:
         return self.thread_stacks.setdefault(location, ThreadStack()).add_thread()
 
-    def begin_par(self) -> None:
-        """Before processing the left operand of a par operator."""
-        if self.parallel_step_counter == 0 and not self.parathetized:
+    def begin_dataset(
+        self,
+        dataset: MutableSequence[tuple[str, Data]],
+    ):
+        for port_name, data in dataset:
+            self.current_location.data[data.name] = data
             self.programs[self.current_location.name].write(
                 f"""
-    def f{self.function_counter}():"""
+    _init_dataset("{port_name}", "{data.value}")"""
             )
-            self.functions.append(f"f{self.function_counter}")
-            self.function_counter += 1
-        self.parallel_step_counter += 1
-
-    def par(self) -> None:
-        """After processing the first operand, but before processing the right operand of a par operator."""
-        if (
-            self.thread_stacks[self.current_location.name].get_group()
-            and not self.parathetized
-        ):
-            self.programs[self.current_location.name].write(
-                f"""
-        _wait([{', '.join(self.thread_stacks[self.current_location.name].delete_group())}]) # par"""
-            )
-            self.thread_stacks[self.current_location.name].add_group()
-
-        if not self.parathetized:
-            self.programs[self.current_location.name].write(
-                f"""
-    def f{self.function_counter}():"""
-            )
-            self.functions.append(f"f{self.function_counter}")
-            self.function_counter += 1
-
-    def end_par(self) -> None:
-        """After processing both operands of a par operator."""
-        self.parallel_step_counter -= 1
-        if (
-            self.thread_stacks[self.current_location.name].get_group()
-            and not self.parathetized
-        ):
-            self.programs[self.current_location.name].write(
-                f"""
-        _wait([{', '.join(self.thread_stacks[self.current_location.name].delete_group())}]) # end par 1"""
-            )
-            self.thread_stacks[self.current_location.name].add_group()
-
-        if self.parallel_step_counter == 0:
-            thread_stack = ThreadStack()
-            while self.functions:
-                fun = self.functions.pop()
-                thr = thread_stack.add_thread()
-                self.programs[self.current_location.name].write(
-                    f"""
-    {thr} = _thread({fun})"""
-                )
-            if thread_stack.stack:
-                self.programs[self.current_location.name].write(
-                    f"""
-    _wait([{', '.join(thread_stack.get_group())}]) # end par 2"""
-                )
 
     def begin_location(self, location: Location) -> None:
         self.current_location = location
@@ -351,18 +307,19 @@ class DefaultTarget(BaseCompiler):
 """
         )
 
+    def begin_par(self) -> None:
+        if self.parallel_step_counter == 0 and not self.parathetized:
+            self.programs[self.current_location.name].write(
+                f"""
+    def f{self.function_counter}():"""
+            )
+            self.functions.append(f"f{self.function_counter}")
+            self.function_counter += 1
+        self.parallel_step_counter += 1
+
     def begin_paren(self) -> None:
         if self.parallel_step_counter > 1:
             self.parathetized = True
-
-    def end_paren(self):
-        self.parathetized = False
-        if self.thread_stacks[self.current_location.name].get_group():
-            self.programs[self.current_location.name].write(
-                f"""
-    {self.get_indentation()}_wait([{', '.join(self.thread_stacks[self.current_location.name].delete_group())}]) # end paren"""
-            )
-            self.thread_stacks[self.current_location.name].add_group()
 
     def begin_workflow(self, workflow: Workflow) -> None:
         self.workflow = workflow
@@ -416,11 +373,44 @@ if __name__ == '__main__':
 
         self.current_location = None
 
+    def end_par(self) -> None:
+        self.parallel_step_counter -= 1
+        if (
+            self.thread_stacks[self.current_location.name].get_group()
+            and not self.parathetized
+        ):
+            self.programs[self.current_location.name].write(
+                f"""
+        _wait([{', '.join(self.thread_stacks[self.current_location.name].delete_group())}])"""
+            )
+            self.thread_stacks[self.current_location.name].add_group()
+
+        if self.parallel_step_counter == 0:
+            thread_stack = ThreadStack()
+            while self.functions:
+                fun = self.functions.pop()
+                thr = thread_stack.add_thread()
+                self.programs[self.current_location.name].write(
+                    f"""
+    {thr} = _thread({fun})"""
+                )
+            if thread_stack.stack:
+                self.programs[self.current_location.name].write(
+                    f"""
+    _wait([{', '.join(thread_stack.get_group())}])"""
+                )
+
+    def end_paren(self):
+        self.parathetized = False
+        if self.thread_stacks[self.current_location.name].get_group():
+            self.programs[self.current_location.name].write(
+                f"""
+    {self._get_indentation()}_wait([{', '.join(self.thread_stacks[self.current_location.name].delete_group())}])"""
+            )
+            self.thread_stacks[self.current_location.name].add_group()
+
     def end_workflow(self) -> None:
         script_name = "run.sh"
-        # fixme: Some attribute can be None, in particular
-        #  - hostname and port (case on local location)
-        #  - workdir
         copy_traces = " &\n".join(
             [
                 loc.get_copy_command(f"{loc.name}.py", f"{loc.hostname}:{loc.workdir}")
@@ -476,23 +466,42 @@ echo "Workflow execution terminated"
         output_port_name = next(iter(outputs))[0] if outputs else ""
         self.programs[self.current_location.name].write(
             f"""
-    {self.get_indentation()}available_port_data.setdefault("{output_port_name}", Event())
-    {self.get_indentation()}input_port_names = {[port_name for port_name, _ in flow[0]]}
-    {self.get_indentation()}for port_name in input_port_names:
-    {self.get_indentation()}    available_port_data.setdefault(port_name, Event())
-    {self.get_indentation()}_exec("{step.name}", "{step.display_name}", input_port_names, "{output_port_name}", "{step.processors[output_port_name].type if output_port_name else ""}", "{step.processors[output_port_name].glob if output_port_name else ""}", "{step.command}", {arguments}, {arguments_from_port}, {step.initial_work_dir})"""
+    {self._get_indentation()}available_port_data.setdefault("{output_port_name}", Event())
+    {self._get_indentation()}input_port_names = {[port_name for port_name, _ in flow[0]]}
+    {self._get_indentation()}for port_name in input_port_names:
+    {self._get_indentation()}    available_port_data.setdefault(port_name, Event())
+    {self._get_indentation()}_exec("{step.name}", "{step.display_name}", input_port_names, "{output_port_name}", "{step.processors[output_port_name].type if output_port_name else ""}", "{step.processors[output_port_name].glob if output_port_name else ""}", "{step.command}", {arguments}, {arguments_from_port}, {step.initial_work_dir})"""
         )
+
+    def par(self) -> None:
+        if (
+            self.thread_stacks[self.current_location.name].get_group()
+            and not self.parathetized
+        ):
+            self.programs[self.current_location.name].write(
+                f"""
+        _wait([{', '.join(self.thread_stacks[self.current_location.name].delete_group())}])"""
+            )
+            self.thread_stacks[self.current_location.name].add_group()
+
+        if not self.parathetized:
+            self.programs[self.current_location.name].write(
+                f"""
+    def f{self.function_counter}():"""
+            )
+            self.functions.append(f"f{self.function_counter}")
+            self.function_counter += 1
 
     def recv(self, port: str, data_type: str, src: str, dst: str):
         self.programs[self.current_location.name].write(
             f"""
-    {self.get_indentation()}{self._get_thread(self.current_location.name)} = _thread(_recv, "{port}", "{data_type}", "{src}")"""
+    {self._get_indentation()}{self._get_thread(self.current_location.name)} = _thread(_recv, "{port}", "{data_type}", "{src}")"""
         )
 
     def send(self, data: str, port: str, data_type: str, src: str, dst: str):
         self.programs[self.current_location.name].write(
             f"""
-    {self.get_indentation()}{self._get_thread(self.current_location.name)} = _thread(_send, "{port}", "{data_type}", "{src}", "{dst}")"""
+    {self._get_indentation()}{self._get_thread(self.current_location.name)} = _thread(_send, "{port}", "{data_type}", "{src}", "{dst}")"""
         )
 
     def seq(self):
@@ -502,23 +511,6 @@ echo "Workflow execution terminated"
         ):
             self.programs[self.current_location.name].write(
                 f"""
-    {self.get_indentation()}_wait([{', '.join(self.thread_stacks[self.current_location.name].delete_group())}]) # seq"""
+    {self._get_indentation()}_wait([{', '.join(self.thread_stacks[self.current_location.name].delete_group())}])"""
             )
             self.thread_stacks[self.current_location.name].add_group()
-
-    def get_indentation(self):
-        return " " * 4 if self.parallel_step_counter > 0 else ""
-
-    def begin_dataset(
-        self,
-        dataset: MutableSequence[tuple[str, Data]],
-    ):
-        for port_name, data in dataset:
-            self.current_location.data[data.name] = data
-            self.programs[self.current_location.name].write(
-                f"""
-    _init_dataset("{port_name}", "{data.value}")"""
-            )
-
-    def end_dataset(self):
-        pass

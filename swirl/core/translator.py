@@ -56,10 +56,10 @@ class AbstractTranslator:
     ):
         workflow = self._translate()
 
-        # dictionaries to generate metadata file
+        # Dictionaries to generate metadata file
+        dependencies = {}
         locations = {}
         steps = {}
-        dependencies = {}
         version = "v1.0"
 
         nof_locations = len(workflow.get_locations())
@@ -77,7 +77,7 @@ class AbstractTranslator:
             for data_name, data in location.data.items():
                 dependencies[data_name] = {"type": data.type, "value": data.value}
 
-            # add send data from dataset to other locations
+            # Add send data from dataset to other locations
             copying_dataset = set()
             for data in location.data.values():
                 for port in workflow.ports.values():

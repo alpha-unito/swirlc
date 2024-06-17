@@ -6,7 +6,7 @@ import swirl.translator
 parser = argparse.ArgumentParser(description="SWIRL command line")
 subparsers = parser.add_subparsers(dest="context")
 
-# swirl compile
+# Swirl compile
 compile_parser = subparsers.add_parser(
     "compile", help="Compile a swirl file into a target workflow execution program"
 )
@@ -28,7 +28,7 @@ compile_parser.add_argument(
     help="The compilation target",
 )
 
-# swirl translator
+# Swirl translator
 translate_parser = subparsers.add_parser(
     "translate",
     help="Translate a workflow written in different language into a SWIRL workflow",
@@ -55,7 +55,7 @@ translate_parser.add_argument(
     default="",
 )
 
-# swirl version
+# Swirl version
 version_parser = subparsers.add_parser(
     "version", help="Only print SWIRL version and exit"
 )
