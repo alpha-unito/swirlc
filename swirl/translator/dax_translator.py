@@ -106,6 +106,8 @@ class DAXTranslator(AbstractTranslator):
                     swirl_output_steps.setdefault(swirl_step_name, []).append(
                         swirl_data_name
                     )
+                    if data["stageOut"]:
+                        workflow.add_result_port(swirl_data_name)
             swirl_step_args[swirl_step_name] = [arg for arg in replica["arguments"]]
 
         # Create the steps
@@ -167,6 +169,11 @@ class DAXTranslator(AbstractTranslator):
                 for directory in site["directories"]
                 if directory["type"] == "sharedScratch"
             ]
+            outdirs = [
+                directory["path"]
+                for directory in site["directories"]
+                if directory["type"] == "localStorage"
+            ]
             location = Location(
                 name=location_binding_dax_swirl[site["name"]],
                 display_name=site["name"],
@@ -174,6 +181,7 @@ class DAXTranslator(AbstractTranslator):
                 hostname=site.get("hostname", "127.0.0.1"),
                 port=site.get("port", 35050),
                 workdir=next(iter(workdirs)) if workdirs else None,
+                outdir=next(iter(outdirs)) if outdirs else None,
                 connection_type=site.get("connectionType", "ssh"),
             )
             workflow.add_location(location)

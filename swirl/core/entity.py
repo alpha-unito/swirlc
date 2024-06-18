@@ -21,6 +21,7 @@ class Location:
         "data",
         "connection_type",
         "workdir",
+        "outdir",
         "hostname",
         "port",
     )
@@ -33,7 +34,8 @@ class Location:
         connection_type: str | None = None,
         hostname: str | None = None,
         port: str | None = None,
-        workdir: str = None,
+        workdir: str | None = None,
+        outdir: str | None = None,
     ):
         self.data: MutableMapping[str, Any] = data
         self.display_name: str = display_name
@@ -41,6 +43,7 @@ class Location:
         self.connection_type: str = connection_type
         self.hostname: str | None = hostname
         self.port: str | None = port
+        self.outdir: str = outdir
         self.workdir: str = workdir
 
     def get_command(self, cmd: str) -> str:
@@ -121,11 +124,12 @@ class Step:
 
 
 class Workflow:
-    __slots__ = ("steps", "ports", "dependencies", "__location")
+    __slots__ = ("steps", "ports", "result_ports", "dependencies", "__location")
 
     def __init__(self):
         self.steps: MutableMapping[str, Step] = {}
         self.ports: MutableMapping[str, Port] = {}
+        self.result_ports: MutableSequence[str, str] = []
         self.dependencies: set[tuple[str, str]] = set()
         self.__location: Location = Location(name="l", display_name="local", data={})
 
@@ -133,6 +137,9 @@ class Workflow:
         if port.name not in self.ports:
             self.ports[port.name] = port
         self.dependencies.add((port.name, step.name))
+
+    def add_result_port(self, port_name: str):
+        self.result_ports.append(port_name) if port_name not in self.ports else None
 
     def add_output_port(self, step: Step, port: Port):
         if port.name not in self.ports:

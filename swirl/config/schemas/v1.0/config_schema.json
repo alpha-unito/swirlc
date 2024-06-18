@@ -37,6 +37,10 @@
           "type": "integer",
           "description": "The port on which to open the connection."
         },
+        "outdir": {
+          "type": "string",
+          "description": "Path to the output directory."
+        },
         "workdir": {
           "type": "string",
           "description": "Path to the working directory."
@@ -55,6 +59,15 @@
         "port"
       ],
       "additionalProperties": false
+    },
+    "port": {
+      "type": "object",
+      "properties": {
+        "resultPort": {
+          "type": "boolean",
+          "description": "This port is an output of the workflow"
+        }
+      }
     },
     "step": {
       "type": "object",
@@ -122,6 +135,15 @@
       "patternProperties": {
         "^[a-z][a-zA-Z0-9]*$": {
           "$ref": "#/$defs/location"
+        }
+      },
+      "additionalProperties": false
+    },
+    "ports": {
+      "type": "object",
+      "patternProperties": {
+        "^[a-z][a-zA-Z0-9]*$": {
+          "$ref": "#/$defs/port"
         }
       },
       "additionalProperties": false

@@ -131,6 +131,7 @@ class CompileVisitor(SWIRLVisitor, ABC):
                     port=settings["port"],
                     connection_type=settings.get("connectionType", None),
                     workdir=settings.get("workdir", None),
+                    outdir=settings.get("outdir", None)
                 )
             )
 
@@ -232,6 +233,8 @@ class CompileVisitor(SWIRLVisitor, ABC):
                 )
                 for arg in step_metadata["arguments"]
             ]
+        for loc in mapping:
+            self.workflow.map(self.workflow.steps[name], self.workflow.locations[loc])
         return self.compiler.exec(self.workflow.steps[name], flow, mapping)
 
     def visitRecv(self, ctx: SWIRLParser.RecvContext):
