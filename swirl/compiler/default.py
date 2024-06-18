@@ -287,6 +287,15 @@ class DefaultTarget(BaseCompiler):
     ):
         for port_name, data in dataset:
             self.current_location.data[data.name] = data
+    def _get_indentation(self):
+        return " " * 4 if self.parallel_step_counter > 0 else ""
+
+    def begin_dataset(
+        self,
+        dataset: MutableSequence[tuple[str, Data]],
+    ):
+        for port_name, data in dataset:
+            self.current_location.data[data.name] = data
             self.programs[self.current_location.name].write(
                 f"""
     _init_dataset("{port_name}", "{data.value}")"""

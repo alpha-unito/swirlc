@@ -180,9 +180,8 @@ class DAXTranslator(AbstractTranslator):
 
         # Initial dataset
         replicas_config = _open_yml(self.replicas_path.as_posix())
-        # data_locations = {
-        #   logical_data_name : [ (location_name, physical_data_name) ]
-        # }
+
+        # logical_data_name : [ (location_name, physical_data_name) ]
         data_locations = {}
         for replica in replicas_config["replicas"]:
             for physical_path in replica["pfns"]:
