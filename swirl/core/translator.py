@@ -25,6 +25,7 @@ def _add_port(ports, workflow):
     for port in workflow.result_ports:
         ports[port] = {"resultPort": True}
 
+
 def _add_step(step, steps, workflow, dependencies):
     steps[step.name] = {
         "displayName": step.display_name,

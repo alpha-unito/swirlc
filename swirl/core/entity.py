@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import PurePath
 from typing import Any, MutableMapping, MutableSequence
 
 from swirl.core.utils import flatten_list
@@ -43,8 +44,8 @@ class Location:
         self.connection_type: str = connection_type
         self.hostname: str | None = hostname
         self.port: str | None = port
-        self.outdir: str = outdir
-        self.workdir: str = workdir
+        self.outdir: str | None = str(PurePath(outdir)) if outdir else outdir
+        self.workdir: str | None = str(PurePath(workdir)) if workdir else workdir
 
     def get_command(self, cmd: str) -> str:
         if self.connection_type == "ssh":
@@ -129,7 +130,7 @@ class Workflow:
     def __init__(self):
         self.steps: MutableMapping[str, Step] = {}
         self.ports: MutableMapping[str, Port] = {}
-        self.result_ports: MutableSequence[str, str] = []
+        self.result_ports: MutableSequence[str] = []
         self.dependencies: set[tuple[str, str]] = set()
         self.__location: Location = Location(name="l", display_name="local", data={})
 
@@ -138,13 +139,13 @@ class Workflow:
             self.ports[port.name] = port
         self.dependencies.add((port.name, step.name))
 
-    def add_result_port(self, port_name: str):
-        self.result_ports.append(port_name) if port_name not in self.ports else None
-
     def add_output_port(self, step: Step, port: Port):
         if port.name not in self.ports:
             self.ports[port.name] = port
         self.dependencies.add((step.name, port.name))
+
+    def add_result_port(self, port_name: str):
+        self.result_ports.append(port_name) if port_name not in self.ports else None
 
     def add_step(self, step: Step) -> None:
         self.steps[step.name] = step
@@ -198,6 +199,9 @@ class Workflow:
             [self.steps[d[1]] for d in self.dependencies if d[0] == port.name],
             key=lambda step: step.name,
         )
+
+    def get_result_ports(self):
+        return self.result_ports
 
     def get_step_locations(self, step: Step) -> MutableSequence[Location]:
         return [self.__location]

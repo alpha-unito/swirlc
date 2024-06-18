@@ -84,6 +84,8 @@ class DAXTranslator(AbstractTranslator):
         # dax_step_name : dax_step_id
         dax_step_name_id: MutableMapping[str, MutableSequence[str]] = {}
 
+        data_stage_out = []
+
         # Visit workflow yaml
         workflow_config = _open_yml(self.workflow_path.as_posix())
         for replica in workflow_config["jobs"]:
@@ -107,7 +109,7 @@ class DAXTranslator(AbstractTranslator):
                         swirl_data_name
                     )
                     if data["stageOut"]:
-                        workflow.add_result_port(swirl_data_name)
+                        data_stage_out.append(swirl_data_name)
             swirl_step_args[swirl_step_name] = [arg for arg in replica["arguments"]]
 
         # Create the steps
@@ -128,6 +130,8 @@ class DAXTranslator(AbstractTranslator):
                     f"p{len(swirl_data_ports)}",
                     {data_name},
                 )
+                if data_name in data_stage_out:
+                    workflow.add_result_port(swirl_data_ports[data_name].name)
                 workflow.add_output_port(
                     workflow.steps[step_name], swirl_data_ports[data_name]
                 )
@@ -164,24 +168,38 @@ class DAXTranslator(AbstractTranslator):
             location_binding_dax_swirl[site["name"]] = (
                 f"l{len(location_binding_dax_swirl)}"
             )
-            workdirs = [
-                directory["path"]
-                for directory in site["directories"]
-                if directory["type"] == "sharedScratch"
-            ]
-            outdirs = [
-                directory["path"]
-                for directory in site["directories"]
-                if directory["type"] == "localStorage"
-            ]
             location = Location(
                 name=location_binding_dax_swirl[site["name"]],
                 display_name=site["name"],
                 data={},
                 hostname=site.get("hostname", "127.0.0.1"),
                 port=site.get("port", 35050),
-                workdir=next(iter(workdirs)) if workdirs else None,
-                outdir=next(iter(outdirs)) if outdirs else None,
+                workdir=(
+                    next(
+                        directory["path"]
+                        for directory in site["directories"]
+                        if directory["type"] == "sharedScratch"
+                    )
+                    if any(
+                        True
+                        for directory in site["directories"]
+                        if directory["type"] == "sharedScratch"
+                    )
+                    else None
+                ),
+                outdir=(
+                    next(
+                        directory["path"]
+                        for directory in site["directories"]
+                        if directory["type"] == "localStorage"
+                    )
+                    if any(
+                        True
+                        for directory in site["directories"]
+                        if directory["type"] == "localStorage"
+                    )
+                    else None
+                ),
                 connection_type=site.get("connectionType", "ssh"),
             )
             workflow.add_location(location)

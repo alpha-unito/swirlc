@@ -298,15 +298,6 @@ class DefaultTarget(BaseCompiler):
     ):
         for port_name, data in dataset:
             self.current_location.data[data.name] = data
-    def _get_indentation(self):
-        return " " * 4 if self.parallel_step_counter > 0 else ""
-
-    def begin_dataset(
-        self,
-        dataset: MutableSequence[tuple[str, Data]],
-    ):
-        for port_name, data in dataset:
-            self.current_location.data[data.name] = data
             self.programs[self.current_location.name].write(
                 f"""
     _init_dataset("{port_name}", "{data.value}")"""
@@ -354,11 +345,23 @@ class DefaultTarget(BaseCompiler):
         result_ports = []
         for step, loc in self.workflow.mapping:
             if loc == self.current_location.name:
-                result_ports.extend(f"'{p.name}'" for p in self.workflow.get_output_ports(self.workflow.steps[step]))
+                result_ports.extend(
+                    f"'{p.name}'"
+                    for p in self.workflow.get_output_ports(self.workflow.steps[step])
+                    if p.name in self.workflow.get_result_ports()
+                )
+        result_copy = (
+            f"""if not os.path.isdir(\"{self.current_location.outdir}\"):
+        raise Exception("Output directory does not exist")
+    for p in [{','.join(result_ports)}]:
+        data_copy(ports[p], \"{self.current_location.outdir+os.sep}\")
+        """
+            if result_ports
+            else ""
+        )
         self.programs[self.current_location.name].write(
             f"""
-    for p in [{','.join(result_ports)}]:
-        data_copy(ports[p], \"{self.current_location.outdir.rstrip(os.sep)+os.sep}\")  
+    {result_copy}
     logger.info("Terminated trace")
     global stopping
     stopping = True"""

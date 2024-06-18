@@ -131,7 +131,7 @@ class CompileVisitor(SWIRLVisitor, ABC):
                     port=settings["port"],
                     connection_type=settings.get("connectionType", None),
                     workdir=settings.get("workdir", None),
-                    outdir=settings.get("outdir", None)
+                    outdir=settings.get("outdir", None),
                 )
             )
 
@@ -306,6 +306,9 @@ class CompileVisitor(SWIRLVisitor, ABC):
 
     def visitWorkflow(self, ctx: SWIRLParser.WorkflowContext):
         self.compiler.begin_workflow(self.workflow)
+        for res_port, enable in self.metadata.get("ports", {}).items():
+            if enable["resultPort"]:
+                self.workflow.add_result_port(res_port)
         val = self.visitChildren(ctx)
         self.compiler.end_workflow()
         return val
