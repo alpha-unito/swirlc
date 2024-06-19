@@ -80,14 +80,6 @@
             "additionalProperties": false
           }
         },
-        "initialWorkDir": {
-          "type": "array",
-          "items": {
-            "type": "string",
-            "additionalProperties": false
-          },
-          "description": "List of input ports which data (in case of file or directory) must be in output directory."
-        },
         "outputs": {
           "type": "object",
           "patternProperties": {

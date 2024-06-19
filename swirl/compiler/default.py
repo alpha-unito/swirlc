@@ -32,6 +32,7 @@ import os
 import socket
 import subprocess
 import time
+import uuid
 
 from io import BytesIO
 from threading import Condition, Event, Thread
@@ -77,14 +78,14 @@ accept_function = """def _accept(sock: socket):
     sock.close()
 """
 
-exec_function = """def _exec(step_name: str, step_display_name: str, input_port_names: MutableSequence[str], output_port_name: str, data_type: str, glob_regex: str | None, cmd: str, args: MutableSequence[str], args_from: MutableSequence[tuple[str, str]], initial_work_dir: MutableSequence[str] | None):
+exec_function = """def _exec(step_name: str, step_display_name: str, input_port_names: MutableSequence[str], output_port_name: str, data_type: str, glob_regex: str | None, cmd: str, args: MutableSequence[str], args_from: MutableSequence[tuple[str, str]]):
     # Wait all the data
     for port_name in input_port_names:
         available_port_data[port_name].wait()
     # Prepare working directory
-    os.mkdir(f"{step_display_name}_{step_name}")
-    workdir = os.path.abspath(f"{step_display_name}_{step_name}")
-    for port_name in initial_work_dir:
+    workdir = os.path.join(os.getcwd(), f"exec_{step_name}_{uuid.uuid4()}")
+    os.mkdir(workdir)
+    for port_name in input_port_names:
         os.symlink(os.path.abspath(ports[port_name]), os.path.join(workdir, os.path.basename(ports[port_name])))
     # Populate the arguments
     arguments = []
@@ -153,7 +154,7 @@ send_function = """def _send(port: str, data_type: str, src: str, dst: str):
     if data_type == "stout":
         sock.send(ports[port])
     elif data_type == "file":
-        sock.send(ports[port].encode("utf-8"))
+        sock.send(os.path.basename(ports[port]).encode("utf-8"))
         sock.recv(BUF_SIZE)
         fd = open(ports[port], "rb")
         while True:
@@ -192,14 +193,15 @@ recv_function = """def _recv(port: str, data_type: str, src: str) -> Any:
     elif data_type == "file":
         filename = connections[src][port].recv(1024).decode()
         connections[src][port].send("ack".encode("utf-8"))
-        filename = os.path.basename(filename)
-        fd = open(filename, "wb")
+        filepath = os.path.join(os.getcwd(), f"rcv_{port}_{uuid.uuid4()}", filename)
+        os.mkdir(os.path.dirname(filepath))
+        fd = open(filepath, "wb")
         while True:
             if not (data := connections[src][port].recv(BUF_SIZE)):
                 break
             fd.write(data)
         fd.close()
-        ports[port] = os.path.abspath(filename)
+        ports[port] = filepath
         available_port_data.setdefault(port, Event()).set()
         logger.debug(f"Received file '{ports[port]}' on port {port}")
     elif data_type == "directory":
@@ -470,7 +472,7 @@ echo "Workflow execution terminated"
     {self._get_indentation()}input_port_names = {[port_name for port_name, _ in flow[0]]}
     {self._get_indentation()}for port_name in input_port_names:
     {self._get_indentation()}    available_port_data.setdefault(port_name, Event())
-    {self._get_indentation()}_exec("{step.name}", "{step.display_name}", input_port_names, "{output_port_name}", "{step.processors[output_port_name].type if output_port_name else ""}", "{step.processors[output_port_name].glob if output_port_name else ""}", "{step.command}", {arguments}, {arguments_from_port}, {step.initial_work_dir})"""
+    {self._get_indentation()}_exec("{step.name}", "{step.display_name}", input_port_names, "{output_port_name}", "{step.processors[output_port_name].type if output_port_name else ""}", "{step.processors[output_port_name].glob if output_port_name else ""}", "{step.command}", {arguments}, {arguments_from_port})"""
         )
 
     def par(self) -> None:

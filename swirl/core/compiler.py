@@ -232,7 +232,6 @@ class CompileVisitor(SWIRLVisitor, ABC):
                 )
                 for arg in step_metadata["arguments"]
             ]
-            step.initial_work_dir = step_metadata.get("initialWorkDir", None)
         return self.compiler.exec(self.workflow.steps[name], flow, mapping)
 
     def visitRecv(self, ctx: SWIRLParser.RecvContext):

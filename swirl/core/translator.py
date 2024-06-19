@@ -41,10 +41,6 @@ def _add_step(step, steps, workflow, dependencies):
             dependencies[data_name] = {"type": processor.type}
             if processor.glob:
                 steps[step.name]["outputs"][port_name]["glob"] = processor.glob
-    if step.initial_work_dir:
-        steps[step.name]["initialWorkDir"] = [
-            port_name for port_name in step.initial_work_dir
-        ]
 
 
 class AbstractTranslator:
