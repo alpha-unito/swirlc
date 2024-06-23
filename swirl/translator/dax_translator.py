@@ -149,12 +149,6 @@ class DAXTranslator(AbstractTranslator):
                 workflow.add_input_port(
                     workflow.steps[step_name], swirl_data_ports[data_name]
                 )
-                # default: all input are copied in output working directory
-                if workflow.steps[step_name].initial_work_dir is None:
-                    workflow.steps[step_name].initial_work_dir = []
-                workflow.steps[step_name].initial_work_dir.append(
-                    swirl_data_ports[data_name].name
-                )
 
         # Add step arguments
         for step in workflow.steps.values():

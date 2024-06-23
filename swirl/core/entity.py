@@ -102,7 +102,6 @@ class Step:
         "display_name",
         "command",
         "arguments",
-        "initial_work_dir",
         "processors",
     )
 
@@ -112,7 +111,6 @@ class Step:
         display_name: str,
         command: str | None = None,
         arguments: MutableSequence[str | Port] | None = None,
-        initial_work_dir: MutableSequence[str] | None = None,
         processors: MutableMapping[str, Processor] | None = None,
     ):
         self.name: str = name
@@ -120,7 +118,6 @@ class Step:
         self.command: str | None = command
         self.arguments: MutableSequence[str | Port] | None = arguments
         self.processors: MutableMapping[str, Processor] | None = processors
-        self.initial_work_dir: MutableSequence[str] | None = initial_work_dir
 
 
 class Workflow:
