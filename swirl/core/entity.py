@@ -125,12 +125,11 @@ class Step:
 
 
 class Workflow:
-    __slots__ = ("steps", "ports", "result_ports", "dependencies", "__location")
+    __slots__ = ("steps", "ports", "dependencies", "__location")
 
     def __init__(self):
         self.steps: MutableMapping[str, Step] = {}
         self.ports: MutableMapping[str, Port] = {}
-        self.result_ports: MutableSequence[str] = []
         self.dependencies: set[tuple[str, str]] = set()
         self.__location: Location = Location(name="l", display_name="local", data={})
 
@@ -143,9 +142,6 @@ class Workflow:
         if port.name not in self.ports:
             self.ports[port.name] = port
         self.dependencies.add((step.name, port.name))
-
-    def add_result_port(self, port_name: str):
-        self.result_ports.append(port_name) if port_name not in self.ports else None
 
     def add_step(self, step: Step) -> None:
         self.steps[step.name] = step
@@ -199,9 +195,6 @@ class Workflow:
             [self.steps[d[1]] for d in self.dependencies if d[0] == port.name],
             key=lambda step: step.name,
         )
-
-    def get_result_ports(self):
-        return self.result_ports
 
     def get_step_locations(self, step: Step) -> MutableSequence[Location]:
         return [self.__location]

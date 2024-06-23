@@ -21,11 +21,6 @@ def _add_location(location, locations):
         locations[location.name]["outdir"] = location.outdir
 
 
-def _add_port(ports, workflow):
-    for port in workflow.result_ports:
-        ports[port] = {"resultPort": True}
-
-
 def _add_step(step, steps, workflow, dependencies):
     steps[step.name] = {
         "displayName": step.display_name,
@@ -62,11 +57,8 @@ class AbstractTranslator:
         # Dictionaries to generate metadata file
         dependencies = {}
         locations = {}
-        ports = {}
         steps = {}
         version = "v1.0"
-
-        _add_port(ports, workflow)
         nof_locations = len(workflow.get_locations())
         for i, location in enumerate(workflow.get_locations()):
             trace_recvs = set()
@@ -151,7 +143,6 @@ class AbstractTranslator:
             {
                 "version": version,
                 "steps": steps,
-                "ports": ports,
                 "locations": locations,
                 "dependencies": dependencies,
             },

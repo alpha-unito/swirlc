@@ -258,7 +258,7 @@ class CompileVisitor(SWIRLVisitor, ABC):
         else:
             # search in the output steps
             for value in self.metadata["steps"].values():
-                if info := value["outputs"].get(port, None):
+                if "outputs" in value and (info := value["outputs"].get(port, None)):
                     data_type = self.metadata["dependencies"][info["dataName"]]["type"]
                     break
         if data_type is None:
@@ -306,9 +306,6 @@ class CompileVisitor(SWIRLVisitor, ABC):
 
     def visitWorkflow(self, ctx: SWIRLParser.WorkflowContext):
         self.compiler.begin_workflow(self.workflow)
-        for res_port, enable in self.metadata.get("ports", {}).items():
-            if enable["resultPort"]:
-                self.workflow.add_result_port(res_port)
         val = self.visitChildren(ctx)
         self.compiler.end_workflow()
         return val

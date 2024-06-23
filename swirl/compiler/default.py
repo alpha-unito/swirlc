@@ -220,15 +220,6 @@ thread_function = """def _thread(f, *args) -> Thread:
     return thread
 """
 
-utils_function = """def data_copy(src, dst) -> None:
-    logger.info(f"Copying data from {src} to {dst}")
-    if os.path.isdir(src):
-        os.makedirs(dst, exist_ok=True)
-        shutil.copytree(src, dst, dirs_exist_ok=True)
-    else:
-        shutil.copy(src, dst)
-"""
-
 wait_function = """def _wait(threads: MutableSequence[Thread]):
     for t in threads:
         t.join()
@@ -245,7 +236,6 @@ preamble = "\n".join(
         send_function,
         recv_function,
         thread_function,
-        utils_function,
         wait_function,
     ]
 )
@@ -342,26 +332,8 @@ class DefaultTarget(BaseCompiler):
         raise NotImplementedError("Choice is not implemented yet")
 
     def end_location(self) -> None:
-        result_ports = []
-        for step, loc in self.workflow.mapping:
-            if loc == self.current_location.name:
-                result_ports.extend(
-                    f"'{p.name}'"
-                    for p in self.workflow.get_output_ports(self.workflow.steps[step])
-                    if p.name in self.workflow.get_result_ports()
-                )
-        result_copy = (
-            f"""if not os.path.isdir(\"{self.current_location.outdir}\"):
-        raise Exception("Output directory does not exist")
-    for p in [{','.join(result_ports)}]:
-        data_copy(ports[p], \"{self.current_location.outdir+os.sep}\")
-        """
-            if result_ports
-            else ""
-        )
         self.programs[self.current_location.name].write(
-            f"""
-    {result_copy}
+            """
     logger.info("Terminated trace")
     global stopping
     stopping = True"""
