@@ -84,6 +84,9 @@ class DAXTranslator(AbstractTranslator):
         # dax_step_name : dax_step_id
         dax_step_name_id: MutableMapping[str, MutableSequence[str]] = {}
 
+        # swirl_step_name : [ collector_step_name ]
+        binding_collector_step = {}
+
         # Visit workflow yaml
         workflow_config = _open_yml(self.workflow_path.as_posix())
         for replica in workflow_config["jobs"]:
@@ -106,6 +109,27 @@ class DAXTranslator(AbstractTranslator):
                     swirl_output_steps.setdefault(swirl_step_name, []).append(
                         swirl_data_name
                     )
+                    if data["stageOut"]:
+                        # Generate a unique id for the collector step based on the DAX id of the previous step
+                        collect_id = "COLLECT-" + replica["id"]
+                        dax_step_name_id.setdefault(
+                            f"{replica['name']}-{swirl_data_name}-collector", []
+                        ).append(collect_id)
+                        swirl_collect_step_name = f"s{len(step_binding_dax_swirl)}"
+                        step_binding_dax_swirl[collect_id] = swirl_collect_step_name
+                        # Add option for the copy command
+                        swirl_step_args[swirl_collect_step_name] = [
+                            "-r",
+                            swirl_data_name,
+                        ]
+                        # Add output port of previous step as input of the collector step
+                        swirl_input_steps.setdefault(
+                            swirl_collect_step_name, []
+                        ).append(swirl_data_name)
+                        # Bind the collector step in the same location of previous step
+                        binding_collector_step.setdefault(swirl_step_name, set()).add(
+                            swirl_collect_step_name
+                        )
             swirl_step_args[swirl_step_name] = [arg for arg in replica["arguments"]]
 
         # Create the steps
@@ -115,7 +139,10 @@ class DAXTranslator(AbstractTranslator):
                 for dax_name, dax_ids in dax_step_name_id.items()
                 if dax_id in dax_ids
             )
-            workflow.add_step(Step(swirl_step_name, display_name))
+            step = Step(swirl_step_name, display_name)
+            workflow.add_step(step)
+            if dax_id.startswith("COLLECT-"):
+                step.command = "cp"
 
         # Add step output ports
         swirl_data_ports = {}
@@ -162,27 +189,46 @@ class DAXTranslator(AbstractTranslator):
             location_binding_dax_swirl[site["name"]] = (
                 f"l{len(location_binding_dax_swirl)}"
             )
-            workdirs = [
-                directory["path"]
-                for directory in site["directories"]
-                if directory["type"] == "sharedScratch"
-            ]
             location = Location(
                 name=location_binding_dax_swirl[site["name"]],
                 display_name=site["name"],
                 data={},
                 hostname=site.get("hostname", "127.0.0.1"),
                 port=site.get("port", 35050),
-                workdir=next(iter(workdirs)) if workdirs else None,
+                workdir=(
+                    next(
+                        directory["path"]
+                        for directory in site["directories"]
+                        if directory["type"] == "sharedScratch"
+                    )
+                    if any(
+                        True
+                        for directory in site["directories"]
+                        if directory["type"] == "sharedScratch"
+                    )
+                    else None
+                ),
+                outdir=(
+                    next(
+                        directory["path"]
+                        for directory in site["directories"]
+                        if directory["type"] == "localStorage"
+                    )
+                    if any(
+                        True
+                        for directory in site["directories"]
+                        if directory["type"] == "localStorage"
+                    )
+                    else None
+                ),
                 connection_type=site.get("connectionType", "ssh"),
             )
             workflow.add_location(location)
 
         # Initial dataset
         replicas_config = _open_yml(self.replicas_path.as_posix())
-        # data_locations = {
-        #   logical_data_name : [ (location_name, physical_data_name) ]
-        # }
+
+        # logical_data_name : [ (location_name, physical_data_name) ]
         data_locations = {}
         for replica in replicas_config["replicas"]:
             for physical_path in replica["pfns"]:
@@ -203,7 +249,18 @@ class DAXTranslator(AbstractTranslator):
                 location_name = location_binding_dax_swirl[binding["name"]]
                 for dax_step_id in dax_step_name_id[transformation["name"]]:
                     step_name = step_binding_dax_swirl[dax_step_id]
-                    step = workflow.steps[step_name]
-                    step.command = binding["pfn"]
-                    workflow.map(step, workflow.locations[location_name])
+                    workflow.steps[step_name].command = binding["pfn"]
+                    workflow.map(
+                        workflow.steps[step_name], workflow.locations[location_name]
+                    )
+                    # Map the collector step and add last argument for the copy command
+                    for c in binding_collector_step.get(
+                        workflow.steps[step_name].name, []
+                    ):
+                        workflow.map(
+                            workflow.steps[c], workflow.locations[location_name]
+                        )
+                        workflow.steps[c].arguments.append(
+                            workflow.locations[location_name].outdir
+                        )
         return workflow

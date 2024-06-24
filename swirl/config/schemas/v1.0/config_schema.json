@@ -37,6 +37,10 @@
           "type": "integer",
           "description": "The port on which to open the connection."
         },
+        "outdir": {
+          "type": "string",
+          "description": "Path to the output directory."
+        },
         "workdir": {
           "type": "string",
           "description": "Path to the working directory."

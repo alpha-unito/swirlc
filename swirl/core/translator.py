@@ -17,6 +17,8 @@ def _add_location(location, locations):
         locations[location.name]["connectionType"] = location.connection_type
     if location.workdir:
         locations[location.name]["workdir"] = location.workdir
+    if location.outdir:
+        locations[location.name]["outdir"] = location.outdir
 
 
 def _add_step(step, steps, workflow, dependencies):
@@ -57,7 +59,6 @@ class AbstractTranslator:
         locations = {}
         steps = {}
         version = "v1.0"
-
         nof_locations = len(workflow.get_locations())
         for i, location in enumerate(workflow.get_locations()):
             trace_recvs = set()

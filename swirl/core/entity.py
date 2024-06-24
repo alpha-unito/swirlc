@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import PurePath
 from typing import Any, MutableMapping, MutableSequence
 
 from swirl.core.utils import flatten_list
@@ -21,6 +22,7 @@ class Location:
         "data",
         "connection_type",
         "workdir",
+        "outdir",
         "hostname",
         "port",
     )
@@ -33,7 +35,8 @@ class Location:
         connection_type: str | None = None,
         hostname: str | None = None,
         port: str | None = None,
-        workdir: str = None,
+        workdir: str | None = None,
+        outdir: str | None = None,
     ):
         self.data: MutableMapping[str, Any] = data
         self.display_name: str = display_name
@@ -41,7 +44,8 @@ class Location:
         self.connection_type: str = connection_type
         self.hostname: str | None = hostname
         self.port: str | None = port
-        self.workdir: str = workdir
+        self.outdir: str | None = str(PurePath(outdir)) if outdir else outdir
+        self.workdir: str | None = str(PurePath(workdir)) if workdir else workdir
 
     def get_command(self, cmd: str) -> str:
         if self.connection_type == "ssh":
