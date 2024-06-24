@@ -16,9 +16,7 @@ Please note that the SWIRL compiler requires `python >= 3.8`. Then you can use i
 
 ### Docker
 
-
 The SWIRL Docker image is available on [Docker Hub](https://hub.docker.com/r/alphaunito/swirl). The script below gives an example of `swirl` CLI invocation in a Docker container
-
 
 ```bash
 mkdir -p SWIRL

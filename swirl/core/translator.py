@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import sys
 from abc import abstractmethod
 from typing import TextIO

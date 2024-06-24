@@ -36,6 +36,7 @@ swirl = "swirl.main:run"
 [project.urls]
 Package = "https://pypi.org/project/swirl"
 Repository = "https://github.com/alpha-unito/swirl"
+Docker = "https://hub.docker.com/r/alphaunito/swirl"
 
 [tool.setuptools]
 packages = [
