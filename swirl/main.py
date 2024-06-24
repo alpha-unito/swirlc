@@ -40,23 +40,19 @@ def main(args):
                 translator = swirl.translator.translator_classes[args.language](
                     args.workflow
                 )
-                workflow_output = sys.stdout
-                metadata_output = sys.stdout
                 if args.outdir:
                     if not os.path.isdir(args.outdir):
                         raise Exception(
                             f"Output directory `{args.outdir}` does not exist"
                         )
-                    workflow_output = open(
+                    with open(
                         os.path.join(args.outdir, "workflow.swirl"), "w"
-                    )
-                    metadata_output = open(
+                    ) as workflow_output, open(
                         os.path.join(args.outdir, "metadata.yml"), "w"
-                    )
-                translator.translate(workflow_output, metadata_output)
-                if args.outdir:
-                    workflow_output.close()
-                    metadata_output.close()
+                    ) as metadata_output:
+                        translator.translate(workflow_output, metadata_output)
+                else:
+                    translator.translate(sys.stdout, sys.stdout)
             else:
                 raise Exception(
                     f"Translator from `{args.language}` to SWIRL not supported"
@@ -64,6 +60,7 @@ def main(args):
         else:
             parser.print_help(file=sys.stderr)
             return 1
+        return 0
     except SystemExit as se:
         if se.code != 0:
             logger.exception(se)
