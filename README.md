@@ -6,7 +6,7 @@ SWIRL is a low-level intermediate representation language for distributed scient
 
 ### PyPI
 
-The `swirlc` package is available on [PyPi](https://pypi.org/project/swirl/), so you can install it using pip.
+The `swirlc` package is available on [PyPi](https://pypi.org/project/swirlc/), so you can install it using pip.
 
 ```bash
 pip install swirlc
@@ -19,7 +19,6 @@ Please note that the SWIRL compiler requires `python >= 3.8`. Then you can use i
 The SWIRL Docker image is available on [Docker Hub](https://hub.docker.com/r/alphaunito/swirlc). The script below gives an example of `swirlc` CLI invocation in a Docker container
 
 ```bash
-mkdir -p SWIRL
 docker run                          \
         --user $(id -u):$(id -g)    \
         --volume $(pwd):/data       \
