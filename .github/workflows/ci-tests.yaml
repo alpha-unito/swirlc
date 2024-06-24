@@ -1,0 +1,60 @@
+name: "CI Tests"
+on:
+  push:
+    branches:
+      - master
+  pull_request:
+    branches:
+      - master
+concurrency:
+  group: build-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+jobs:
+  code-ql-check:
+    name: "SWIRL CodeQL check"
+    runs-on: ubuntu-22.04
+    permissions:
+      security-events: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: github/codeql-action/init@v3
+        with:
+          config-file: .github/codeql/config.yml
+          languages: python
+      - uses: github/codeql-action/analyze@v3
+  docker-image:
+    name: "SWIRL Docker image tests"
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - name: "Build Docker image"
+        uses: docker/build-push-action@v5
+        with:
+          load: true
+          tags: alphaunito/swirl:latest
+  static-checks:
+    name: "SWIRL static checks"
+    runs-on: ubuntu-22.04
+    strategy:
+      matrix:
+        step: [ "bandit", "lint" ]
+    env:
+      TOXENV: ${{ matrix.step }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            test-requirements.txt
+            tox.ini
+      - name: "Install Python Dependencies and StreamFlow"
+        run: |
+          python -m pip install tox --user
+          python -m pip install . --user
+      - name: "Run SWIRL static analysis via Tox"
+        run: tox
