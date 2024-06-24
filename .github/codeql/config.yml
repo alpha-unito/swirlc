@@ -1,9 +1,9 @@
-name: "SWIRL CodeQL configuration"
+name: "SWIRL Compiler CodeQL configuration"
 queries:
   - uses: security-and-quality
 paths-ignore:
   - tests
-  - swirl/antlr
+  - swirlc/antlr
 query-filters:
   # Reason: this rule targets XSS, which is not a concern here
   - exclude:

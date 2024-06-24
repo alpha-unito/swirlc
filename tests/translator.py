@@ -1,5 +1,5 @@
-from swirl.core.entity import Location, Step, Port, DistributedWorkflow, Workflow
-from swirl.core.translator import AbstractTranslator
+from swirlc.core.entity import Location, Step, Port, DistributedWorkflow, Workflow
+from swirlc.core.translator import AbstractTranslator
 
 
 def test_example1():

@@ -1,6 +1,6 @@
 import logging
 
-logger = logging.getLogger("swirl")
+logger = logging.getLogger("swirlc")
 defaultStreamHandler = logging.StreamHandler()
 formatter = logging.Formatter(
     fmt="%(asctime)s.%(msecs)03d %(levelname)-8s %(message)s",

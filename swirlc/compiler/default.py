@@ -8,22 +8,22 @@ from typing import MutableMapping, MutableSequence, TextIO
 
 from black import WriteBack
 
-from swirl.core.compiler import BaseCompiler
-from swirl.core.entity import Location, Step, Port, Workflow, DistributedWorkflow, Data
-from swirl.log_handler import logger
-from swirl.version import VERSION
+from swirlc.core.compiler import BaseCompiler
+from swirlc.core.entity import Location, Step, Port, Workflow, DistributedWorkflow, Data
+from swirlc.log_handler import logger
+from swirlc.version import VERSION
 
 bash_header = f"""#!/bin/sh
 
 # This file was generated automatically using SWIRL v{VERSION},
-# using command swirl {' '.join(sys.argv[1:])}
+# using command swirlc {' '.join(sys.argv[1:])}
 """
 
 python_header = f"""#!/usr/bin/env python
 # -*- coding: utf-8 -*-
 
 # This file was generated automatically using SWIRL v{VERSION},
-# using command swirl {' '.join(sys.argv[1:])}
+# using command swirlc {' '.join(sys.argv[1:])}
 """
 
 imports = """from __future__ import annotations
@@ -53,7 +53,7 @@ ports: MutableMapping[str, Any] = {}
 stopping: bool = False
 
 
-logger = logging.getLogger("swirl")
+logger = logging.getLogger("swirlc")
 defaultStreamHandler = logging.StreamHandler()
 formatter = logging.Formatter(
     fmt="%(asctime)s.%(msecs)03d %(filename)s %(levelname)-8s %(message)s",

@@ -5,29 +5,29 @@ import sys
 
 import antlr4
 
-import swirl.compiler
-import swirl.translator
-from swirl.antlr.SWIRLLexer import SWIRLLexer
-from swirl.antlr.SWIRLParser import SWIRLParser
-from swirl.config.validator import SwirlValidator
-from swirl.core.compiler import CompileVisitor
-from swirl.log_handler import logger
-from swirl.parser import parser
+import swirlc.compiler
+import swirlc.translator
+from swirlc.antlr.SWIRLLexer import SWIRLLexer
+from swirlc.antlr.SWIRLParser import SWIRLParser
+from swirlc.config.validator import SwirlValidator
+from swirlc.core.compiler import CompileVisitor
+from swirlc.log_handler import logger
+from swirlc.parser import parser
 
 
 def main(args):
     try:
         args = parser.parse_args(args)
         if args.context == "version":
-            from swirl.version import VERSION
+            from swirlc.version import VERSION
 
-            print(f"swirl version {VERSION}")
+            print(f"swirlc version {VERSION}")
         elif args.context == "compile":
             config = SwirlValidator().validate_file(args.metadata)
             with open(args.workflow) as f:
                 code = f.read()
-            if args.target in swirl.compiler.targets:
-                target = swirl.compiler.targets[args.target]()
+            if args.target in swirlc.compiler.targets:
+                target = swirlc.compiler.targets[args.target]()
                 lexer = SWIRLLexer(antlr4.InputStream(code))
                 tokens = antlr4.CommonTokenStream(lexer)
                 tree = SWIRLParser(tokens).workflow()
@@ -36,8 +36,8 @@ def main(args):
             else:
                 raise Exception(f"Target `{args.target}` not supported")
         elif args.context == "translate":
-            if args.language in swirl.translator.translator_classes.keys():
-                translator = swirl.translator.translator_classes[args.language](
+            if args.language in swirlc.translator.translator_classes.keys():
+                translator = swirlc.translator.translator_classes[args.language](
                     args.workflow
                 )
                 if args.outdir:

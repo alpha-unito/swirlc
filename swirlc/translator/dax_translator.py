@@ -8,7 +8,7 @@ from typing import MutableMapping, MutableSequence
 
 from ruamel.yaml import YAML
 
-from swirl.core.entity import (
+from swirlc.core.entity import (
     Location,
     Step,
     Port,
@@ -17,7 +17,7 @@ from swirl.core.entity import (
     Processor,
     Data,
 )
-from swirl.core.translator import AbstractTranslator
+from swirlc.core.translator import AbstractTranslator
 
 MANDATORY_FILES = ("replicas", "sites", "transformations", "workflow")
 
