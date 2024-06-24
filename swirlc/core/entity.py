@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import PurePath
 from typing import Any, MutableMapping, MutableSequence
 
-from swirl.core.utils import flatten_list
+from swirlc.core.utils import flatten_list
 
 
 class Data:

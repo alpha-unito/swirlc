@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import antlr4
 
-from swirl.antlr.SWIRLParser import SWIRLParser
+from swirlc.antlr.SWIRLParser import SWIRLParser
 
 
 def flatten_list(ll: list) -> list:

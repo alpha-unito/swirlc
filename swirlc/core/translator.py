@@ -6,7 +6,7 @@ from typing import TextIO
 
 from ruamel.yaml import YAML
 
-from swirl.core.entity import Workflow, Port
+from swirlc.core.entity import Workflow, Port
 
 
 def _add_location(location, locations):

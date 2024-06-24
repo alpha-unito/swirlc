@@ -3,10 +3,10 @@ from __future__ import annotations
 from abc import ABC
 from typing import Any, MutableMapping, MutableSequence
 
-from swirl.antlr.SWIRLParser import SWIRLParser
-from swirl.antlr.SWIRLVisitor import SWIRLVisitor
-from swirl.core import utils
-from swirl.core.entity import (
+from swirlc.antlr.SWIRLParser import SWIRLParser
+from swirlc.antlr.SWIRLVisitor import SWIRLVisitor
+from swirlc.core import utils
+from swirlc.core.entity import (
     Location,
     Workflow,
     DistributedWorkflow,

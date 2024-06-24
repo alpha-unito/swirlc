@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import argparse
 
-import swirl.compiler
-import swirl.translator
+import swirlc.compiler
+import swirlc.translator
 
 parser = argparse.ArgumentParser(description="SWIRL command line")
 subparsers = parser.add_subparsers(dest="context")
@@ -26,7 +26,7 @@ compile_parser.add_argument(
     "-t",
     type=str,
     default="default",
-    choices=swirl.compiler.targets,
+    choices=swirlc.compiler.targets,
     help="The compilation target",
 )
 
@@ -40,7 +40,7 @@ translate_parser.add_argument(
     "-l",
     type=str,
     required=True,
-    choices=swirl.translator.translator_classes,
+    choices=swirlc.translator.translator_classes,
     help="The workflow language",
 )
 translate_parser.add_argument(
