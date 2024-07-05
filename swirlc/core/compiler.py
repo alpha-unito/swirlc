@@ -250,7 +250,9 @@ class CompileVisitor(SWIRLVisitor, ABC):
                 data_type = self.workflow.locations[src].data[data_name].type
             else:
                 for value in self.metadata["steps"].values():
-                    if info := value["outputs"].get(port, None):
+                    if "outputs" in value and (
+                        info := value["outputs"].get(port, None)
+                    ):
                         data_type = self.metadata["dependencies"][info["dataName"]][
                             "type"
                         ]
