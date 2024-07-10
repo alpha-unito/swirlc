@@ -97,9 +97,10 @@ class AbstractTranslator:
                 _add_step(step, steps, workflow, dependencies)
 
                 for port in workflow.get_input_ports(step):
+                    data_name = next(iter(port.data))
                     # data from other steps
                     for recv in (
-                        f"recv({port.name},{in_loc.name},{location.name})"
+                        f"recv({port.name} -> {data_name},{in_loc.name},{location.name})"
                         for in_loc in workflow.get_input_locations(port)
                         if in_loc.name != location.name
                     ):
@@ -107,13 +108,12 @@ class AbstractTranslator:
                             recvs.add(recv)
                             trace_recvs.add(recv)
                     # data from dataset
-                    data_name = next(iter(port.data))
                     for loc in workflow.get_locations():
                         if (
                             data_name in loc.data
                             and loc.name != location.name
                             and (
-                                recv := f"recv({port.name},{loc.name},{location.name})"
+                                recv := f"recv({port.name} -> {data_name},{loc.name},{location.name})"
                             )
                             not in trace_recvs
                         ):

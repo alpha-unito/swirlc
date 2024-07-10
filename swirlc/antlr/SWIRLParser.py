@@ -10,51 +10,52 @@ else:
 
 def serializedATN():
     return [
-        4,1,16,148,2,0,7,0,2,1,7,1,2,2,7,2,2,3,7,3,2,4,7,4,2,5,7,5,2,6,7,
+        4,1,16,150,2,0,7,0,2,1,7,1,2,2,7,2,2,3,7,3,2,4,7,4,2,5,7,5,2,6,7,
         6,2,7,7,7,2,8,7,8,2,9,7,9,2,10,7,10,2,11,7,11,2,12,7,12,2,13,7,13,
         2,14,7,14,2,15,7,15,2,16,7,16,1,0,1,0,1,0,5,0,38,8,0,10,0,12,0,41,
         9,0,1,0,1,0,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,2,1,2,1,2,1,2,1,2,
         1,2,3,2,59,8,2,1,2,1,2,1,2,5,2,64,8,2,10,2,12,2,67,9,2,1,3,1,3,1,
         3,3,3,72,8,3,1,4,1,4,1,4,1,4,1,4,1,4,1,4,1,4,1,5,1,5,1,5,1,5,1,5,
-        1,5,1,5,1,5,1,5,1,5,1,6,1,6,1,6,1,6,1,6,1,6,1,6,1,6,1,7,1,7,1,7,
-        1,7,1,7,1,7,1,8,1,8,3,8,108,8,8,1,8,1,8,5,8,112,8,8,10,8,12,8,115,
-        9,8,1,8,1,8,1,9,1,9,1,9,1,9,1,10,1,10,3,10,125,8,10,1,10,1,10,5,
-        10,129,8,10,10,10,12,10,132,9,10,1,10,1,10,1,11,1,11,1,12,1,12,1,
-        13,1,13,1,14,1,14,1,15,1,15,1,16,1,16,1,16,0,1,4,17,0,2,4,6,8,10,
-        12,14,16,18,20,22,24,26,28,30,32,0,1,1,0,12,14,139,0,34,1,0,0,0,
-        2,44,1,0,0,0,4,58,1,0,0,0,6,71,1,0,0,0,8,73,1,0,0,0,10,81,1,0,0,
-        0,12,91,1,0,0,0,14,99,1,0,0,0,16,105,1,0,0,0,18,118,1,0,0,0,20,122,
-        1,0,0,0,22,135,1,0,0,0,24,137,1,0,0,0,26,139,1,0,0,0,28,141,1,0,
-        0,0,30,143,1,0,0,0,32,145,1,0,0,0,34,39,3,2,1,0,35,36,5,13,0,0,36,
-        38,3,2,1,0,37,35,1,0,0,0,38,41,1,0,0,0,39,37,1,0,0,0,39,40,1,0,0,
-        0,40,42,1,0,0,0,41,39,1,0,0,0,42,43,5,0,0,1,43,1,1,0,0,0,44,45,5,
-        1,0,0,45,46,3,26,13,0,46,47,5,2,0,0,47,48,3,16,8,0,48,49,5,2,0,0,
-        49,50,3,4,2,0,50,51,5,3,0,0,51,3,1,0,0,0,52,53,6,2,-1,0,53,59,3,
-        6,3,0,54,55,5,4,0,0,55,56,3,4,2,0,56,57,5,5,0,0,57,59,1,0,0,0,58,
-        52,1,0,0,0,58,54,1,0,0,0,59,65,1,0,0,0,60,61,10,3,0,0,61,62,7,0,
-        0,0,62,64,3,4,2,4,63,60,1,0,0,0,64,67,1,0,0,0,65,63,1,0,0,0,65,66,
-        1,0,0,0,66,5,1,0,0,0,67,65,1,0,0,0,68,72,3,8,4,0,69,72,3,10,5,0,
-        70,72,3,12,6,0,71,68,1,0,0,0,71,69,1,0,0,0,71,70,1,0,0,0,72,7,1,
-        0,0,0,73,74,5,6,0,0,74,75,3,32,16,0,75,76,5,2,0,0,76,77,3,18,9,0,
-        77,78,5,2,0,0,78,79,3,20,10,0,79,80,5,5,0,0,80,9,1,0,0,0,81,82,5,
-        7,0,0,82,83,3,22,11,0,83,84,5,8,0,0,84,85,3,28,14,0,85,86,5,2,0,
-        0,86,87,3,30,15,0,87,88,5,2,0,0,88,89,3,24,12,0,89,90,5,5,0,0,90,
-        11,1,0,0,0,91,92,5,9,0,0,92,93,3,28,14,0,93,94,5,2,0,0,94,95,3,30,
-        15,0,95,96,5,2,0,0,96,97,3,24,12,0,97,98,5,5,0,0,98,13,1,0,0,0,99,
-        100,5,4,0,0,100,101,3,28,14,0,101,102,5,2,0,0,102,103,3,22,11,0,
-        103,104,5,5,0,0,104,15,1,0,0,0,105,107,5,10,0,0,106,108,3,14,7,0,
-        107,106,1,0,0,0,107,108,1,0,0,0,108,113,1,0,0,0,109,110,5,2,0,0,
-        110,112,3,14,7,0,111,109,1,0,0,0,112,115,1,0,0,0,113,111,1,0,0,0,
-        113,114,1,0,0,0,114,116,1,0,0,0,115,113,1,0,0,0,116,117,5,11,0,0,
-        117,17,1,0,0,0,118,119,3,16,8,0,119,120,5,8,0,0,120,121,3,16,8,0,
-        121,19,1,0,0,0,122,124,5,10,0,0,123,125,3,26,13,0,124,123,1,0,0,
-        0,124,125,1,0,0,0,125,130,1,0,0,0,126,127,5,2,0,0,127,129,3,26,13,
-        0,128,126,1,0,0,0,129,132,1,0,0,0,130,128,1,0,0,0,130,131,1,0,0,
-        0,131,133,1,0,0,0,132,130,1,0,0,0,133,134,5,11,0,0,134,21,1,0,0,
-        0,135,136,5,15,0,0,136,23,1,0,0,0,137,138,5,15,0,0,138,25,1,0,0,
-        0,139,140,5,15,0,0,140,27,1,0,0,0,141,142,5,15,0,0,142,29,1,0,0,
-        0,143,144,5,15,0,0,144,31,1,0,0,0,145,146,5,15,0,0,146,33,1,0,0,
-        0,8,39,58,65,71,107,113,124,130
+        1,5,1,5,1,5,1,5,1,5,1,6,1,6,1,6,1,6,1,6,1,6,1,6,1,6,1,6,1,6,1,7,
+        1,7,1,7,1,7,1,7,1,7,1,8,1,8,3,8,110,8,8,1,8,1,8,5,8,114,8,8,10,8,
+        12,8,117,9,8,1,8,1,8,1,9,1,9,1,9,1,9,1,10,1,10,3,10,127,8,10,1,10,
+        1,10,5,10,131,8,10,10,10,12,10,134,9,10,1,10,1,10,1,11,1,11,1,12,
+        1,12,1,13,1,13,1,14,1,14,1,15,1,15,1,16,1,16,1,16,0,1,4,17,0,2,4,
+        6,8,10,12,14,16,18,20,22,24,26,28,30,32,0,1,1,0,12,14,141,0,34,1,
+        0,0,0,2,44,1,0,0,0,4,58,1,0,0,0,6,71,1,0,0,0,8,73,1,0,0,0,10,81,
+        1,0,0,0,12,91,1,0,0,0,14,101,1,0,0,0,16,107,1,0,0,0,18,120,1,0,0,
+        0,20,124,1,0,0,0,22,137,1,0,0,0,24,139,1,0,0,0,26,141,1,0,0,0,28,
+        143,1,0,0,0,30,145,1,0,0,0,32,147,1,0,0,0,34,39,3,2,1,0,35,36,5,
+        13,0,0,36,38,3,2,1,0,37,35,1,0,0,0,38,41,1,0,0,0,39,37,1,0,0,0,39,
+        40,1,0,0,0,40,42,1,0,0,0,41,39,1,0,0,0,42,43,5,0,0,1,43,1,1,0,0,
+        0,44,45,5,1,0,0,45,46,3,26,13,0,46,47,5,2,0,0,47,48,3,16,8,0,48,
+        49,5,2,0,0,49,50,3,4,2,0,50,51,5,3,0,0,51,3,1,0,0,0,52,53,6,2,-1,
+        0,53,59,3,6,3,0,54,55,5,4,0,0,55,56,3,4,2,0,56,57,5,5,0,0,57,59,
+        1,0,0,0,58,52,1,0,0,0,58,54,1,0,0,0,59,65,1,0,0,0,60,61,10,3,0,0,
+        61,62,7,0,0,0,62,64,3,4,2,4,63,60,1,0,0,0,64,67,1,0,0,0,65,63,1,
+        0,0,0,65,66,1,0,0,0,66,5,1,0,0,0,67,65,1,0,0,0,68,72,3,8,4,0,69,
+        72,3,10,5,0,70,72,3,12,6,0,71,68,1,0,0,0,71,69,1,0,0,0,71,70,1,0,
+        0,0,72,7,1,0,0,0,73,74,5,6,0,0,74,75,3,32,16,0,75,76,5,2,0,0,76,
+        77,3,18,9,0,77,78,5,2,0,0,78,79,3,20,10,0,79,80,5,5,0,0,80,9,1,0,
+        0,0,81,82,5,7,0,0,82,83,3,22,11,0,83,84,5,8,0,0,84,85,3,28,14,0,
+        85,86,5,2,0,0,86,87,3,30,15,0,87,88,5,2,0,0,88,89,3,24,12,0,89,90,
+        5,5,0,0,90,11,1,0,0,0,91,92,5,9,0,0,92,93,3,28,14,0,93,94,5,8,0,
+        0,94,95,3,22,11,0,95,96,5,2,0,0,96,97,3,30,15,0,97,98,5,2,0,0,98,
+        99,3,24,12,0,99,100,5,5,0,0,100,13,1,0,0,0,101,102,5,4,0,0,102,103,
+        3,28,14,0,103,104,5,2,0,0,104,105,3,22,11,0,105,106,5,5,0,0,106,
+        15,1,0,0,0,107,109,5,10,0,0,108,110,3,14,7,0,109,108,1,0,0,0,109,
+        110,1,0,0,0,110,115,1,0,0,0,111,112,5,2,0,0,112,114,3,14,7,0,113,
+        111,1,0,0,0,114,117,1,0,0,0,115,113,1,0,0,0,115,116,1,0,0,0,116,
+        118,1,0,0,0,117,115,1,0,0,0,118,119,5,11,0,0,119,17,1,0,0,0,120,
+        121,3,16,8,0,121,122,5,8,0,0,122,123,3,16,8,0,123,19,1,0,0,0,124,
+        126,5,10,0,0,125,127,3,26,13,0,126,125,1,0,0,0,126,127,1,0,0,0,127,
+        132,1,0,0,0,128,129,5,2,0,0,129,131,3,26,13,0,130,128,1,0,0,0,131,
+        134,1,0,0,0,132,130,1,0,0,0,132,133,1,0,0,0,133,135,1,0,0,0,134,
+        132,1,0,0,0,135,136,5,11,0,0,136,21,1,0,0,0,137,138,5,15,0,0,138,
+        23,1,0,0,0,139,140,5,15,0,0,140,25,1,0,0,0,141,142,5,15,0,0,142,
+        27,1,0,0,0,143,144,5,15,0,0,144,29,1,0,0,0,145,146,5,15,0,0,146,
+        31,1,0,0,0,147,148,5,15,0,0,148,33,1,0,0,0,8,39,58,65,71,109,115,
+        126,132
     ]
 
 class SWIRLParser ( Parser ):
@@ -672,6 +673,10 @@ class SWIRLParser ( Parser ):
             return self.getTypedRuleContext(SWIRLParser.PortContext,0)
 
 
+        def data(self):
+            return self.getTypedRuleContext(SWIRLParser.DataContext,0)
+
+
         def src(self):
             return self.getTypedRuleContext(SWIRLParser.SrcContext,0)
 
@@ -711,14 +716,18 @@ class SWIRLParser ( Parser ):
             self.state = 92
             self.port()
             self.state = 93
-            self.match(SWIRLParser.T__1)
+            self.match(SWIRLParser.T__7)
             self.state = 94
-            self.src()
+            self.data()
             self.state = 95
             self.match(SWIRLParser.T__1)
             self.state = 96
-            self.dst()
+            self.src()
             self.state = 97
+            self.match(SWIRLParser.T__1)
+            self.state = 98
+            self.dst()
+            self.state = 99
             self.match(SWIRLParser.T__4)
         except RecognitionException as re:
             localctx.exception = re
@@ -770,15 +779,15 @@ class SWIRLParser ( Parser ):
         self.enterRule(localctx, 14, self.RULE_dataPair)
         try:
             self.enterOuterAlt(localctx, 1)
-            self.state = 99
-            self.match(SWIRLParser.T__3)
-            self.state = 100
-            self.port()
             self.state = 101
-            self.match(SWIRLParser.T__1)
+            self.match(SWIRLParser.T__3)
             self.state = 102
-            self.data()
+            self.port()
             self.state = 103
+            self.match(SWIRLParser.T__1)
+            self.state = 104
+            self.data()
+            self.state = 105
             self.match(SWIRLParser.T__4)
         except RecognitionException as re:
             localctx.exception = re
@@ -830,29 +839,29 @@ class SWIRLParser ( Parser ):
         self._la = 0 # Token type
         try:
             self.enterOuterAlt(localctx, 1)
-            self.state = 105
-            self.match(SWIRLParser.T__9)
             self.state = 107
+            self.match(SWIRLParser.T__9)
+            self.state = 109
             self._errHandler.sync(self)
             _la = self._input.LA(1)
             if _la==4:
-                self.state = 106
+                self.state = 108
                 self.dataPair()
 
 
-            self.state = 113
+            self.state = 115
             self._errHandler.sync(self)
             _la = self._input.LA(1)
             while _la==2:
-                self.state = 109
+                self.state = 111
                 self.match(SWIRLParser.T__1)
-                self.state = 110
+                self.state = 112
                 self.dataPair()
-                self.state = 115
+                self.state = 117
                 self._errHandler.sync(self)
                 _la = self._input.LA(1)
 
-            self.state = 116
+            self.state = 118
             self.match(SWIRLParser.T__10)
         except RecognitionException as re:
             localctx.exception = re
@@ -903,11 +912,11 @@ class SWIRLParser ( Parser ):
         self.enterRule(localctx, 18, self.RULE_flow)
         try:
             self.enterOuterAlt(localctx, 1)
-            self.state = 118
-            self.dataSet()
-            self.state = 119
-            self.match(SWIRLParser.T__7)
             self.state = 120
+            self.dataSet()
+            self.state = 121
+            self.match(SWIRLParser.T__7)
+            self.state = 122
             self.dataSet()
         except RecognitionException as re:
             localctx.exception = re
@@ -959,29 +968,29 @@ class SWIRLParser ( Parser ):
         self._la = 0 # Token type
         try:
             self.enterOuterAlt(localctx, 1)
-            self.state = 122
-            self.match(SWIRLParser.T__9)
             self.state = 124
+            self.match(SWIRLParser.T__9)
+            self.state = 126
             self._errHandler.sync(self)
             _la = self._input.LA(1)
             if _la==15:
-                self.state = 123
+                self.state = 125
                 self.name()
 
 
-            self.state = 130
+            self.state = 132
             self._errHandler.sync(self)
             _la = self._input.LA(1)
             while _la==2:
-                self.state = 126
+                self.state = 128
                 self.match(SWIRLParser.T__1)
-                self.state = 127
+                self.state = 129
                 self.name()
-                self.state = 132
+                self.state = 134
                 self._errHandler.sync(self)
                 _la = self._input.LA(1)
 
-            self.state = 133
+            self.state = 135
             self.match(SWIRLParser.T__10)
         except RecognitionException as re:
             localctx.exception = re
@@ -1028,7 +1037,7 @@ class SWIRLParser ( Parser ):
         self.enterRule(localctx, 22, self.RULE_data)
         try:
             self.enterOuterAlt(localctx, 1)
-            self.state = 135
+            self.state = 137
             self.match(SWIRLParser.ID)
         except RecognitionException as re:
             localctx.exception = re
@@ -1075,7 +1084,7 @@ class SWIRLParser ( Parser ):
         self.enterRule(localctx, 24, self.RULE_dst)
         try:
             self.enterOuterAlt(localctx, 1)
-            self.state = 137
+            self.state = 139
             self.match(SWIRLParser.ID)
         except RecognitionException as re:
             localctx.exception = re
@@ -1122,7 +1131,7 @@ class SWIRLParser ( Parser ):
         self.enterRule(localctx, 26, self.RULE_name)
         try:
             self.enterOuterAlt(localctx, 1)
-            self.state = 139
+            self.state = 141
             self.match(SWIRLParser.ID)
         except RecognitionException as re:
             localctx.exception = re
@@ -1169,7 +1178,7 @@ class SWIRLParser ( Parser ):
         self.enterRule(localctx, 28, self.RULE_port)
         try:
             self.enterOuterAlt(localctx, 1)
-            self.state = 141
+            self.state = 143
             self.match(SWIRLParser.ID)
         except RecognitionException as re:
             localctx.exception = re
@@ -1216,7 +1225,7 @@ class SWIRLParser ( Parser ):
         self.enterRule(localctx, 30, self.RULE_src)
         try:
             self.enterOuterAlt(localctx, 1)
-            self.state = 143
+            self.state = 145
             self.match(SWIRLParser.ID)
         except RecognitionException as re:
             localctx.exception = re
@@ -1263,7 +1272,7 @@ class SWIRLParser ( Parser ):
         self.enterRule(localctx, 32, self.RULE_step)
         try:
             self.enterOuterAlt(localctx, 1)
-            self.state = 145
+            self.state = 147
             self.match(SWIRLParser.ID)
         except RecognitionException as re:
             localctx.exception = re
