@@ -58,3 +58,37 @@ jobs:
           python -m pip install . --user
       - name: "Run SWIRL Compiler static analysis via Tox"
         run: tox
+  unit-tests:
+    name: "SWIRL Compiler unit tests"
+    strategy:
+      matrix:
+        on: [ "ubuntu-22.04"]
+        python: [ "3.8", "3.9", "3.10", "3.11", "3.12" ]
+    runs-on: ${{ matrix.on }}
+    env:
+      TOXENV: ${{ format('py{0}-unit', matrix.python) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            tox.ini
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: "Install Python Dependencies and SWIRL Compiler"
+        run: |
+          python -m pip install tox --user
+          python -m pip install . --user
+      - name: "Run SWIRL Compiler tests via Tox"
+        run: python -m tox
+      - name: "Upload coverage report for unit tests"
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ format('{0}-py{1}-unit-tests', matrix.on, matrix.python) }}
+          path: ./coverage.xml
+          retention-days: 1
+          if-no-files-found: error
