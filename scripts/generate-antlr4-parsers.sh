@@ -24,7 +24,7 @@ docker run                                                \
   -o /swirl/parsers/python                                \
   -visitor                                                \
   /swirl/grammar/SWIRL.g4
-mv ${TMP_DIRECTORY}/python/*.py "${SOURCE_DIRECTORY}/swirl/antlr/"
+mv ${TMP_DIRECTORY}/python/*.py "${SOURCE_DIRECTORY}/swirlc/antlr/"
 
 # Remove tmp destination directory
 rm -rf "${TMP_DIRECTORY}"
