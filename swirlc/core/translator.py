@@ -70,7 +70,9 @@ class AbstractTranslator:
                     if data in port.data:
                         datapair.append(f"({port.name},{data})")
                         break
-            workflow_output.write(f"<{location.name}, {{{','.join(sorted(datapair))}}},\n\t")
+            workflow_output.write(
+                f"<{location.name}, {{{','.join(sorted(datapair))}}},\n\t"
+            )
 
             _add_location(location, locations)
             for data_name, data in location.data.items():
