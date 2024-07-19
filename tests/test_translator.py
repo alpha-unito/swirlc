@@ -1,6 +1,10 @@
 import os
 import tempfile
-from tempfile import NamedTemporaryFile
+from pathlib import Path
+from tempfile import NamedTemporaryFile, TemporaryDirectory
+
+import wget
+import zipfile
 
 from swirlc.core.entity import (
     Location,
@@ -12,6 +16,7 @@ from swirlc.core.entity import (
     Data,
 )
 from swirlc.core.translator import AbstractTranslator
+from swirlc.translator import DAXTranslator
 from tests.utils.utils import get_sha1
 
 
@@ -95,3 +100,24 @@ def test_translate():
         translator.translate(workflow_fd, metadata_fd)
         assert get_sha1(workflow_fd.name) == "da39a3ee5e6b4b0d3255bfef95601890afd80709"
         assert get_sha1(metadata_fd.name) == "d5ff5195ce296fcd334b6cbb4366b0b2b3e34c88"
+
+
+def test_dax_translator():
+    """Test the `DAXTranslator` using the artifact of the `SWIRL` paper"""
+    zenodo_link = "https://zenodo.org/records/12523000/files/1000-genome.zip?download=1"
+    workdir = TemporaryDirectory()
+    with zipfile.ZipFile(wget.download(zenodo_link, out=workdir.name), "r") as zip_fd:
+        zip_fd.extractall(workdir.name)
+    translator = DAXTranslator(Path(workdir.name, "1000-genome", "DAX"))
+    with open(
+        os.path.join(workdir.name, "workflow.swirl"), "w"
+    ) as workflow_output, open(
+        os.path.join(workdir.name, "metadata.yml"), "w"
+    ) as metadata_output:
+        translator.translate(workflow_output, metadata_output)
+        assert (
+            get_sha1(workflow_output.name) == "da39a3ee5e6b4b0d3255bfef95601890afd80709"
+        )
+        assert (
+            get_sha1(metadata_output.name) == "7886757751841e501e9393cb0fd97b373d04b7f7"
+        )
