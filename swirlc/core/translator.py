@@ -150,3 +150,4 @@ class AbstractTranslator:
             },
             metadata_output,
         )
+        workflow_output.seek(0)
