@@ -70,7 +70,7 @@ class AbstractTranslator:
                     if data in port.data:
                         datapair.append(f"({port.name},{data})")
                         break
-            workflow_output.write(f"<{location.name}, {{{','.join(datapair)}}},\n\t")
+            workflow_output.write(f"<{location.name}, {{{','.join(sorted(datapair))}}},\n\t")
 
             _add_location(location, locations)
             for data_name, data in location.data.items():
@@ -88,7 +88,7 @@ class AbstractTranslator:
                         ):
                             copying_dataset.add(send)
             parallel_dataset_send = (
-                f"({' | '.join(copying_dataset)}) | " if copying_dataset else ""
+                f"({' | '.join(sorted(copying_dataset))}) | " if copying_dataset else ""
             )
             workflow_output.write(f"{parallel_dataset_send}")
             nof_steps = len(workflow.get_location_steps(location))
@@ -134,8 +134,8 @@ class AbstractTranslator:
                         ):
                             sends.add(send)
                 step_sep = " | " if j < nof_steps - 1 else ""
-                parallel_recvs = f"({' | '.join(recvs)})." if recvs else ""
-                parallel_sends = f".({' | '.join(sends)})" if sends else ""
+                parallel_recvs = f"({' | '.join(sorted(recvs))})." if recvs else ""
+                parallel_sends = f".({' | '.join(sorted(sends))})" if sends else ""
                 workflow_output.write(
                     f"({parallel_recvs}{exec}{parallel_sends}){step_sep}"
                 )
