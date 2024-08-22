@@ -1,6 +1,6 @@
 antlr4-python3-runtime==4.13.2
 black==24.8.0
-importlib_resources==6.4.2
+importlib_resources==6.4.4
 jsonschema==4.23.0
 referencing==0.35.1
 ruamel.yaml==0.18.6
