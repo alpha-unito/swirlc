@@ -1,0 +1,60 @@
+cff-version: 1.2.0
+message: "If you want to cite SWIRL, please refer to the article below."
+authors:
+  - family-names: "Colonnelli"
+    given-names: "Iacopo"
+    orcid: "https://orcid.org/0000-0001-9290-2017"
+  - family-names: "Mulone"
+    given-names: "Alberto"
+    orcid: "https://orcid.org/0009-0009-2600-613X"
+title: "SWIRL"
+version: 0.1
+url: "https://github.com/alpha-unito/swirlc"
+preferred-citation:
+  type: conference-paper
+  authors:
+    - family-names: "Colonnelli"
+      given-names: "Iacopo"
+      orcid: "https://orcid.org/0000-0001-9290-2017"
+    - family-names: "Medić"
+      given-names: "Doriana"
+      orcid: "https://orcid.org/0000-0002-7163-5375"
+    - family-names: "Mulone"
+      given-names: "Alberto"
+      orcid: "https://orcid.org/0009-0009-2600-613X"
+    - family-names: "Bono"
+      given-names: "Viviana"
+      orcid: "https://orcid.org/0000-0002-2533-0511"
+    - family-names: "Padovani"
+      given-names: "Luca"
+      orcid: "https://orcid.org/0000-0001-9097-1297"
+    - family-names: "Aldinucci"
+      given-names: "Marco"
+      orcid: "https://orcid.org/0000-0001-8788-0829"
+  collection-title: "Formal Methods. FM 2024"
+  collection-doi: 10.1007/978-3-031-71162-6
+  conference:
+    name: "Lecture Notes in Computer Science"
+  doi: 10.1007/978-3-031-71162-6_12
+  editors:
+    - family-names: "Platzer"
+      given-names: "André"
+      orcid: "https://orcid.org/0000-0001-7238-5710"
+    - family-names: "Rozier"
+      given-names: "Kristin Yvonne"
+      orcid: "https://orcid.org/0000-0002-6718-2828"
+    - family-names: "Pradella"
+      given-names: "Matteo"
+      orcid: "https://orcid.org/0000-0003-3039-1084"
+    - family-names: "Rossi"
+      given-names: "Matteo"
+      orcid: "https://orcid.org/000-0002-9193-9560"
+  publisher:
+    name: Springer Nature Switzerland
+    city: Cham
+    country: CH
+  start: 226
+  end: 244
+  title: "Introducing SWIRL: An Intermediate Representation Language for Scientific Workflows"
+  volume: 14933
+  year: 2024
