@@ -1,6 +1,31 @@
 # SWIRL: Scientific Workflow Intermediate Representation Language
 
-SWIRL is a low-level intermediate representation language for distributed scientific workflows. Unlike other product-agnostic workflow languages, SWIRL is not intended for human interaction but serves as a low-level compilation target for distributed workflow execution plans. It models the execution plan of a location-aware workflow graph as a distributed system with send/receive communication primitives. The optimised SWIRL representation can then be compiled into one or more self-contained executable bundles, making it adaptable to specific execution environments and embracing heterogeneity. This repository contains the reference SWIRL Compiler toolchain, called `swirlc`, written in Python 3 and relying on the [ANTLR](https://www.antlr.org/) parser generator.
+SWIRL is a low-level intermediate representation language for distributed scientific workflows. Unlike other product-agnostic workflow languages, SWIRL is not intended for human interaction but serves as a low-level compilation target for distributed workflow execution plans. It models the execution plan of a location-aware workflow graph as a distributed system with send/receive communication primitives. The optimised SWIRL representation can then be compiled into one or more self-contained executable bundles, making it adaptable to specific execution environments and embracing heterogeneity. This repository contains the reference SWIRL Compiler toolchain, called `swirlc`, written in Python 3 and relying on the [ANTLR](https://www.antlr.org/) parser generator. if you want to cite SWIRL, please use the reference below:
+
+```bibtex
+@inproceedings{24:fm:swirl,
+    title     = {Introducing SWIRL: An Intermediate Representation Language for Scientific Workflows},
+    author    = {Iacopo Colonnelli and
+                 Doriana Medi\'{c} and
+                 Alberto Mulone and
+                 Viviana Bono and
+                 Luca Padovani and
+                 Marco Aldinucci},
+    editor    = {Andr\'{e} Platzer and
+                 Kristin Yvonne Rozier and
+                 Matteo Pradella and
+                 Matteo Rossi},
+    doi       = {10.1007/978-3-031-71162-6_12},
+    year      = {2024},
+    booktitle = {Formal Methods. FM 2024},
+    volume    = {14933},
+    pages     = {226–-244},
+    publisher = {Springer Nature Switzerland},
+    address   = {Cham, Switzerland},
+    location  = {Milan, Italy},
+    series    = {Lecture Notes in Computer Science}
+}
+```
 
 ## Install
 
