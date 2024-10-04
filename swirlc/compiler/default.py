@@ -497,7 +497,7 @@ echo "Workflow execution terminated"
             self.functions.append(f"f{self.function_counter}")
             self.function_counter += 1
 
-    def recv(self, port: str, data_type: str, src: str, dst: str):
+    def recv(self, port: str, _data: str, data_type: str, src: str, dst: str):
         self.programs[self.current_location.name].write(
             f"""
     {self._get_indentation()}{self._get_thread(self.current_location.name)} = _thread(_recv, "{port}", str(Path("{self.current_location.workdir}").expanduser().absolute()), "{data_type}", "{src}")"""

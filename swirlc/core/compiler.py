@@ -98,7 +98,7 @@ class BaseCompiler:
         """After processing the first operand, but before processing the right operand of a par operator."""
         pass
 
-    def recv(self, port: str, data_type: str, src: str, dst: str) -> Any:
+    def recv(self, port: str, data: str, data_type: str, src: str, dst: str) -> Any:
         """Process the `recv` predicate."""
         pass
 
@@ -239,33 +239,19 @@ class CompileVisitor(SWIRLVisitor, ABC):
 
     def visitRecv(self, ctx: SWIRLParser.RecvContext):
         port = utils.get_name(ctx.port())
+        data = utils.get_name(ctx.data())
         src = utils.get_name(ctx.src())
         dst = utils.get_name(ctx.dst())
-        data_type = None
-        port_instance = self.workflow.ports.get(port, None)
-        if port_instance and port_instance.data:
-            # search in the dataset
-            data_name = next(iter(port_instance.data))
-            if data_name in self.workflow.locations[src].data:
-                data_type = self.workflow.locations[src].data[data_name].type
-            else:
-                for value in self.metadata["steps"].values():
-                    if info := value["outputs"].get(port, None):
-                        data_type = self.metadata["dependencies"][info["dataName"]][
-                            "type"
-                        ]
-                        break
-        else:
-            # search in the output steps
-            for value in self.metadata["steps"].values():
-                if "outputs" in value and (info := value["outputs"].get(port, None)):
-                    data_type = self.metadata["dependencies"][info["dataName"]]["type"]
-                    break
-        if data_type is None:
+
+        data_type = self.metadata["dependencies"].get(data, {}).get("type")
+        if not data_type:
             raise ValueError(
-                f"From port {port} did not find data source (nor dataset nor step outputs)"
+                f"No data source for input port '{port}' in 'recv' function"
             )
-        return self.compiler.recv(port, data_type, src, dst)
+
+        return self.compiler.recv(
+            port=port, data=data, data_type=data_type, src=src, dst=dst
+        )
 
     def visitSend(self, ctx: SWIRLParser.SendContext):
         data = utils.get_name(ctx.data())
