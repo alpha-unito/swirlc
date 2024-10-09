@@ -89,9 +89,10 @@ def test_translate():
             return workflow
 
     translator = ExampleTranslator()
-    with NamedTemporaryFile("w+") as workflow_fd, NamedTemporaryFile(
-        "w+"
-    ) as metadata_fd:
+    with (
+        NamedTemporaryFile("w+") as workflow_fd,
+        NamedTemporaryFile("w+") as metadata_fd,
+    ):
         translator.translate(workflow_fd, metadata_fd)
         assert get_sha1(workflow_fd.name) == "da39a3ee5e6b4b0d3255bfef95601890afd80709"
         assert get_sha1(metadata_fd.name) == "d5ff5195ce296fcd334b6cbb4366b0b2b3e34c88"

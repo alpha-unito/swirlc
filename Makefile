@@ -20,7 +20,7 @@ format-check:
 	black --diff --check swirlc tests
 
 pyupgrade:
-	pyupgrade --py3-only --py38-plus $(shell git ls-files | grep .py | grep -v swirlc/antlr)
+	pyupgrade --py3-only --py39-plus $(shell git ls-files | grep .py | grep -v swirlc/antlr)
 
 test:
 	python -m pytest -rs ${PYTEST_EXTRA}

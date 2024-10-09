@@ -45,11 +45,14 @@ def main(args):
                         raise Exception(
                             f"Output directory `{args.outdir}` does not exist"
                         )
-                    with open(
-                        os.path.join(args.outdir, "workflow.swirl"), "w"
-                    ) as workflow_output, open(
-                        os.path.join(args.outdir, "metadata.yml"), "w"
-                    ) as metadata_output:
+                    with (
+                        open(
+                            os.path.join(args.outdir, "workflow.swirl"), "w"
+                        ) as workflow_output,
+                        open(
+                            os.path.join(args.outdir, "metadata.yml"), "w"
+                        ) as metadata_output,
+                    ):
                         translator.translate(workflow_output, metadata_output)
                 else:
                     translator.translate(sys.stdout, sys.stdout)
