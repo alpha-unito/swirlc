@@ -78,6 +78,11 @@ swirlc compile [SWIRL_FILE] [METADATA_FILE]
 
 Note that all the target locations need to have the Python interpreter installed. 
 
+## Case studies 
+
+In this [artifact](https://zenodo.org/records/12523000), we describe how users can rely on swirlc to reproduce the 1000 Genomes workflow experiment.
+
+
 ## SWIRL Team
 
 Iacopo Colonnelli <iacopo.colonnelli@unito.it> (Designer and maintainer)  
