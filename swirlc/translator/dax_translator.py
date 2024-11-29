@@ -18,6 +18,7 @@ from swirlc.core.entity import (
     Data,
 )
 from swirlc.core.translator import AbstractTranslator
+from swirlc.log_handler import logger
 
 MANDATORY_FILES = ("replicas", "sites", "transformations", "workflow")
 
@@ -238,6 +239,11 @@ class DAXTranslator(AbstractTranslator):
                     (physical_path["site"], physical_path["pfn"])
                 )
                 location_name = location_binding_dax_swirl[physical_path["site"]]
+                if replica["lfn"] not in data_binding_dax_swirl.keys():
+                    logger.warning(
+                        f"The input data `{replica['lfn']}` is not used by any step"
+                    )
+                    continue
                 data_name = data_binding_dax_swirl[replica["lfn"]]
                 if location_name in workflow.locations.keys():
                     workflow.locations[location_name].data[data_name] = Data(
@@ -249,6 +255,11 @@ class DAXTranslator(AbstractTranslator):
         for transformation in transformations_config["transformations"]:
             for binding in transformation["sites"]:
                 location_name = location_binding_dax_swirl[binding["name"]]
+                if transformation["name"] not in dax_step_name_id.keys():
+                    logger.warning(
+                        f"The command `{transformation['name']}` is not used by any step"
+                    )
+                    continue
                 for dax_step_id in dax_step_name_id[transformation["name"]]:
                     step_name = step_binding_dax_swirl[dax_step_id]
                     workflow.steps[step_name].command = binding["pfn"]
