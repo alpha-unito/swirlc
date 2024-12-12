@@ -1,10 +1,8 @@
 from __future__ import annotations
 
-import glob
 import logging
-import os
 from pathlib import Path
-from typing import MutableMapping, MutableSequence
+from typing import Any, MutableMapping, MutableSequence
 
 from ruamel.yaml import YAML
 
@@ -18,6 +16,7 @@ from swirlc.core.entity import (
     Data,
 )
 from swirlc.core.translator import AbstractTranslator
+from swirlc.log_handler import logger
 
 MANDATORY_FILES = ("replicas", "sites", "transformations", "workflow")
 
@@ -26,8 +25,10 @@ DATA_TYPE = "file"
 
 
 def _open_yml(path):
+    logger.info(f"Opening {path}")
     with open(path) as fd:
         config = YAML(typ="safe").load(fd.read())
+    logger.info(f"Loaded {path}")
     if config["pegasus"] != "5.0.4":
         logging.warning(
             f"Pegasus version supported 5.0.4. "
@@ -44,22 +45,47 @@ def _get_key(searched: str, dictionary: MutableMapping[str, str]):
 
 
 class DAXTranslator(AbstractTranslator):
-    def __init__(self, dax_directory: Path):
-        if not os.path.isdir(dax_directory):
-            raise NotADirectoryError("DAXTranslator needs a directory")
-        glob_result = {}
-        for path in glob.glob(os.path.join(dax_directory, "*")):
-            path = Path(path)
-            glob_result.setdefault(path.stem, path)
-
-        if missing_files := (set(MANDATORY_FILES) - set(glob_result.keys())):
-            raise Exception(
-                f"Missing files in the directory {dax_directory}: {missing_files}"
+    def __init__(self, dax_path: str):
+        dax_path = Path(dax_path)
+        if not dax_path.exists():
+            raise Exception(f"Input file {dax_path} does not exist")
+        if dax_path.is_file():
+            dax_yml = _open_yml(dax_path)
+            for file in MANDATORY_FILES:
+                logger.info(f"Retrieving {file}")
+                if file == "workflow":
+                    self.workflow = {
+                        "jobs": dax_yml["jobs"],
+                        "jobDependencies": dax_yml["jobDependencies"],
+                    }
+                elif file == "sites":
+                    self.sites = {"sites": dax_yml.get("sites")}
+                elif file == "transformations":
+                    self.transformations = dax_yml["transformationCatalog"]
+                elif file == "replicas":
+                    self.replicas = dax_yml["replicaCatalog"]
+                else:
+                    raise Exception(f"File {file} does not exist")
+        elif dax_path.is_dir():
+            workflow_files = {}
+            for path in dax_path.iterdir():
+                workflow_files.setdefault(path.stem, path)
+            if missing_files := (set(MANDATORY_FILES) - set(workflow_files.keys())):
+                raise Exception(
+                    f"Missing files in the directory {dax_path}: {missing_files}"
+                )
+            self.replicas: MutableMapping[str, Any] = _open_yml(
+                workflow_files["replicas"]
             )
-        self.replicas_path: Path = glob_result["replicas"]
-        self.sites_path: Path = glob_result["sites"]
-        self.transformations_path: Path = glob_result["transformations"]
-        self.workflow_path: Path = glob_result["workflow"]
+            self.sites: MutableMapping[str, Any] = _open_yml(workflow_files["sites"])
+            self.transformations: MutableMapping[str, Any] = _open_yml(
+                workflow_files["transformations"]
+            )
+            self.workflow: MutableMapping[str, Any] = _open_yml(
+                workflow_files["workflow"]
+            )
+        else:
+            raise Exception(f"Input file {dax_path} is not a file or a directory")
 
     def _translate(self) -> Workflow:
         # Dax-Pegasus notation:
@@ -90,8 +116,7 @@ class DAXTranslator(AbstractTranslator):
         binding_collector_step = {}
 
         # Visit workflow yaml
-        workflow_config = _open_yml(self.workflow_path.as_posix())
-        for replica in workflow_config["jobs"]:
+        for replica in self.workflow["jobs"]:
             dax_step_name_id.setdefault(replica["name"], []).append(replica["id"])
             swirl_step_name = f"s{len(step_binding_dax_swirl)}"
             step_binding_dax_swirl[replica["id"]] = swirl_step_name
@@ -186,8 +211,7 @@ class DAXTranslator(AbstractTranslator):
             ]
 
         # Get locations
-        sites_config = _open_yml(self.sites_path.as_posix())
-        for site in sites_config["sites"]:
+        for site in self.sites["sites"]:
             location_binding_dax_swirl[site["name"]] = (
                 f"l{len(location_binding_dax_swirl)}"
             )
@@ -228,11 +252,9 @@ class DAXTranslator(AbstractTranslator):
             workflow.add_location(location)
 
         # Initial dataset
-        replicas_config = _open_yml(self.replicas_path.as_posix())
-
         # logical_data_name : [ (location_name, physical_data_name) ]
         data_locations = {}
-        for replica in replicas_config["replicas"]:
+        for replica in self.replicas["replicas"]:
             for physical_path in replica["pfns"]:
                 data_locations.setdefault(replica["lfn"], []).append(
                     (physical_path["site"], physical_path["pfn"])
@@ -245,8 +267,7 @@ class DAXTranslator(AbstractTranslator):
                     )
 
         # Binding steps and locations
-        transformations_config = _open_yml(self.transformations_path.as_posix())
-        for transformation in transformations_config["transformations"]:
+        for transformation in self.transformations["transformations"]:
             for binding in transformation["sites"]:
                 location_name = location_binding_dax_swirl[binding["name"]]
                 for dax_step_id in dax_step_name_id[transformation["name"]]:

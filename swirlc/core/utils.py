@@ -24,9 +24,9 @@ def get_flow(
     )
 
 
-def get_pair(ctx: SWIRLParser.DataPairContext) -> tuple[str, str]:
-    return (get_name(ctx.port()), get_name(ctx.data()))
-
-
 def get_name(el: antlr4.ParserRuleContext) -> str:
     return el.ID().getText()
+
+
+def get_pair(ctx: SWIRLParser.DataPairContext) -> tuple[str, str]:
+    return (get_name(ctx.port()), get_name(ctx.data()))
