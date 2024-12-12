@@ -37,7 +37,7 @@ The `swirlc` package is available on [PyPi](https://pypi.org/project/swirlc/), s
 pip install swirlc
 ```
 
-Please note that the SWIRL compiler requires `python >= 3.8`. Then you can use it through the `swirlc` CLI.
+Please note that the SWIRL compiler requires `python >= 3.9`. Then you can use it through the `swirlc` CLI.
 
 ### Docker
 

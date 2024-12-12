@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 from pathlib import PurePath
-from typing import Any, MutableMapping, MutableSequence
+from typing import Any
+from collections.abc import MutableMapping, MutableSequence
 
 from swirlc.core.utils import flatten_list
 
