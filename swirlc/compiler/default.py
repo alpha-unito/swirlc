@@ -46,7 +46,6 @@ global_vars = """
 
 BUF_SIZE = 8192
 
-available_port_data = {}
 condition: Condition = Condition()
 connections: MutableMapping[str, MutableMapping[str, socket]] = {}
 ports: MutableMapping[str, Any] = {}
@@ -140,7 +139,6 @@ exec_function = """def _exec(step_name: str, step_display_name: str, input_port_
 
 init_dataset_function = """def _init_dataset(port_name: str, data: str):
     ports[port_name] = data
-    available_port_data[port_name] = Event()
     available_port_data[port_name].set()
 """
 
@@ -192,7 +190,7 @@ recv_function = """def _recv(port: str, workdir: str, data_type: str, src: str) 
             logger.debug(f"Received data for port {port} from location {src}")
         buf.seek(0)
         ports[port] = buf.read().decode("utf-8")
-        available_port_data.setdefault(port, Event()).set()
+        available_port_data[port].set()
     elif data_type == "file":
         filename = connections[src][port].recv(1024).decode()
         connections[src][port].send("ack".encode("utf-8"))
@@ -205,7 +203,7 @@ recv_function = """def _recv(port: str, workdir: str, data_type: str, src: str) 
             fd.write(data)
         fd.close()
         ports[port] = filepath
-        available_port_data.setdefault(port, Event()).set()
+        available_port_data[port].set()
         logger.debug(f"Received file '{ports[port]}' on port {port}")
     elif data_type == "directory":
         raise NotImplementedError(f"Recv directories not implemented yet")
@@ -269,6 +267,7 @@ class DefaultTarget(BaseCompiler):
         self.current_location: Location | None = None
         self.functions = []
         self.function_counter = 0
+        self.location_ports = set()
         self.parallel_step_counter = 0
         # If `parathetized` attribute is to True it means that an open bracket has been encountered
         # but not yet its corresponding closed bracket
@@ -289,6 +288,7 @@ class DefaultTarget(BaseCompiler):
     ):
         for port_name, data in dataset:
             self.current_location.data[data.name] = data
+            self.location_ports.add(port_name)
             self.programs[self.current_location.name].write(
                 f"""
     _init_dataset("{port_name}", "{data.value}")"""
@@ -345,10 +345,19 @@ class DefaultTarget(BaseCompiler):
                 for name, location in self.workflow.locations.items()
             ]
         )
+        ports = ",\n".join(
+            [
+                f"'{self.location_ports.pop()}' : Event()"
+                for _ in range(len(self.location_ports))
+            ]
+        )
         self.programs[self.current_location.name].write(
             f"""
 locations = {{
 {locations}
+}}
+available_port_data = {{
+{ports}
 }}
 """
         )
@@ -467,15 +476,11 @@ echo "Workflow execution terminated"
             if isinstance(arg, Port)
         ]
 
-        outputs = flow[1]
-        output_port_name = next(iter(outputs))[0] if outputs else ""
+        if output_port_name := next(iter(flow[1]))[0] if flow[1] else "":
+            self.location_ports.add(output_port_name)
         self.programs[self.current_location.name].write(
             f"""
-    {self._get_indentation()}available_port_data.setdefault("{output_port_name}", Event())
-    {self._get_indentation()}input_port_names = {[port_name for port_name, _ in flow[0]]}
-    {self._get_indentation()}for port_name in input_port_names:
-    {self._get_indentation()}    available_port_data.setdefault(port_name, Event())
-    {self._get_indentation()}_exec("{step.name}", "{step.display_name}", input_port_names, "{output_port_name}", "{step.processors[output_port_name].type if output_port_name else ""}", "{step.processors[output_port_name].glob if output_port_name else ""}", "{step.command}", {arguments}, {arguments_from_port}, str(Path("{self.current_location.workdir}").expanduser().absolute()))"""
+    {self._get_indentation()}_exec("{step.name}", "{step.display_name}", {[port_name for port_name, _ in flow[0]]}, "{output_port_name}", "{step.processors[output_port_name].type if output_port_name else ""}", "{step.processors[output_port_name].glob if output_port_name else ""}", "{step.command}", {arguments}, {arguments_from_port}, str(Path("{self.current_location.workdir}").expanduser().absolute()))"""
         )
 
     def par(self) -> None:
@@ -498,6 +503,7 @@ echo "Workflow execution terminated"
             self.function_counter += 1
 
     def recv(self, port: str, data_type: str, src: str, dst: str):
+        self.location_ports.add(port)
         self.programs[self.current_location.name].write(
             f"""
     {self._get_indentation()}{self._get_thread(self.current_location.name)} = _thread(_recv, "{port}", str(Path("{self.current_location.workdir}").expanduser().absolute()), "{data_type}", "{src}")"""
