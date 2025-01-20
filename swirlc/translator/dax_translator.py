@@ -4,7 +4,7 @@ import glob
 import logging
 import os
 from pathlib import Path
-from typing import MutableMapping, MutableSequence
+from collections.abc import MutableMapping, MutableSequence
 
 from ruamel.yaml import YAML
 

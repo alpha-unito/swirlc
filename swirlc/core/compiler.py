@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 from abc import ABC
-from typing import Any, MutableMapping, MutableSequence
+from typing import Any
+from collections.abc import MutableMapping, MutableSequence
 
 from swirlc.antlr.SWIRLParser import SWIRLParser
 from swirlc.antlr.SWIRLVisitor import SWIRLVisitor

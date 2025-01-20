@@ -4,7 +4,8 @@ import os
 import stat
 import sys
 from pathlib import Path
-from typing import MutableMapping, MutableSequence, TextIO
+from typing import TextIO
+from collections.abc import MutableMapping, MutableSequence
 
 from black import WriteBack
 
@@ -367,7 +368,7 @@ if __name__ == '__main__':
                 Path(f"{self.current_location.name}.py"),
                 fast=False,
                 mode=black.mode.Mode(
-                    target_versions={black.mode.TargetVersion.PY38}, line_length=88
+                    target_versions={black.mode.TargetVersion.PY39}, line_length=88
                 ),
                 write_back=WriteBack.YES,
             )

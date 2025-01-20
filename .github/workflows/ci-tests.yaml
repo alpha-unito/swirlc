@@ -46,7 +46,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: "3.13"
           cache: pip
           cache-dependency-path: |
             requirements.txt
@@ -63,7 +63,7 @@ jobs:
     strategy:
       matrix:
         on: [ "ubuntu-22.04"]
-        python: [ "3.8", "3.9", "3.10", "3.11", "3.12" ]
+        python: [ "3.9", "3.10", "3.11", "3.12", "3.13" ]
     runs-on: ${{ matrix.on }}
     env:
       TOXENV: ${{ format('py{0}-unit', matrix.python) }}
