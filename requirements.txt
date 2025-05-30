@@ -3,4 +3,4 @@ black==25.1.0
 importlib_resources==6.4.5
 jsonschema==4.23.0
 referencing==0.35.1
-ruamel.yaml==0.18.10
+ruamel.yaml==0.18.12
