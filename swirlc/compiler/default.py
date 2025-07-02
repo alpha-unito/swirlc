@@ -381,7 +381,8 @@ if __name__ == '__main__':
     def end_par(self) -> None:
         self.parallel_step_counter -= 1
         if (
-            self.thread_stacks[self.current_location.name].get_group()
+            self.current_location.name in self.thread_stacks.keys()
+            and self.thread_stacks[self.current_location.name].get_group()
             and not self.parathetized
         ):
             self.programs[self.current_location.name].write(
@@ -407,7 +408,10 @@ if __name__ == '__main__':
 
     def end_paren(self):
         self.parathetized = False
-        if self.thread_stacks[self.current_location.name].get_group():
+        if (
+            self.current_location.name in self.thread_stacks.keys()
+            and self.thread_stacks[self.current_location.name].get_group()
+        ):
             self.programs[self.current_location.name].write(
                 f"""
     {self._get_indentation()}_wait([{', '.join(self.thread_stacks[self.current_location.name].delete_group())}])"""
@@ -480,7 +484,8 @@ echo "Workflow execution terminated"
 
     def par(self) -> None:
         if (
-            self.thread_stacks[self.current_location.name].get_group()
+            self.current_location.name in self.thread_stacks.keys()
+            and self.thread_stacks[self.current_location.name].get_group()
             and not self.parathetized
         ):
             self.programs[self.current_location.name].write(
