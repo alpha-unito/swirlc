@@ -1,3 +1,13 @@
-<ld, {(p1,d1)}, exec(s1,{(p1,d1)}->{(p2,d2)},{ld}).(send(d2->p2,ld,l1) | send(d2->p2,ld,l2))> |
-<l1, {}, recv(p2,ld,l1).exec(s2,{(p2,d2)}->{},{l1})> |
-<l2, {}, recv(p2,ld,l2).exec(s3,{(p2,d2)}->{},{l2})>
+< ld,
+  {(p1, d1)},
+  exec(s1, {(p1, d1)} -> {(p2, d2)}, {ld})
+  .
+  (
+    send(d2 -> p2, ld, l1) |
+    send(d2 -> p2, ld, l2)
+  )
+> |
+
+
+<l1, {}, recv(p2, ld, l1).exec(s2, {(p2, d2)} -> {}, {l1})> |
+<l2, {}, recv(p2, ld, l2).exec(s3, {(p2, d2)} -> {}, {l2})>

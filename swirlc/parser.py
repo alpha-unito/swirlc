@@ -33,7 +33,7 @@ compile_parser.add_argument(
     "--outdir",
     "-o",
     type=str,
-    default="build",
+    default=".",
     help="The output directory where the compiled program will be stored",
 )
 

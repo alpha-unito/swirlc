@@ -65,7 +65,7 @@ class Location:
                 ]
             )
         elif self.connection_type is None:
-            return f"cd {self.workdir} && " if self.workdir else "" + cmd
+            return cmd
         else:
             raise NotImplementedError(
                 f"Connection type: {self.connection_type} not supported"

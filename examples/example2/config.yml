@@ -5,11 +5,11 @@ steps:
     command: cat
     arguments:
       - valueFrom: p1
-      - value: "> hello.txt"
+      - value: "> output.txt"
     outputs:
       p2:
         dataName: d2
-        glob: "hello.txt"
+        glob: "world.txt"
   s2:
     displayName: "SecondStep"
     command: cat
@@ -25,15 +25,15 @@ locations:
   ld:
     hostname: 127.0.0.1
     port: 8080
+    workdir: .
   l1:
     hostname: 127.0.0.1
     port: 8081
+    workdir: .
   l2:
     hostname: 127.0.0.1
     port: 8082
-  l3:
-    hostname: 127.0.0.1
-    port: 8083
+    workdir: .
 
 dependencies:
   d1:

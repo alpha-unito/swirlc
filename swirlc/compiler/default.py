@@ -419,6 +419,7 @@ if __name__ == '__main__':
 
     def end_workflow(self) -> None:
         script_name = f"{self.output_dir}/run.sh"
+
         copy_traces = " &\n".join(
             [
                 loc.get_copy_command(f"{self.output_dir}/{loc.name}.py", f"{loc.hostname}:{loc.workdir}")
@@ -428,8 +429,10 @@ if __name__ == '__main__':
                 )
             ]
         )
+
         if copy_traces:
             copy_traces += " &\nwait"
+            
         commands = (
             " &\n".join(
                 [
