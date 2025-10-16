@@ -1,21 +1,18 @@
 version: v1.0
 steps:
   s1:
-    displayName: "FirstStep"
     command: echo
     arguments:
-      - valueFrom: p1
+      - valueFrom: d0
       - value: Hello
   s2:
-    displayName: "SecondStep"
     command: echo
     arguments:
-      - valueFrom: p2
+      - valueFrom: d1
   s3:
-    displayName: "ThirdStep"
     command: echo
     arguments:
-      - valueFrom: p3
+      - valueFrom: d2
 
 
 locations:
@@ -34,12 +31,6 @@ locations:
 
 
 dependencies:
-  d0: 
-    type: string
-    value: data1
-  d1:
-    type: string
-    value: data2
-  d2:
-    type: string
-    value: data3
+  d0: first_data.txt
+  d1: my_data.txt
+  d2: another_data.txt
