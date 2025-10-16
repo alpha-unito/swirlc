@@ -29,6 +29,13 @@ compile_parser.add_argument(
     choices=swirlc.compiler.targets,
     help="The compilation target",
 )
+compile_parser.add_argument(
+    "--outdir",
+    "-o",
+    type=str,
+    default="build",
+    help="The output directory where the compiled program will be stored",
+)
 
 # Swirl translator
 translate_parser = subparsers.add_parser(

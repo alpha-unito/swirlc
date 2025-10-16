@@ -27,7 +27,7 @@ def main(args):
             with open(args.workflow) as f:
                 code = f.read()
             if args.target in swirlc.compiler.targets:
-                target = swirlc.compiler.targets[args.target]()
+                target = swirlc.compiler.targets[args.target](args.outdir)
                 lexer = SWIRLLexer(antlr4.InputStream(code))
                 tokens = antlr4.CommonTokenStream(lexer)
                 tree = SWIRLParser(tokens).workflow()

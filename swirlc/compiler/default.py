@@ -265,7 +265,7 @@ class ThreadStack:
 
 
 class DefaultTarget(BaseCompiler):
-    def __init__(self):
+    def __init__(self, output_dir: str | None = None):
         super().__init__()
         self.current_location: Location | None = None
         self.functions = []
@@ -277,6 +277,7 @@ class DefaultTarget(BaseCompiler):
         self.programs: MutableMapping[str, TextIO] = {}
         self.workflow: DistributedWorkflow | None = None
         self.thread_stacks: MutableMapping[str, ThreadStack] = {}
+        self.output_dir = output_dir or os.getcwd()
 
     def _get_indentation(self):
         return " " * 4 if self.parallel_step_counter > 0 else ""
@@ -298,7 +299,7 @@ class DefaultTarget(BaseCompiler):
     def begin_location(self, location: Location) -> None:
         self.current_location = location
         self.programs[self.current_location.name] = open(
-            f"{self.current_location.name}.py", "w"
+            f"{self.output_dir}/{self.current_location.name}.py", "w"
         )
         self.programs[self.current_location.name].write(preamble)
         location = self.workflow.locations[self.current_location.name]
@@ -329,6 +330,7 @@ class DefaultTarget(BaseCompiler):
 
     def begin_workflow(self, workflow: Workflow) -> None:
         self.workflow = workflow
+        Path(self.output_dir).mkdir(parents=True, exist_ok=True)
 
     def choice(self):
         raise NotImplementedError("Choice is not implemented yet")
@@ -365,7 +367,7 @@ if __name__ == '__main__':
             import black
 
             black.format_file_in_place(
-                Path(f"{self.current_location.name}.py"),
+                Path(f"{self.output_dir}/{self.current_location.name}.py"),
                 fast=False,
                 mode=black.mode.Mode(
                     target_versions={black.mode.TargetVersion.PY39}, line_length=88
@@ -416,10 +418,10 @@ if __name__ == '__main__':
             self.thread_stacks[self.current_location.name].add_group()
 
     def end_workflow(self) -> None:
-        script_name = "run.sh"
+        script_name = f"{self.output_dir}/run.sh"
         copy_traces = " &\n".join(
             [
-                loc.get_copy_command(f"{loc.name}.py", f"{loc.hostname}:{loc.workdir}")
+                loc.get_copy_command(f"{self.output_dir}/{loc.name}.py", f"{loc.hostname}:{loc.workdir}")
                 for loc in self.workflow.locations.values()
                 if loc.get_copy_command(
                     f"{loc.name}.py", f"{loc.hostname}:{loc.workdir}"
@@ -437,7 +439,7 @@ if __name__ == '__main__':
             )
             + " &"
         )
-        with open(script_name, "w") as f:
+        with open(f"{script_name}", "w") as f:
             f.write(
                 f"""{bash_header}
 
