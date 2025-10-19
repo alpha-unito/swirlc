@@ -16,7 +16,7 @@ SWIRL is a low-level intermediate representation language for distributed scient
                  Matteo Pradella and
                  Matteo Rossi},
     doi       = {10.1007/978-3-031-71162-6_12},
-    year      = {2024},
+    year      = {2025},
     booktitle = {Formal Methods. FM 2024},
     volume    = {14933},
     pages     = {226–-244},
