@@ -1,0 +1,49 @@
+version: v1.0
+
+locations:
+  location0:
+    hostname: 127.0.0.1
+    port: 8080
+    workdir: /workdir
+  location1:
+    hostname: 127.0.0.1
+    port: 8081
+    workdir: /workdir
+  location2:
+    hostname: 127.0.0.1
+    port: 8082
+    workdir: /workdir
+  location3:
+    hostname: 127.0.0.1
+    port: 8083
+    workdir: /workdir
+  location4:
+    hostname: 127.0.0.1
+    port: 8084
+    workdir: /workdir
+  location5:
+    hostname: 127.0.0.1
+    port: 8085
+    workdir: /workdir
+  location6:
+    hostname: 127.0.0.1
+    port: 8086
+    workdir: /workdir
+  location7:
+    hostname: 127.0.0.1
+    port: 8087
+    workdir: /workdir
+  location8:
+    hostname: 127.0.0.1
+    port: 8088
+    workdir: /workdir
+  location9:
+    hostname: 127.0.0.1
+    port: 8089
+    workdir: /workdir
+
+dependencies:
+  d1:
+    type: file
+    value: /data/message.txt
+    

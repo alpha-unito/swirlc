@@ -1,0 +1,23 @@
+
+<location1, {(p1, d1)}, send(d1->p1,location1,location0)> |
+<location2, {(p2, d1)}, send(d1->p2,location2,location0)> |
+<location3, {(p3, d1)}, send(d1->p3,location3,location0)> |
+<location4, {(p4, d1)}, send(d1->p4,location4,location0)> |
+<location5, {(p5, d1)}, send(d1->p5,location5,location0)> |
+<location6, {(p6, d1)}, send(d1->p6,location6,location0)> |
+<location7, {(p7, d1)}, send(d1->p7,location7,location0)> |
+<location8, {(p8, d1)}, send(d1->p8,location8,location0)> |
+<location9, {(p9, d1)}, send(d1->p9,location9,location0)> |
+<location0, {},
+  (
+    recv(p1,location1,location0) |
+    recv(p2,location2,location0) |
+    recv(p3,location3,location0) |
+    recv(p4,location4,location0) |
+    recv(p5,location5,location0) |
+    recv(p6,location6,location0) |
+    recv(p7,location7,location0) |
+    recv(p8,location8,location0) |
+    recv(p9,location9,location0)
+  )
+>
