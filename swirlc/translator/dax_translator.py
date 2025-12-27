@@ -112,8 +112,8 @@ class DAXTranslator(AbstractTranslator):
                         swirl_data_name
                     )
                     if data["stageOut"]:
-                        # Generate a unique id for the collector step based on the DAX id of the previous step
-                        collect_id = "COLLECT-" + replica["id"]
+                        # Generate a unique id for the collector step
+                        collect_id = f"COLLECT-{replica['id']}-{swirl_data_name}"
                         dax_step_name_id.setdefault(
                             f"{replica['name']}-{swirl_data_name}-collector", []
                         ).append(collect_id)
