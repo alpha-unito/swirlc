@@ -16,7 +16,7 @@ pred        :   exec | send | recv;
 // Functions
 exec        : 'exec(' step ',' flow ',' mapping ')';
 send        : 'send(' data '->' port ',' src ',' dst ')';
-recv        : 'recv(' port ',' src ',' dst ')';
+recv        : 'recv(' port '->' data ',' src ',' dst ')';
 
 // Sets
 dataPair    : '(' port ',' data ')';
