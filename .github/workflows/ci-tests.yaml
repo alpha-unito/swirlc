@@ -16,7 +16,7 @@ jobs:
     permissions:
       security-events: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: github/codeql-action/init@v4
         with:
           config-file: .github/codeql/config.yml
@@ -26,7 +26,7 @@ jobs:
     name: "SWIRL Compiler Docker image tests"
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: docker/setup-qemu-action@v3
       - uses: docker/setup-buildx-action@v3
       - name: "Build Docker image"
@@ -43,7 +43,7 @@ jobs:
     env:
       TOXENV: ${{ matrix.step }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: actions/setup-python@v6
         with:
           python-version: "3.13"
@@ -68,7 +68,7 @@ jobs:
     env:
       TOXENV: ${{ format('py{0}-unit', matrix.python) }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python }}
