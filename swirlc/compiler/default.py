@@ -44,15 +44,11 @@ from typing import Any, MutableMapping, MutableSequence
 global_vars = """
 
 BUF_SIZE = 8192
-OUT_DIR = str(Path("{{location_out_dir}}").expanduser().absolute())
-SCRATCH_DIR = str(Path("{{location_scratch_dir}}").expanduser().absolute())
-
 available_port_data = {}
 condition: Condition = Condition()
 connections: MutableMapping[str, MutableMapping[str, socket]] = {}
 ports: MutableMapping[str, Any] = {}
 stopping: bool = False
-
 
 logger = logging.getLogger("swirlc")
 defaultStreamHandler = logging.StreamHandler()
@@ -227,22 +223,19 @@ wait_function = """def _wait(threads: MutableSequence[Thread]):
         t.join()
 """
 
-
-preamble = Template(
-    "\n".join(
-        [
-            python_header,
-            imports,
-            global_vars,
-            accept_function,
-            exec_function,
-            init_dataset_function,
-            send_function,
-            recv_function,
-            thread_function,
-            wait_function,
-        ]
-    )
+preamble = "\n".join(
+    [
+        python_header,
+        imports,
+        global_vars,
+        accept_function,
+        exec_function,
+        init_dataset_function,
+        send_function,
+        recv_function,
+        thread_function,
+        wait_function,
+    ]
 )
 
 
@@ -301,12 +294,7 @@ class DefaultTarget(BaseCompiler):
         self.programs[self.current_location.name] = open(
             os.path.join(self.outdir, f"{self.current_location.name}.py"), "w"
         )
-        self.programs[self.current_location.name].write(
-            preamble.render(
-                location_scratch_dir=self.current_location.workdir,
-                location_out_dir=self.current_location.outdir,
-            )
-        )
+        self.programs[self.current_location.name].write(preamble)
         location = self.workflow.locations[self.current_location.name]
         self.programs[self.current_location.name].write(f"""def main():
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -336,7 +324,18 @@ class DefaultTarget(BaseCompiler):
         raise NotImplementedError("Choice is not implemented yet")
 
     def end_location(self) -> None:
-        self.programs[self.current_location.name].write("""
+        out_dir = (
+            f'str(Path("{self.current_location.outdir}").expanduser().absolute())'
+            if self.current_location.outdir
+            else "os.getcwd()"
+        )
+        scratch_dir = (
+            f'str(Path("{self.current_location.workdir}").expanduser().absolute())'
+            if self.current_location.workdir
+            else "os.getcwd()"
+        )
+        self.programs[self.current_location.name].write(
+            """
     logger.info("Terminated trace")
     global stopping
     stopping = True""")
@@ -350,8 +349,13 @@ class DefaultTarget(BaseCompiler):
 locations = {{
 {locations}
 }}
-""")
-        self.programs[self.current_location.name].write("""
+
+OUT_DIR = {out_dir}
+SCRATCH_DIR = {scratch_dir}
+"""
+        )
+        self.programs[self.current_location.name].write(
+            """
 if __name__ == '__main__':
     main()
 """)
