@@ -123,6 +123,7 @@ class DAXTranslator(AbstractTranslator):
                         swirl_step_args[swirl_collect_step_name] = [
                             "-r",
                             swirl_data_name,
+                            "OUT_DIR",
                         ]
                         # Add output port of previous step as input of the collector step
                         swirl_input_steps.setdefault(
@@ -261,8 +262,5 @@ class DAXTranslator(AbstractTranslator):
                     ):
                         workflow.map(
                             workflow.steps[c], workflow.locations[location_name]
-                        )
-                        workflow.steps[c].arguments.append(
-                            workflow.locations[location_name].outdir
                         )
         return workflow
