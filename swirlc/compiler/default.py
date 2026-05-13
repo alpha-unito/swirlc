@@ -267,7 +267,8 @@ class ThreadStack:
 class DefaultTarget(BaseCompiler):
     def __init__(self, output_dir: str | None = None):
         super().__init__()
-        self.current_location: Location | None = None
+        self._current_location: Location | None = None
+        self._workflow: DistributedWorkflow | None = None
         self.functions = []
         self.function_counter = 0
         self.parallel_step_counter = 0
@@ -275,9 +276,26 @@ class DefaultTarget(BaseCompiler):
         # but not yet its corresponding closed bracket
         self.parathetized = False
         self.programs: MutableMapping[str, TextIO] = {}
-        self.workflow: DistributedWorkflow | None = None
         self.thread_stacks: MutableMapping[str, ThreadStack] = {}
         self.output_dir = output_dir or os.getcwd()
+
+    @property
+    def current_location(self) -> Location:
+        assert self._current_location is not None
+        return self._current_location
+
+    @current_location.setter
+    def current_location(self, value: Location | None) -> None:
+        self._current_location = value
+
+    @property
+    def workflow(self) -> DistributedWorkflow:
+        assert self._workflow is not None
+        return self._workflow
+
+    @workflow.setter
+    def workflow(self, value: DistributedWorkflow | None) -> None:
+        self._workflow = value
 
     def _get_indentation(self):
         return " " * 4 if self.parallel_step_counter > 0 else ""
@@ -333,7 +351,10 @@ class DefaultTarget(BaseCompiler):
         Path(self.output_dir).mkdir(parents=True, exist_ok=True)
 
     def choice(self):
-        raise NotImplementedError("Choice is not implemented yet")
+        self.programs[self.current_location.name].write(
+            f"""#    choice here"""
+        )
+        # raise NotImplementedError("Choice is not implemented yet")
 
     def end_location(self) -> None:
         self.programs[self.current_location.name].write(
