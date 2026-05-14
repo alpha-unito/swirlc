@@ -7,6 +7,8 @@ from collections.abc import MutableMapping, MutableSequence
 from pathlib import Path
 from typing import TextIO
 
+from black import WriteBack
+
 from swirlc.core.compiler import BaseCompiler
 from swirlc.core.entity import Data, DistributedWorkflow, Location, Port, Step, Workflow
 from swirlc.log_handler import logger
@@ -334,8 +336,7 @@ class DefaultTarget(BaseCompiler):
             if self.current_location.workdir
             else "os.getcwd()"
         )
-        self.programs[self.current_location.name].write(
-            """
+        self.programs[self.current_location.name].write("""
     logger.info("Terminated trace")
     global stopping
     stopping = True""")
@@ -352,10 +353,8 @@ locations = {{
 
 OUT_DIR = {out_dir}
 SCRATCH_DIR = {scratch_dir}
-"""
-        )
-        self.programs[self.current_location.name].write(
-            """
+""")
+        self.programs[self.current_location.name].write("""
 if __name__ == '__main__':
     main()
 """)
