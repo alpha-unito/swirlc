@@ -368,7 +368,7 @@ if __name__ == '__main__':
                 Path(self.outdir, f"{self.current_location.name}.py"),
                 fast=False,
                 mode=black.mode.Mode(
-                    target_versions={black.mode.TargetVersion.PY39}, line_length=88
+                    target_versions={black.mode.TargetVersion.PY310}, line_length=88
                 ),
                 write_back=WriteBack.YES,
             )
