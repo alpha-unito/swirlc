@@ -3,6 +3,16 @@
   "$id": "schemas/config/v1.0/config_schema.json",
   "type": "object",
   "$defs": {
+    "choice": {
+      "type": "object",
+      "properties": {
+        "condition": {
+          "type": "string",
+          "description": "Python expression returning bool. Port values available as local variables (e.g. p1, p2)."
+        }
+      },
+      "additionalProperties": false
+    },
     "dependency": {
       "type": "object",
       "properties": {
@@ -12,9 +22,10 @@
             "string",
             "int",
             "bool",
-            "file"
+            "file",
+            "stdout"
           ],
-          "description": "Data type. Valid types: (string, int, bool, file)"
+          "description": "Data type. Valid types: (string, int, bool, file, stdout)"
         },
         "value": {
           "type": "string",
@@ -135,6 +146,15 @@
       "patternProperties": {
         "^[a-z][a-zA-Z0-9]*$": {
           "$ref": "#/$defs/step"
+        }
+      },
+      "additionalProperties": false
+    },
+    "choices": {
+      "type": "object",
+      "patternProperties": {
+        "^[a-z][a-zA-Z0-9]*$": {
+          "$ref": "#/$defs/choice"
         }
       },
       "additionalProperties": false

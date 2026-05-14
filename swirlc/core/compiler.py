@@ -19,7 +19,7 @@ from swirlc.core.entity import (
 
 
 class BaseCompiler:
-    def begin_choice(self) -> None:
+    def begin_choice(self, choice_id: str, condition: str) -> None:
         """Before processing the left operand of a choice operator."""
         pass
 
@@ -107,6 +107,10 @@ class BaseCompiler:
         """Process the `send` predicate."""
         pass
 
+    def send_noop(self, port: str, src: str, dst: str) -> None:
+        """Process a noop `send` (data token `0`)."""
+        pass
+
     def seq(self) -> Any:
         """After processing the first operand, but before processing the right operand of a seq operator."""
         pass
@@ -122,6 +126,7 @@ class CompileVisitor(SWIRLVisitor, ABC):
         self.compiler: BaseCompiler = compiler
         self.metadata: MutableMapping[str, Any] = metadata
         self.workflow: DistributedWorkflow = DistributedWorkflow()
+        self._channel_data_type: MutableMapping[str, str] = {}
         for name, settings in self.metadata["locations"].items():
             self.workflow.add_location(
                 Location(
@@ -256,12 +261,16 @@ class CompileVisitor(SWIRLVisitor, ABC):
                             "type"
                         ]
                         break
+                if data_type is None and data_name in self.metadata["dependencies"]:
+                    data_type = self.metadata["dependencies"][data_name]["type"]
         else:
             # search in the output steps
             for value in self.metadata["steps"].values():
                 if "outputs" in value and (info := value["outputs"].get(port, None)):
                     data_type = self.metadata["dependencies"][info["dataName"]]["type"]
                     break
+            if data_type is None:
+                data_type = self._channel_data_type.get(port)
         if data_type is None:
             raise ValueError(
                 f"From port {port} did not find data source (nor dataset nor step outputs)"
@@ -273,9 +282,11 @@ class CompileVisitor(SWIRLVisitor, ABC):
         port = utils.get_name(ctx.port())
         src = utils.get_name(ctx.src())
         dst = utils.get_name(ctx.dst())
-        return self.compiler.send(
-            data, port, self.metadata["dependencies"][data]["type"], src, dst
-        )
+        if data == "0":
+            return self.compiler.send_noop(port, src, dst)
+        data_type = self.metadata["dependencies"][data]["type"]
+        self._channel_data_type[port] = data_type
+        return self.compiler.send(data, port, data_type, src, dst)
 
     def visitTraceOp(self, ctx: SWIRLParser.TraceOpContext):
         if ctx.op.type == SWIRLParser.PAR:
@@ -291,7 +302,9 @@ class CompileVisitor(SWIRLVisitor, ABC):
             self.visit(ctx.trace(1))
             self.compiler.end_seq()
         elif ctx.op.type == SWIRLParser.CHOICE:
-            self.compiler.begin_choice()
+            choice_id = ctx.op.text[2:-1]  # strip '+[' and ']'
+            condition = self.metadata.get("choices", {}).get(choice_id, {}).get("condition", "True")
+            self.compiler.begin_choice(choice_id, condition)
             self.visit(ctx.trace(0))
             self.compiler.choice()
             self.visit(ctx.trace(1))

@@ -47,6 +47,8 @@ global_vars = """
 
 BUF_SIZE = 8192
 
+NOOP = object()
+
 available_port_data = {}
 condition: Condition = Condition()
 connections: MutableMapping[str, MutableMapping[str, socket]] = {}
@@ -86,6 +88,15 @@ exec_function = """def _exec(step_name: str, step_display_name: str, input_port_
     # Wait all the data
     for port_name in input_port_names:
         available_port_data[port_name].wait()
+    # Propagate noop: if any input is noop, skip exec and mark output as noop
+    noop_ports = [p for p in input_port_names if ports.get(p) is NOOP]
+    if noop_ports:
+        logger.info(f"Step {step_display_name}-{step_name} skipped: noop on ports {noop_ports}")
+        if output_port_name:
+            ports[output_port_name] = NOOP
+            available_port_data.setdefault(output_port_name, Event()).set()
+            logger.info(f"Step {step_display_name}-{step_name} propagated noop to output port {output_port_name}")
+        return
     # Prepare working directory
     workdir = os.path.join(workdir, f"exec_{step_name}_{uuid.uuid4()}")
     os.mkdir(workdir)
@@ -145,7 +156,44 @@ init_dataset_function = """def _init_dataset(port_name: str, data: str):
     available_port_data[port_name].set()
 """
 
-send_function = """def _send(port: str, data_type: str, src: str, dst: str):
+send_function = """def _send(src_port: str, channel: str, data_type: str, src: str, dst: str):
+    while True:
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.connect(locations[dst])
+            break
+        except socket.error:
+            time.sleep(1)
+    sock.send(f"{src} {channel}".encode("utf-8"))
+    sock.recv(BUF_SIZE)
+    if ports.get(src_port) is NOOP:
+        logger.info(f"Port {src_port} contains noop — propagating noop to {dst} on channel {channel}")
+        sock.send(b'\\x00')
+        sock.close()
+        return
+    sock.send(b'\\x01')
+    if data_type == "stdout":
+        sock.send(ports[src_port])
+    elif data_type == "file":
+        sock.send(os.path.basename(ports[src_port]).encode("utf-8"))
+        sock.recv(BUF_SIZE)
+        fd = open(ports[src_port], "rb")
+        while True:
+            buf = fd.read(BUF_SIZE)
+            if not buf:
+                break
+            sock.sendall(buf)
+        fd.close()
+    elif data_type == "directory":
+        raise NotImplementedError(f"Send directories not implemented yet")
+    else:
+        raise Exception(f"Unsupported data type: {data_type}")
+    if logger.isEnabledFor(logging.DEBUG):
+        logger.debug(f"Sent data from port {src_port} to location {dst} on channel {channel}")
+    sock.close()
+"""
+
+send_noop_function = """def _send_noop(port: str, src: str, dst: str):
     while True:
         try:
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -155,24 +203,9 @@ send_function = """def _send(port: str, data_type: str, src: str, dst: str):
             time.sleep(1)
     sock.send(f"{src} {port}".encode("utf-8"))
     sock.recv(BUF_SIZE)
-    if data_type == "stout":
-        sock.send(ports[port])
-    elif data_type == "file":
-        sock.send(os.path.basename(ports[port]).encode("utf-8"))
-        sock.recv(BUF_SIZE)
-        fd = open(ports[port], "rb")
-        while True:
-            buf = fd.read(BUF_SIZE)
-            if not buf:
-                break
-            sock.sendall(buf)
-        fd.close()
-    elif data_type == "directory":
-        raise NotImplementedError(f"Recv directories not implemented yet")
-    else:
-        raise Exception(f"Unsupported data type: {data_type}")
+    sock.send(b'\\x00')
     if logger.isEnabledFor(logging.DEBUG):
-        logger.debug(f"Sent data for port {port} to location {dst}")
+        logger.debug(f"Sent noop for port {port} to location {dst}")
     sock.close()
 """
 
@@ -184,6 +217,14 @@ recv_function = """def _recv(port: str, workdir: str, data_type: str, src: str) 
             condition.wait()
     if logger.isEnabledFor(logging.DEBUG):
         logger.debug(f"Received connection for port {port} from location {src}")
+    flag = connections[src][port].recv(1)
+    if flag == b'\\x00':
+        logger.info(f"Received noop on port {port} from {src} — storing noop")
+        ports[port] = NOOP
+        available_port_data.setdefault(port, Event()).set()
+        connections[src][port].close()
+        connections[src][port] = None
+        return
     if data_type == "stdout":
         while True:
             if not (data := connections[src][port].recv(BUF_SIZE)):
@@ -236,6 +277,7 @@ preamble = "\n".join(
         exec_function,
         init_dataset_function,
         send_function,
+        send_noop_function,
         recv_function,
         thread_function,
         wait_function,
@@ -278,6 +320,10 @@ class DefaultTarget(BaseCompiler):
         self.programs: MutableMapping[str, TextIO] = {}
         self.thread_stacks: MutableMapping[str, ThreadStack] = {}
         self.output_dir = output_dir or os.getcwd()
+        self._choice_id: str | None = None
+        self._choice_condition: str | None = None
+        self._choice_branch_functions: list[list[str]] = []
+        self._data_to_port: MutableMapping[str, str] = {}
 
     @property
     def current_location(self) -> Location:
@@ -309,12 +355,14 @@ class DefaultTarget(BaseCompiler):
     ):
         for port_name, data in dataset:
             self.current_location.data[data.name] = data
+            self._data_to_port[data.name] = port_name
             self.programs[self.current_location.name].write(
                 f"""
     _init_dataset("{port_name}", "{data.value}")"""
             )
 
     def begin_location(self, location: Location) -> None:
+        self._data_to_port = {}
         self.current_location = location
         self.programs[self.current_location.name] = open(
             f"{self.output_dir}/{self.current_location.name}.py", "w"
@@ -350,11 +398,55 @@ class DefaultTarget(BaseCompiler):
         self.workflow = workflow
         Path(self.output_dir).mkdir(parents=True, exist_ok=True)
 
-    def choice(self):
-        self.programs[self.current_location.name].write(
-            f"""#    choice here"""
+    def begin_choice(self, choice_id: str, condition: str) -> None:
+        self._choice_id = choice_id
+        self._choice_condition = condition
+        self._choice_branch_functions.append([])
+
+    def choice(self) -> None:
+        self._choice_branch_functions.append([])
+
+    def end_choice(self) -> None:
+        branch1, branch2 = self._choice_branch_functions
+        loc = self.current_location.name
+
+        port_bindings = "\n".join(
+            f'        {port} = ports.get("{port}")'
+            for port in sorted(set(self._data_to_port.values()))
         )
-        # raise NotImplementedError("Choice is not implemented yet")
+        condition = self._choice_condition or "True"
+        if "\n" in condition:
+            condition_body = "\n".join(f"        {line}" for line in condition.splitlines())
+        else:
+            condition_body = f"        result = {condition}\n        logger.info(f\"Choice '{self._choice_id}' evaluated — result: {{result}}\")\n        return result"
+
+        self.programs[loc].write(
+            f"""
+    def choice_{self._choice_id}() -> bool:
+{port_bindings}
+{condition_body}
+"""
+        )
+
+        thread_stack = ThreadStack()
+
+        def emit_branch(fns: list[str]) -> str:
+            threads = [thread_stack.add_thread() for _ in fns]
+            lines = [f"        {t} = _thread({f})" for t, f in zip(threads, fns)]
+            lines.append(f"        _wait([{', '.join(threads)}])")
+            return "\n".join(lines)
+
+        self.programs[loc].write(
+            f"""
+    if choice_{self._choice_id}():
+{emit_branch(branch1)}
+    else:
+{emit_branch(branch2)}
+"""
+        )
+        self._choice_id = None
+        self._choice_condition = None
+        self._choice_branch_functions = []
 
     def end_location(self) -> None:
         self.programs[self.current_location.name].write(
@@ -415,19 +507,23 @@ if __name__ == '__main__':
             self.thread_stacks[self.current_location.name].add_group()
 
         if self.parallel_step_counter == 0:
-            thread_stack = ThreadStack()
-            while self.functions:
-                fun = self.functions.pop()
-                thr = thread_stack.add_thread()
-                self.programs[self.current_location.name].write(
-                    f"""
+            if self._choice_branch_functions:
+                self._choice_branch_functions[-1].extend(self.functions)
+                self.functions = []
+            else:
+                thread_stack = ThreadStack()
+                while self.functions:
+                    fun = self.functions.pop()
+                    thr = thread_stack.add_thread()
+                    self.programs[self.current_location.name].write(
+                        f"""
     {thr} = _thread({fun})"""
-                )
-            if thread_stack.stack:
-                self.programs[self.current_location.name].write(
-                    f"""
+                    )
+                if thread_stack.stack:
+                    self.programs[self.current_location.name].write(
+                        f"""
     _wait([{', '.join(thread_stack.get_group())}])"""
-                )
+                    )
 
     def end_paren(self):
         self.parathetized = False
@@ -495,7 +591,9 @@ echo "Workflow execution terminated"
         ]
 
         outputs = flow[1]
-        output_port_name = next(iter(outputs))[0] if outputs else ""
+        output_port_name, output_data_name = next(iter(outputs)) if outputs else ("", "")
+        if output_port_name and output_data_name:
+            self._data_to_port[output_data_name] = output_port_name
         self.programs[self.current_location.name].write(
             f"""
     {self._get_indentation()}available_port_data.setdefault("{output_port_name}", Event())
@@ -531,9 +629,16 @@ echo "Workflow execution terminated"
         )
 
     def send(self, data: str, port: str, data_type: str, src: str, dst: str):
+        src_port = self._data_to_port.get(data, port)
         self.programs[self.current_location.name].write(
             f"""
-    {self._get_indentation()}{self._get_thread(self.current_location.name)} = _thread(_send, "{port}", "{data_type}", "{src}", "{dst}")"""
+    {self._get_indentation()}{self._get_thread(self.current_location.name)} = _thread(_send, "{src_port}", "{port}", "{data_type}", "{src}", "{dst}")"""
+        )
+
+    def send_noop(self, port: str, src: str, dst: str) -> None:
+        self.programs[self.current_location.name].write(
+            f"""
+    {self._get_indentation()}{self._get_thread(self.current_location.name)} = _thread(_send_noop, "{port}", "{src}", "{dst}")"""
         )
 
     def seq(self):

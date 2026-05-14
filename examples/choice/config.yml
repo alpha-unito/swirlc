@@ -1,28 +1,16 @@
 version: v1.0
 steps:
   s1:
-    displayName: "FirstStep"
+    displayName: "S1 Exec"
     command: cat
     arguments:
-      - valueFrom: p1
-      - value: "> output.txt"
+      - valueFrom: p2
     outputs:
-      p2:
-        dataName: d2
-        glob: "world.txt"
-  s2:
-    displayName: "SecondStep"
-    command: cat
-    arguments:
-      - valueFrom: p2
-  s3:
-    displayName: "ThirdStep"
-    command: cat
-    arguments:
-      - valueFrom: p2
+      p3:
+        dataName: dout
 
 locations:
-  ld:
+  l0:
     hostname: 127.0.0.1
     port: 8080
     workdir: .
@@ -35,10 +23,15 @@ locations:
     port: 8082
     workdir: .
 
+choices:
+  c1:
+    condition: '"Hello" in open(p1).read()'
+
 dependencies:
   d1:
     type: file
     value: "world.txt"
   d2:
     type: file
-
+  dout:
+    type: stdout

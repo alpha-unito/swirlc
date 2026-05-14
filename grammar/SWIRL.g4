@@ -25,7 +25,7 @@ flow        : dataSet '->' dataSet;
 mapping     : '{' name? (',' name)* '}';
 
 // Variables
-data        : ID;
+data        : ID | ZERO;
 dst         : ID;
 name        : ID;
 port        : ID;
@@ -37,10 +37,11 @@ step        : ID;
 ///////////
 
 // Operators
-CHOICE      :   '+';
+CHOICE      :   '+' '[' ID ']';
 PAR         :   '|';
 SEQ         :   '.';
 
 // Commons
-ID          :   [a-zA-Z] [a-zA-Z0-9]*;
+ZERO        :   '0';
+ID          :   [a-zA-Z_] [a-zA-Z0-9_]*;
 WS          :   [ \n\r\t] -> skip;

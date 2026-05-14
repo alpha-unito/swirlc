@@ -29,4 +29,5 @@ def get_pair(ctx: SWIRLParser.DataPairContext) -> tuple[str, str]:
 
 
 def get_name(el: antlr4.ParserRuleContext) -> str:
-    return el.ID().getText()
+    token = el.ID()
+    return token.getText() if token is not None else el.getText()
