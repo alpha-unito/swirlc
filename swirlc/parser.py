@@ -29,6 +29,13 @@ compile_parser.add_argument(
     choices=swirlc.compiler.targets,
     help="The compilation target",
 )
+compile_parser.add_argument(
+    "--outdir",
+    "-o",
+    type=str,
+    help="Output directory path. It will be create a set of files: `run.sh` and `l*.py`",
+    default="",
+)
 
 # Swirl translator
 translate_parser = subparsers.add_parser(

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from abc import ABC
 from typing import Any
 from collections.abc import MutableMapping, MutableSequence
@@ -19,6 +20,11 @@ from swirlc.core.entity import (
 
 
 class BaseCompiler:
+    def __init__(self, outdir: str) -> None:
+        self.outdir: str = outdir
+        if not os.path.exists(self.outdir):
+            raise Exception(f"Output directory `{self.outdir}` does not exist")
+
     def begin_choice(self) -> None:
         """Before processing the left operand of a choice operator."""
         pass

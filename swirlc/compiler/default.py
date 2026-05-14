@@ -265,8 +265,8 @@ class ThreadStack:
 
 
 class DefaultTarget(BaseCompiler):
-    def __init__(self):
-        super().__init__()
+    def __init__(self, outdir: str) -> None:
+        super().__init__(outdir)
         self.current_location: Location | None = None
         self.functions = []
         self.function_counter = 0
@@ -298,7 +298,7 @@ class DefaultTarget(BaseCompiler):
     def begin_location(self, location: Location) -> None:
         self.current_location = location
         self.programs[self.current_location.name] = open(
-            f"{self.current_location.name}.py", "w"
+            os.path.join(self.outdir, f"{self.current_location.name}.py"), "w"
         )
         self.programs[self.current_location.name].write(preamble)
         location = self.workflow.locations[self.current_location.name]
@@ -365,7 +365,7 @@ if __name__ == '__main__':
             import black
 
             black.format_file_in_place(
-                Path(f"{self.current_location.name}.py"),
+                Path(self.outdir, f"{self.current_location.name}.py"),
                 fast=False,
                 mode=black.mode.Mode(
                     target_versions={black.mode.TargetVersion.PY39}, line_length=88
@@ -437,7 +437,7 @@ if __name__ == '__main__':
             )
             + " &"
         )
-        with open(script_name, "w") as f:
+        with open(os.path.join(self.outdir, script_name), "w") as f:
             f.write(
                 f"""{bash_header}
 
@@ -453,7 +453,9 @@ echo "Workflow execution terminated"
             )
         usr_permissions = stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR
         grp_permissions = stat.S_IRGRP | stat.S_IXGRP
-        os.chmod(script_name, usr_permissions | grp_permissions)
+        os.chmod(
+            os.path.join(self.outdir, script_name), usr_permissions | grp_permissions
+        )
 
     def exec(
         self,
