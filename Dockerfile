@@ -4,11 +4,6 @@ ENV VIRTUAL_ENV="/opt/swirlc"
 ENV PATH="${VIRTUAL_ENV}/bin:${PATH}"
 
 COPY ./pyproject.toml ./MANIFEST.in ./LICENSE ./README.md /build/
-COPY ./requirements.txt           \
-     ./bandit-requirements.txt    \
-     ./lint-requirements.txt      \
-     ./test-requirements.txt      \
-     /build/
 COPY swirlc /build/swirlc
 
 RUN cd build \

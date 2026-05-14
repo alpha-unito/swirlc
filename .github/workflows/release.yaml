@@ -10,7 +10,7 @@ on:
 jobs:
   docker:
     name: "Build Docker container"
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-24.04
     if: ${{ github.event.workflow_run.conclusion == 'success' }}
     steps:
       - uses: actions/checkout@v6
@@ -20,8 +20,18 @@ jobs:
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - uses: astral-sh/setup-uv@v7
+        with:
+          version: "0.9.16"
+      - uses: actions/setup-python@v6
+        with:
+          python-version: 3.14
+      - name: "Install SWIRL Compiler"
+        run: uv sync --locked --no-dev
       - name: "Get SWIRL Compiler version"
-        run: echo "SWIRLC_VERSION=$(cat swirlc/version.py | grep -oP '(?<=VERSION = \")(.*)(?=\")')" >> $GITHUB_ENV
+        run: |
+          source .venv/bin/activate
+          echo "SWIRLC_VERSION=$(python -c "from swirlc.version import VERSION; print(VERSION)")" >> $GITHUB_ENV
       - name: "Check if Docker image already exists"
         run: echo "NEW_IMAGE=$(docker buildx imagetools inspect alphaunito/swirlc:${SWIRLC_VERSION} > /dev/null 2>&1; echo $?)" >> $GITHUB_ENV
       - name: "Build Docker image"
@@ -34,14 +44,24 @@ jobs:
             alphaunito/swirlc:latest
   github:
     name: "Create GitHub Release"
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-24.04
     permissions:
       contents: write
     if: ${{ github.event.workflow_run.conclusion == 'success' }}
     steps:
       - uses: actions/checkout@v6
+      - uses: astral-sh/setup-uv@v7
+        with:
+          version: "0.9.16"
+      - uses: actions/setup-python@v6
+        with:
+          python-version: 3.14
+      - name: "Install SWIRL Compiler"
+        run: uv sync --locked --no-dev
       - name: "Get SWIRL Compiler version"
-        run: echo "SWIRLC_VERSION=$(cat swirlc/version.py | grep -oP '(?<=VERSION = \")(.*)(?=\")')" >> $GITHUB_ENV
+        run: |
+          source .venv/bin/activate
+          echo "SWIRLC_VERSION=$(python -c "from swirlc.version import VERSION; print(VERSION)")" >> $GITHUB_ENV
       - name: "Check tag existence"
         uses: mukunku/tag-exists-action@v1.7.0
         id: check-tag
@@ -60,7 +80,7 @@ jobs:
           prerelease: false
   pypi:
     name: "Publish on PyPI"
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-24.04
     environment:
       name: pypi
       url: https://pypi.org/project/swirlc
@@ -69,11 +89,18 @@ jobs:
     if: ${{ github.event.workflow_run.conclusion == 'success' }}
     steps:
       - uses: actions/checkout@v6
+      - uses: astral-sh/setup-uv@v7
+        with:
+          version: "0.9.16"
       - uses: actions/setup-python@v6
         with:
-          python-version: "3.10"
+          python-version: 3.14
+      - name: "Install SWIRL Compiler"
+        run: uv sync --locked --no-dev
       - name: "Get SWIRL Compiler version"
-        run: echo "SWIRLC_VERSION=$(cat swirlc/version.py | grep -oP '(?<=VERSION = \")(.*)(?=\")')" >> $GITHUB_ENV
+        run: |
+          source .venv/bin/activate
+          echo "SWIRLC_VERSION=$(python -c "from swirlc.version import VERSION; print(VERSION)")" >> $GITHUB_ENV
       - name: "Get PyPI version"
         run: echo "PYPI_VERSION=$(pip index versions --pre swirlc | grep swirlc | sed 's/.*(\(.*\))/\1/')" >> $GITHUB_ENV
       - name: "Build Python packages"
