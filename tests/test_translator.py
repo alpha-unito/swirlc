@@ -3,13 +3,13 @@ import tempfile
 from tempfile import NamedTemporaryFile
 
 from swirlc.core.entity import (
-    Location,
-    Step,
-    Port,
-    DistributedWorkflow,
-    Workflow,
-    Processor,
     Data,
+    DistributedWorkflow,
+    Location,
+    Port,
+    Processor,
+    Step,
+    Workflow,
 )
 from swirlc.core.translator import AbstractTranslator
 from tests.utils.utils import get_sha1

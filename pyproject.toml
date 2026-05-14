@@ -50,8 +50,8 @@ bandit = [
 ]
 lint = [
     "codespell==2.4.2",
-    "flake8-bugbear==25.11.29",
-    "pyupgrade==3.21.0"
+    "pyupgrade==3.21.0",
+    "ruff==0.15.13"
 ]
 test = [
     "pytest==8.4.2",
@@ -107,3 +107,12 @@ omit = [
 
 [tool.black]
 exclude = "swirlc/antlr"
+
+[tool.ruff]
+exclude = ["swirlc/antlr"]
+line-length = 88
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "W", "F", "B", "I"]
+ignore = ["E203", "E501", "B904"]
