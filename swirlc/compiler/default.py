@@ -290,10 +290,8 @@ class DefaultTarget(BaseCompiler):
     ):
         for port_name, data in dataset:
             self.current_location.data[data.name] = data
-            self.programs[self.current_location.name].write(
-                f"""
-    _init_dataset("{port_name}", "{data.value}")"""
-            )
+            self.programs[self.current_location.name].write(f"""
+    _init_dataset("{port_name}", "{data.value}")""")
 
     def begin_location(self, location: Location) -> None:
         self.current_location = location
@@ -302,23 +300,19 @@ class DefaultTarget(BaseCompiler):
         )
         self.programs[self.current_location.name].write(preamble)
         location = self.workflow.locations[self.current_location.name]
-        self.programs[self.current_location.name].write(
-            f"""def main():
+        self.programs[self.current_location.name].write(f"""def main():
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.bind(locations["{location.name}"])
     sock.settimeout(3)
     sock.listen({len(self.workflow.locations) - 1})
 
     _thread(_accept, sock)
-"""
-        )
+""")
 
     def begin_par(self) -> None:
         if self.parallel_step_counter == 0 and not self.parathetized:
-            self.programs[self.current_location.name].write(
-                f"""
-    def f{self.function_counter}():"""
-            )
+            self.programs[self.current_location.name].write(f"""
+    def f{self.function_counter}():""")
             self.functions.append(f"f{self.function_counter}")
             self.function_counter += 1
         self.parallel_step_counter += 1
@@ -334,31 +328,25 @@ class DefaultTarget(BaseCompiler):
         raise NotImplementedError("Choice is not implemented yet")
 
     def end_location(self) -> None:
-        self.programs[self.current_location.name].write(
-            """
+        self.programs[self.current_location.name].write("""
     logger.info("Terminated trace")
     global stopping
-    stopping = True"""
-        )
+    stopping = True""")
         locations = ",\n".join(
             [
                 f"\t'{name}': ('{location.hostname}', {location.port})"
                 for name, location in self.workflow.locations.items()
             ]
         )
-        self.programs[self.current_location.name].write(
-            f"""
+        self.programs[self.current_location.name].write(f"""
 locations = {{
 {locations}
 }}
-"""
-        )
-        self.programs[self.current_location.name].write(
-            """
+""")
+        self.programs[self.current_location.name].write("""
 if __name__ == '__main__':
     main()
-"""
-        )
+""")
         self.programs[self.current_location.name].close()
 
         try:
@@ -396,15 +384,11 @@ if __name__ == '__main__':
             while self.functions:
                 fun = self.functions.pop()
                 thr = thread_stack.add_thread()
-                self.programs[self.current_location.name].write(
-                    f"""
-    {thr} = _thread({fun})"""
-                )
+                self.programs[self.current_location.name].write(f"""
+    {thr} = _thread({fun})""")
             if thread_stack.stack:
-                self.programs[self.current_location.name].write(
-                    f"""
-    _wait([{', '.join(thread_stack.get_group())}])"""
-                )
+                self.programs[self.current_location.name].write(f"""
+    _wait([{', '.join(thread_stack.get_group())}])""")
 
     def end_paren(self):
         self.parathetized = False
@@ -438,8 +422,7 @@ if __name__ == '__main__':
             + " &"
         )
         with open(os.path.join(self.outdir, script_name), "w") as f:
-            f.write(
-                f"""{bash_header}
+            f.write(f"""{bash_header}
 
 trap "echo Force termination; pkill -P $$" INT
 
@@ -449,8 +432,7 @@ trap "echo Force termination; pkill -P $$" INT
 {commands}
 wait
 echo "Workflow execution terminated"
-"""
-            )
+""")
         usr_permissions = stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR
         grp_permissions = stat.S_IRGRP | stat.S_IXGRP
         os.chmod(
@@ -493,10 +475,8 @@ echo "Workflow execution terminated"
             self.thread_stacks[self.current_location.name].add_group()
 
         if not self.parathetized:
-            self.programs[self.current_location.name].write(
-                f"""
-    def f{self.function_counter}():"""
-            )
+            self.programs[self.current_location.name].write(f"""
+    def f{self.function_counter}():""")
             self.functions.append(f"f{self.function_counter}")
             self.function_counter += 1
 

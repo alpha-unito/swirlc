@@ -8,7 +8,6 @@ from referencing import Registry, Resource
 from ruamel.yaml import YAML
 from typing import TYPE_CHECKING
 
-
 if TYPE_CHECKING:
     from typing import Any
     from collections.abc import MutableMapping
