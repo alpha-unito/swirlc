@@ -46,13 +46,11 @@ from typing import Any, MutableMapping, MutableSequence
 global_vars = """
 
 BUF_SIZE = 8192
-
 available_port_data = {}
 condition: Condition = Condition()
 connections: MutableMapping[str, MutableMapping[str, socket]] = {}
 ports: MutableMapping[str, Any] = {}
 stopping: bool = False
-
 
 logger = logging.getLogger("swirlc")
 defaultStreamHandler = logging.StreamHandler()
@@ -82,12 +80,12 @@ accept_function = """def _accept(sock: socket):
     sock.close()
 """
 
-exec_function = """def _exec(step_name: str, step_display_name: str, input_port_names: MutableSequence[str], output_port_name: str, data_type: str, glob_regex: str | None, cmd: str, args: MutableSequence[str], args_from: MutableSequence[tuple[str, str]], workdir: str):
+exec_function = """def _exec(step_name: str, step_display_name: str, input_port_names: MutableSequence[str], output_port_name: str, data_type: str, glob_regex: str | None, cmd: str, args: MutableSequence[str], args_from: MutableSequence[tuple[str, str]]):
     # Wait all the data
     for port_name in input_port_names:
         available_port_data[port_name].wait()
     # Prepare working directory
-    workdir = os.path.join(workdir, f"exec_{step_name}_{uuid.uuid4()}")
+    workdir = os.path.join(SCRATCH_DIR, f"exec_{step_name}_{uuid.uuid4()}")
     os.mkdir(workdir)
     for port_name in input_port_names:
         os.symlink(os.path.abspath(ports[port_name]), os.path.join(workdir, os.path.basename(ports[port_name])))
@@ -176,7 +174,7 @@ send_function = """def _send(port: str, data_type: str, src: str, dst: str):
     sock.close()
 """
 
-recv_function = """def _recv(port: str, workdir: str, data_type: str, src: str) -> Any:
+recv_function = """def _recv(port: str, data_type: str, src: str) -> Any:
     buf = BytesIO()
     with condition:
         while connections.setdefault(src, {}).get(port) is None:
@@ -197,7 +195,7 @@ recv_function = """def _recv(port: str, workdir: str, data_type: str, src: str) 
     elif data_type == "file":
         filename = connections[src][port].recv(1024).decode()
         connections[src][port].send("ack".encode("utf-8"))
-        filepath = os.path.join(workdir, f"rcv_{port}_{uuid.uuid4()}", filename)
+        filepath = os.path.join(SCRATCH_DIR, f"rcv_{port}_{uuid.uuid4()}", filename)
         os.mkdir(os.path.dirname(filepath))
         fd = open(filepath, "wb")
         while True:
@@ -328,6 +326,16 @@ class DefaultTarget(BaseCompiler):
         raise NotImplementedError("Choice is not implemented yet")
 
     def end_location(self) -> None:
+        out_dir = (
+            f'str(Path("{self.current_location.outdir}").expanduser().absolute())'
+            if self.current_location.outdir
+            else "os.getcwd()"
+        )
+        scratch_dir = (
+            f'str(Path("{self.current_location.workdir}").expanduser().absolute())'
+            if self.current_location.workdir
+            else "os.getcwd()"
+        )
         self.programs[self.current_location.name].write("""
     logger.info("Terminated trace")
     global stopping
@@ -342,6 +350,9 @@ class DefaultTarget(BaseCompiler):
 locations = {{
 {locations}
 }}
+
+OUT_DIR = {out_dir}
+SCRATCH_DIR = {scratch_dir}
 """)
         self.programs[self.current_location.name].write("""
 if __name__ == '__main__':
@@ -460,7 +471,7 @@ echo "Workflow execution terminated"
     {self._get_indentation()}input_port_names = {[port_name for port_name, _ in flow[0]]}
     {self._get_indentation()}for port_name in input_port_names:
     {self._get_indentation()}    available_port_data.setdefault(port_name, Event())
-    {self._get_indentation()}_exec("{step.name}", "{step.display_name}", input_port_names, "{output_port_name}", "{step.processors[output_port_name].type if output_port_name else ""}", "{step.processors[output_port_name].glob if output_port_name else ""}", "{step.command}", {arguments}, {arguments_from_port}, str(Path("{self.current_location.workdir}").expanduser().absolute()))"""
+    {self._get_indentation()}_exec("{step.name}", "{step.display_name}", input_port_names, "{output_port_name}", "{step.processors[output_port_name].type if output_port_name else ""}", "{step.processors[output_port_name].glob if output_port_name else ""}", "{step.command}", {arguments}, {arguments_from_port})"""
         )
 
     def par(self) -> None:
@@ -483,7 +494,7 @@ echo "Workflow execution terminated"
     def recv(self, port: str, data_type: str, src: str, dst: str):
         self.programs[self.current_location.name].write(
             f"""
-    {self._get_indentation()}{self._get_thread(self.current_location.name)} = _thread(_recv, "{port}", str(Path("{self.current_location.workdir}").expanduser().absolute()), "{data_type}", "{src}")"""
+    {self._get_indentation()}{self._get_thread(self.current_location.name)} = _thread(_recv, "{port}", "{data_type}", "{src}")"""
         )
 
     def send(self, data: str, port: str, data_type: str, src: str, dst: str):
