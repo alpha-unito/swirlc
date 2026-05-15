@@ -1,4 +1,0 @@
-[flake8]
-exclude = swirlc/antlr
-max-line-length = 88
-extend-ignore = E203,E501

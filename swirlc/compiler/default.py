@@ -3,14 +3,14 @@ from __future__ import annotations
 import os
 import stat
 import sys
+from collections.abc import MutableMapping, MutableSequence
 from pathlib import Path
 from typing import TextIO
-from collections.abc import MutableMapping, MutableSequence
 
 from black import WriteBack
 
 from swirlc.core.compiler import BaseCompiler
-from swirlc.core.entity import Location, Step, Port, Workflow, DistributedWorkflow, Data
+from swirlc.core.entity import Data, DistributedWorkflow, Location, Port, Step, Workflow
 from swirlc.log_handler import logger
 from swirlc.version import VERSION
 

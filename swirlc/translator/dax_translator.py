@@ -3,19 +3,19 @@ from __future__ import annotations
 import glob
 import logging
 import os
-from pathlib import Path
 from collections.abc import MutableMapping, MutableSequence
+from pathlib import Path
 
 from ruamel.yaml import YAML
 
 from swirlc.core.entity import (
-    Location,
-    Step,
-    Port,
-    DistributedWorkflow,
-    Workflow,
-    Processor,
     Data,
+    DistributedWorkflow,
+    Location,
+    Port,
+    Processor,
+    Step,
+    Workflow,
 )
 from swirlc.core.translator import AbstractTranslator
 

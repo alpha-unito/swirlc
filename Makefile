@@ -10,13 +10,12 @@ coverage.xml: testcov
 coverage-report: testcov
 	coverage report
 
-flake8:
-	flake8 --exclude swirlc/antlr swirlc tests
-
 format:
+	ruff check --fix swirlc tests
 	black swirlc tests
 
 format-check:
+	ruff check swirlc tests
 	black --diff --check swirlc tests
 
 pyupgrade:

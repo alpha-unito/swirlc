@@ -2,20 +2,20 @@ from __future__ import annotations
 
 import os
 from abc import ABC
-from typing import Any
 from collections.abc import MutableMapping, MutableSequence
+from typing import Any
 
 from swirlc.antlr.SWIRLParser import SWIRLParser
 from swirlc.antlr.SWIRLVisitor import SWIRLVisitor
 from swirlc.core import utils
 from swirlc.core.entity import (
-    Location,
-    Workflow,
+    Data,
     DistributedWorkflow,
-    Step,
+    Location,
     Port,
     Processor,
-    Data,
+    Step,
+    Workflow,
 )
 
 

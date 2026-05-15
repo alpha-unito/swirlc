@@ -1,16 +1,16 @@
 from __future__ import annotations
 
 import json
+from typing import TYPE_CHECKING
 
 from importlib_resources import files
 from jsonschema.validators import validator_for
 from referencing import Registry, Resource
 from ruamel.yaml import YAML
-from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from typing import Any
     from collections.abc import MutableMapping
+    from typing import Any
 
 
 def handle_errors(errors):
