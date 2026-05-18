@@ -10,17 +10,16 @@ coverage.xml: testcov
 coverage-report: testcov
 	coverage report
 
-flake8:
-	flake8 --exclude swirlc/antlr swirlc tests
-
 format:
+	ruff check --fix swirlc tests
 	black swirlc tests
 
 format-check:
+	ruff check swirlc tests
 	black --diff --check swirlc tests
 
 pyupgrade:
-	pyupgrade --py3-only --py39-plus $(shell git ls-files | grep .py | grep -v swirlc/antlr)
+	pyupgrade --py3-only --py310-plus $(shell git ls-files | grep .py | grep -v swirlc/antlr)
 
 test:
 	python -m pytest -rs ${PYTEST_EXTRA}

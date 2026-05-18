@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 
 import swirlc.compiler
 import swirlc.translator
@@ -29,6 +30,13 @@ compile_parser.add_argument(
     choices=swirlc.compiler.targets,
     help="The compilation target",
 )
+compile_parser.add_argument(
+    "--outdir",
+    "-o",
+    type=str,
+    help="Output directory path. It will be create a set of files: `run.sh` and `l*.py`",
+    default=os.getcwd(),
+)
 
 # Swirl translator
 translate_parser = subparsers.add_parser(
@@ -54,7 +62,7 @@ translate_parser.add_argument(
     "-o",
     type=str,
     help="Output directory path. It will be create two files: `workflow.swirl` and `metadata.yml`",
-    default="",
+    default=os.getcwd(),
 )
 
 # Swirl version

@@ -31,9 +31,6 @@ locations:
   l2:
     hostname: 127.0.0.1
     port: 8082
-  l3:
-    hostname: 127.0.0.1
-    port: 8083
 
 dependencies:
   d1:

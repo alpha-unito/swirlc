@@ -1,18 +1,29 @@
 version: v1.0
 steps:
   s1:
-    command: echo
+    displayName: s1
+    command: sh
     arguments:
-      - valueFrom: d0
+      - valueFrom: p1
       - value: Hello
+      - value: Ciao
+    outputs:
+      p2:
+        dataName: d1
+        glob: "Hello.txt"
+      p3:
+        dataName: d2
+        glob: "Ciao.txt"
   s2:
+    displayName: s2
     command: echo
     arguments:
-      - valueFrom: d1
+      - valueFrom: p2
   s3:
+    displayName: s3
     command: echo
     arguments:
-      - valueFrom: d2
+      - valueFrom: p3
 
 
 locations:
@@ -31,6 +42,10 @@ locations:
 
 
 dependencies:
-  d0: first_data.txt
-  d1: my_data.txt
-  d2: another_data.txt
+  d:
+    type: file
+    value: custom_cmd.sh
+  d1:
+    type: file
+  d2:
+    type: file

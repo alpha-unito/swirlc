@@ -1,24 +1,30 @@
 from __future__ import annotations
 
+import os
 from abc import ABC
-from typing import Any
 from collections.abc import MutableMapping, MutableSequence
+from typing import Any
 
 from swirlc.antlr.SWIRLParser import SWIRLParser
 from swirlc.antlr.SWIRLVisitor import SWIRLVisitor
 from swirlc.core import utils
 from swirlc.core.entity import (
-    Location,
-    Workflow,
+    Data,
     DistributedWorkflow,
-    Step,
+    Location,
     Port,
     Processor,
-    Data,
+    Step,
+    Workflow,
 )
 
 
 class BaseCompiler:
+    def __init__(self, outdir: str) -> None:
+        self.outdir: str = outdir
+        if not os.path.exists(self.outdir):
+            raise Exception(f"Output directory `{self.outdir}` does not exist")
+
     def begin_choice(self) -> None:
         """Before processing the left operand of a choice operator."""
         pass
