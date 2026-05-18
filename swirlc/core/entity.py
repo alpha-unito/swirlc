@@ -1,8 +1,8 @@
 from __future__ import annotations
 
+from collections.abc import MutableMapping, MutableSequence
 from pathlib import PurePath
 from typing import Any
-from collections.abc import MutableMapping, MutableSequence
 
 from swirlc.core.utils import flatten_list
 
@@ -65,7 +65,7 @@ class Location:
                 ]
             )
         elif self.connection_type is None:
-            return f"cd {self.workdir} && " if self.workdir else "" + cmd
+            return (f"cd {self.workdir} && " if self.workdir else "") + cmd
         else:
             raise NotImplementedError(
                 f"Connection type: {self.connection_type} not supported"

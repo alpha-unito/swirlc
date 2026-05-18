@@ -11,7 +11,7 @@ authors = [
 ]
 description = "Scientific Workflow Intermediate Representation Language"
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 license = {text = "LGPL-3.0-or-later"}
 classifiers = [
     "Development Status :: 3 - Alpha",
@@ -21,15 +21,43 @@ classifiers = [
     "Operating System :: OS Independent",
     "Programming Language :: Python",
     "Programming Language :: Python :: 3 :: Only",
-    "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Topic :: Scientific/Engineering",
     "Topic :: System :: Distributed Computing"
 ]
-dynamic = ["dependencies", "optional-dependencies", "version"]
+dependencies = [
+    "antlr4-python3-runtime==4.13.2",
+    "black==26.3.1",
+    "importlib_resources==7.1.0",
+    "jsonschema==4.26.0",
+    "referencing==0.37.0",
+    "ruamel.yaml==0.19.1"
+]
+version = "0.0.1"
+
+[dependency-groups]
+dev = [
+    {include-group = "bandit"},
+    {include-group = "lint"},
+    {include-group = "test"}
+]
+bandit = [
+    "bandit==1.9.4"
+]
+lint = [
+    "codespell==2.4.2",
+    "pyupgrade==3.21.2",
+    "ruff==0.15.13"
+]
+test = [
+    "pytest==9.0.3",
+    "pytest-cov==7.1.0",
+    "pytest-xdist==3.8.0"
+]
 
 [project.scripts]
 swirlc = "swirlc.main:run"
@@ -52,15 +80,6 @@ zip-safe = true
 
 [tool.setuptools.package-data]
 "swirlc.config" = ["schemas/v1.0/*.json"]
-
-[tool.setuptools.dynamic]
-dependencies = {file = "requirements.txt"}
-version = {attr = "swirlc.version.VERSION"}
-
-[tool.setuptools.dynamic.optional-dependencies]
-bandit = {file = "bandit-requirements.txt"}
-lint = {file = "lint-requirements.txt"}
-test = {file = "test-requirements.txt"}
 
 [tool.coverage.run]
 branch = true
@@ -88,3 +107,12 @@ omit = [
 
 [tool.black]
 exclude = "swirlc/antlr"
+
+[tool.ruff]
+exclude = ["swirlc/antlr"]
+line-length = 88
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "W", "F", "B", "I"]
+ignore = ["E203", "E501", "B904"]
