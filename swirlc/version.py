@@ -1,1 +1,3 @@
-VERSION = "0.0.1"
+from importlib.metadata import version
+
+VERSION = version("swirlc")

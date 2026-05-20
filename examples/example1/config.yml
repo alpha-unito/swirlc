@@ -1,25 +1,30 @@
 version: v1.0
 steps:
   s1:
-    displayName: "FirstStep"
-    command: cat
+    displayName: s1
+    command: sh
     arguments:
       - valueFrom: p1
-      - value: "> hello.txt"
+      - value: Hello
+      - value: Ciao
     outputs:
       p2:
+        dataName: d1
+        glob: "Hello.txt"
+      p3:
         dataName: d2
-        glob: "hello.txt"
+        glob: "Ciao.txt"
   s2:
-    displayName: "SecondStep"
-    command: cat
+    displayName: s2
+    command: echo
     arguments:
       - valueFrom: p2
   s3:
-    displayName: "ThirdStep"
-    command: cat
+    displayName: s3
+    command: echo
     arguments:
-      - valueFrom: p2
+      - valueFrom: p3
+
 
 locations:
   ld:
@@ -31,10 +36,16 @@ locations:
   l2:
     hostname: 127.0.0.1
     port: 8082
+  l3:
+    hostname: 127.0.0.1
+    port: 8083
+
 
 dependencies:
+  d:
+    type: file
+    value: custom_cmd.sh
   d1:
     type: file
-    value: "world.txt"
   d2:
     type: file

@@ -16,7 +16,7 @@ SWIRL is a low-level intermediate representation language for distributed scient
                  Matteo Pradella and
                  Matteo Rossi},
     doi       = {10.1007/978-3-031-71162-6_12},
-    year      = {2024},
+    year      = {2025},
     booktitle = {Formal Methods. FM 2024},
     volume    = {14933},
     pages     = {226–-244},
@@ -37,7 +37,7 @@ The `swirlc` package is available on [PyPi](https://pypi.org/project/swirlc/), s
 pip install swirlc
 ```
 
-Please note that the SWIRL compiler requires `python >= 3.9`. Then you can use it through the `swirlc` CLI.
+Please note that the SWIRL compiler requires `python >= 3.10`. Then you can use it through the `swirlc` CLI.
 
 ### Docker
 
