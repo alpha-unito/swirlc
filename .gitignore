@@ -128,3 +128,7 @@ dmypy.json
 
 # VS Code
 .vscode/
+
+# AI
+.claude
+.antigravitycli

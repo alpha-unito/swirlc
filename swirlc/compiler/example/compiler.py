@@ -64,7 +64,7 @@ class TraceCompiler(BaseCompiler):
     ):
         pass
 
-    def recv(self, port: str, data_type: str, src: str, dst: str):
+    def recv(self, port: str, data: str, data_type: str, src: str, dst: str):
         pass
 
     def send(self, data: str, port: str, data_type: str, src: str, dst: str):

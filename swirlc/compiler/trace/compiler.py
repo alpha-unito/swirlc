@@ -230,7 +230,7 @@ class TraceTarget(BaseCompiler):
         indent = "  " * thread.depth
         trace.write(f"{indent}{thread.id} = Exec: {step.name}\n")
 
-    def recv(self, port: str, data_type: str, src: str, dst: str):
+    def recv(self, port: str, data: str, data_type: str, src: str, dst: str):
         assert self.current_location is not None
         assert self.current_thread is not None
         
