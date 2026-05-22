@@ -1,13 +1,17 @@
-< l0, {(p1, d1)},
-  (send(d1 -> p2, l0, l1) | send(0 -> p2, l0, l2)) +[c1]
-  (send(d1 -> p2, l0, l2) | send(0 -> p2, l0, l1))
-> |
+
 
 
 <l1, {},
-  recv(p2, l0, l1) . exec(s1, {(p2, d2)} -> {(p3, dout)}, {l1})
+  recv(p1 -> d1, l0, l1) . exec(s1, {(p1, d1)} -> {(p3, dout)}, {l1})
 > |
 
 <l2, {},
-  recv(p2, l0, l2) . exec(s1, {(p2, d2)} -> {(p3, dout)}, {l2})
+  recv(p1 -> d1, l0, l2) . exec(s1, {(p1, d1)} -> {(p3, dout)}, {l2})
 >
+
+
+
+< l0, {(p1, d1)},
+
+  (send(d1 -> p1, l0, l1)) +[c1] (send(d1 -> p1, l0, l2))
+> |

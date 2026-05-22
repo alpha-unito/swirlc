@@ -1,5 +1,8 @@
 version: v1.0
 
+steps:
+  {}
+
 locations:
   location0:
     hostname: 127.0.0.1

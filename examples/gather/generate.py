@@ -49,7 +49,7 @@ for i in range(1, n_locations):
 <{locations[i]}, {{(p{i}, d1)}}, {send}> |""")
 
 
-receives = [f"recv(p{i},{locations[i]},{locations[0]})" for i in range(1, n_locations)]
+receives = [f"recv(p{i} -> d1,{locations[i]},{locations[0]})" for i in range(1, n_locations)]
 
 source_file.write(f"""
 <{locations[0]}, {{}},

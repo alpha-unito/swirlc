@@ -55,7 +55,7 @@ source_file.write(f"""
 
 for i in range(1, n_locations):
     source_file.write(f"""
-<{locations[i]}, {{}}, recv(p1,{locations[0]},{locations[i]}) > {" |" if i < n_locations - 1 else ""}
+<{locations[i]}, {{}}, recv(p1 -> d1,{locations[0]},{locations[i]}) > {" |" if i < n_locations - 1 else ""}
 """)
     
 

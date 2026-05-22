@@ -4,7 +4,15 @@ steps:
     displayName: "S1 Exec"
     command: cat
     arguments:
-      - valueFrom: p2
+      - valueFrom: p1
+    outputs:
+      p3:
+        dataName: dout
+  s2:
+    displayName: "S2 Exec"
+    command: cat
+    arguments:
+      - valueFrom: p1
     outputs:
       p3:
         dataName: dout

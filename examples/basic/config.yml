@@ -22,7 +22,7 @@ steps:
       - valueFrom: p2
 
 locations:
-  ld:
+  l0:
     hostname: 127.0.0.1
     port: 8080
   l1:
