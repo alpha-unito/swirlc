@@ -1,3 +1,4 @@
-from swirlc.compiler.default import DefaultTarget
+from swirlc.compiler.default.compiler import DefaultTarget
+from swirlc.compiler.trace.compiler import TraceTarget
 
-targets = {"default": DefaultTarget}
+targets = {"default": DefaultTarget, "trace": TraceTarget}
