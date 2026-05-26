@@ -25,10 +25,6 @@ class BaseCompiler:
         if not os.path.exists(self.outdir):
             raise Exception(f"Output directory `{self.outdir}` does not exist")
 
-    def begin_choice(self) -> None:
-        """Before processing the left operand of a choice operator."""
-        pass
-
     def begin_dataset(
         self,
         dataset: MutableSequence[tuple[str, Data]],
@@ -62,14 +58,6 @@ class BaseCompiler:
 
     def begin_workflow(self, workflow: Workflow) -> None:
         """Start the compilation process."""
-        pass
-
-    def choice(self) -> None:
-        """After processing the first operand, but before processing the right operand of a choice operator."""
-        pass
-
-    def end_choice(self) -> None:
-        """After processing both operands of a choice operator."""
         pass
 
     def end_dataset(self) -> None:
@@ -283,11 +271,7 @@ class CompileVisitor(SWIRLVisitor, ABC):
             self.visit(ctx.trace(1))
             self.compiler.end_seq()
         elif ctx.op.type == SWIRLParser.CHOICE:
-            self.compiler.begin_choice()
-            self.visit(ctx.trace(0))
-            self.compiler.choice()
-            self.visit(ctx.trace(1))
-            self.compiler.end_choice()
+            raise NotImplementedError("Choice operator is not supported")
         else:
             raise Exception(f"Unsupported operator {ctx.op.text}")
 

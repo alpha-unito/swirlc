@@ -74,15 +74,6 @@ class StandardCompiler(BaseCompiler):
     ):
         pass
 
-    def write_choice_start(self, thread: ThreadStack, indent: int, trace: TextIO):
-        pass
-
-    def write_choice_else(self, thread: ThreadStack, indent: int, trace: TextIO):
-        pass
-
-    def write_choice_end(self, thread: ThreadStack, indent: int, trace: TextIO):
-        pass
-
     def write_exec(
         self,
         thread: ThreadStack,
@@ -223,35 +214,6 @@ class StandardCompiler(BaseCompiler):
         self.current_thread = self.current_thread.parent
 
     # ======== Parallel ========
-
-    # ======== Choice ========
-    def begin_choice(self) -> None:
-        assert self.current_location is not None
-        assert self.current_thread is not None
-        trace = self._get_location_trace(self.current_location)
-
-        self.current_thread = self.current_thread.start_sub_thread(trace)
-        self.write_choice_start(self.current_thread, self.current_thread.depth, trace)
-
-    def choice(self):
-        assert self.current_location is not None
-        assert self.current_thread is not None
-        trace = self._get_location_trace(self.current_location)
-
-        for sub_thread in self.current_thread.pop_sub_threads():
-            self._close_thread(sub_thread, trace)
-            self.write_wait_for(sub_thread, sub_thread.depth, trace)
-
-        self.write_choice_else(self.current_thread, self.current_thread.depth, trace)
-
-    def end_choice(self) -> None:
-        assert self.current_location is not None
-        assert self.current_thread is not None
-        trace = self._get_location_trace(self.current_location)
-
-        self._close_thread(self.current_thread, trace)
-        self.write_choice_end(self.current_thread, self.current_thread.depth, trace)
-        self.current_thread = self.current_thread.parent
 
     # ========= Sequential ========
     def seq(self):

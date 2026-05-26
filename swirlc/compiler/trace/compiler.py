@@ -27,15 +27,6 @@ class TraceTarget(StandardCompiler):
         comment_str = f" {comment}" if comment else ""
         trace.write(f"{'  ' * indent}}} // End of {thread.id}{comment_str}\n")
 
-    def write_choice_start(self, thread: ThreadStack, indent: int, trace: TextIO):
-        trace.write(f"{'  ' * indent}{thread.id} = If(condition) {{\n")
-
-    def write_choice_else(self, thread: ThreadStack, indent: int, trace: TextIO):
-        trace.write(f"{'  ' * indent}}} else {{\n")
-
-    def write_choice_end(self, thread: ThreadStack, indent: int, trace: TextIO):
-        trace.write(f"{'  ' * indent}}} // End of choice\n")
-
     def write_exec(
         self,
         thread: ThreadStack,

@@ -304,9 +304,6 @@ class DefaultTarget(BaseCompiler):
     def begin_workflow(self, workflow: Workflow) -> None:
         self.workflow = workflow
 
-    def choice(self):
-        raise NotImplementedError("Choice is not implemented yet")
-
     def end_location(self) -> None:
         out_dir = (
             f'str(Path("{self.current_location.outdir}").expanduser().absolute())'
