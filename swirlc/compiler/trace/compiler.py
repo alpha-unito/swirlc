@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Optional, TextIO
 
-from swirlc.compiler.standard.compiler import StandardCompiler, ThreadStack
+from swirlc.compiler.standard.compiler import StandardCompiler, TraceNode
 from swirlc.core.entity import Data, Location, Step
 
 
@@ -11,36 +11,36 @@ class TraceTarget(StandardCompiler):
         super().__init__(outdir)
 
     # ======== Writes =======
-    def write_thread_start(self, thread: ThreadStack, indent: int, trace: TextIO):
-        trace.write(f"{'  ' * indent}{thread.id} = Thread {{\n")
+    def write_thread_start(self, node: TraceNode, indent: int, trace: TextIO):
+        trace.write(f"{'  ' * indent}{node.id} = Thread {{\n")
 
-    def write_wait_for(self, thread: ThreadStack, indent: int, trace: TextIO):
-        trace.write(f"{'  ' * indent}Wait: {thread.id}\n")
+    def write_wait_for(self, node: TraceNode, indent: int, trace: TextIO):
+        trace.write(f"{'  ' * indent}Wait: {node.id}\n")
 
     def write_thread_end(
         self,
-        thread: ThreadStack,
+        node: TraceNode,
         indent: int,
         trace: TextIO,
         comment: Optional[str] = None,
     ):
         comment_str = f" {comment}" if comment else ""
-        trace.write(f"{'  ' * indent}}} // End of {thread.id}{comment_str}\n")
+        trace.write(f"{'  ' * indent}}} // End of {node.id}{comment_str}\n")
 
     def write_exec(
         self,
-        thread: ThreadStack,
+        node: TraceNode,
         indent: int,
         trace: TextIO,
         step: Step,
         flow: tuple[set[tuple[str, str]], set[tuple[str, str]]],
         mapping: set[str],
     ):
-        trace.write(f"{'  ' * indent}{thread.id} = Exec: {step.name}\n")
+        trace.write(f"{'  ' * indent}{node.id} = Exec: {step.name}\n")
 
     def write_recv(
         self,
-        thread: ThreadStack,
+        node: TraceNode,
         indent: int,
         trace: TextIO,
         port: str,
@@ -50,12 +50,12 @@ class TraceTarget(StandardCompiler):
         dst: str,
     ):
         trace.write(
-            f"{'  ' * indent}{thread.id} = Recv: {data} of type {data_type} from {src} to {dst} on port {port}\n"
+            f"{'  ' * indent}{node.id} = Recv: {data} of type {data_type} from {src} to {dst} on port {port}\n"
         )
 
     def write_send(
         self,
-        thread: ThreadStack,
+        node: TraceNode,
         indent: int,
         trace: TextIO,
         data: str,
@@ -65,11 +65,11 @@ class TraceTarget(StandardCompiler):
         dst: str,
     ):
         trace.write(
-            f"{'  ' * indent}{thread.id} = Send: {data} of type {data_type} from {src} to {dst} on port {port}\n"
+            f"{'  ' * indent}{node.id} = Send: {data} of type {data_type} from {src} to {dst} on port {port}\n"
         )
 
     def write_dataset(
-        self, thread: ThreadStack, indent: int, trace: TextIO, port: str, data: Data
+        self, node: TraceNode, indent: int, trace: TextIO, port: str, data: Data
     ):
         trace.write(
             f"{'  ' * indent}Dataset: {data.name} of type {data.type} on port {port} with value {data.value}\n"

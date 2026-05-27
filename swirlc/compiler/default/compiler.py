@@ -3,14 +3,15 @@ from __future__ import annotations
 import os
 import stat
 import sys
-from collections.abc import MutableMapping, MutableSequence
 from pathlib import Path
-from typing import TextIO
+from typing import Optional, TextIO
 
 from black import WriteBack
+import black
+from black.mode import TargetVersion
 
-from swirlc.core.compiler import BaseCompiler
-from swirlc.core.entity import Data, DistributedWorkflow, Location, Port, Step, Workflow
+from swirlc.compiler.standard.compiler import StandardCompiler, TraceNode
+from swirlc.core.entity import Data, Location, Port, Step, Workflow
 from swirlc.log_handler import logger
 from swirlc.version import VERSION
 
@@ -37,6 +38,7 @@ import subprocess
 import time
 import uuid
 
+from pathlib import Path
 from io import BytesIO
 from threading import Condition, Event, Thread
 from typing import Any, MutableMapping, MutableSequence
@@ -80,15 +82,12 @@ accept_function = """def _accept(sock: socket.socket):
 """
 
 exec_function = """def _exec(step_name: str, step_display_name: str, input_port_names: MutableSequence[str], output_port_name: str, data_type: str, glob_regex: str | None, cmd: str, args: MutableSequence[tuple[str,bool]]):
-    # Wait all the data
     for port_name in input_port_names:
         available_port_data[port_name].wait()
-    # Prepare working directory
     workdir = os.path.join(SCRATCH_DIR, f"exec_{step_name}_{uuid.uuid4()}")
     os.mkdir(workdir)
     for port_name in input_port_names:
         os.symlink(os.path.abspath(ports[port_name]), os.path.join(workdir, os.path.basename(ports[port_name])))
-    # Execute command
     cmd = " ".join([cmd, *(ports[elem] if is_data else elem for elem, is_data in args)])
     if logger.isEnabledFor(logging.INFO):
         logger.info(f"Step {step_display_name}-{step_name} executes command '{cmd}'")
@@ -221,142 +220,35 @@ preamble = "\n".join(
 )
 
 
-class ThreadStack:
-    def __init__(self):
-        self.stack: MutableSequence[set[str]] = [set()]
-        self.counter = 0
-
-    def add_group(self) -> None:
-        self.stack.append(set())
-
-    def add_thread(self) -> str:
-        name = f"t{self.counter}"
-        self.counter += 1
-        self.stack[-1].add(name)
-        return name
-
-    def delete_group(self) -> set[str]:
-        return self.stack.pop()
-
-    def get_group(self) -> set[str]:
-        return self.stack[-1]
-
-
-class DefaultTarget(BaseCompiler):
+class DefaultTarget(StandardCompiler):
     def __init__(self, outdir: str) -> None:
         super().__init__(outdir)
-        self.current_location: Location | None = None
-        self.functions = []
-        self.function_counter = 0
-        self.location_ports = set()
-        self.parallel_step_counter = 0
-        # If `parathetized` attribute is to True it means that an open bracket has been encountered
-        # but not yet its corresponding closed bracket
-        self.parathetized = False
-        self.programs: MutableMapping[str, TextIO] = {}
-        self.workflow: DistributedWorkflow | None = None
-        self.thread_stacks: MutableMapping[str, ThreadStack] = {}
+        self.location_ports: set[str] = set()
 
-    def _get_indentation(self):
-        return " " * 4 if self.parallel_step_counter > 0 else ""
+    # ======== Threading policy ========
+    def exec_is_threaded(self) -> bool:
+        return False
 
-    def _get_thread(self, location: str) -> str:
-        return self.thread_stacks.setdefault(location, ThreadStack()).add_thread()
+    def _open_location_trace(self, location: Location) -> TextIO:
+        return open(os.path.join(self.outdir, f"{location.name}.py"), "w")
 
-    def begin_dataset(
-        self,
-        dataset: MutableSequence[tuple[str, Data]],
-    ):
-        for port_name, data in dataset:
-            self.current_location.data[data.name] = data
-            self.location_ports.add(port_name)
-            self.programs[self.current_location.name].write(f"""
-    _init_dataset("{port_name}", "{data.value}")""")
+    # ======== Lifecycle overrides ========
 
     def begin_location(self, location: Location) -> None:
-        self.current_location = location
-        self.programs[self.current_location.name] = open(
-            os.path.join(self.outdir, f"{self.current_location.name}.py"), "w"
-        )
-        self.programs[self.current_location.name].write(preamble)
-        location = self.workflow.locations[self.current_location.name]
-        self.programs[self.current_location.name].write(f"""def main():
-    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    sock.bind(locations["{location.name}"])
-    sock.settimeout(3)
-    sock.listen({len(self.workflow.locations) - 1})
-
-    _thread(_accept, sock)
-""")
-
-    def begin_par(self) -> None:
-        if self.parallel_step_counter == 0 and not self.parathetized:
-            self.programs[self.current_location.name].write(f"""
-    def f{self.function_counter}():""")
-            self.functions.append(f"f{self.function_counter}")
-            self.function_counter += 1
-        self.parallel_step_counter += 1
-
-    def begin_paren(self) -> None:
-        if self.parallel_step_counter > 1:
-            self.parathetized = True
-
-    def begin_workflow(self, workflow: Workflow) -> None:
-        self.workflow = workflow
+        self.location_ports = set()
+        super().begin_location(location)
 
     def end_location(self) -> None:
-        out_dir = (
-            f'str(Path("{self.current_location.outdir}").expanduser().absolute())'
-            if self.current_location.outdir
-            else "os.getcwd()"
-        )
-        scratch_dir = (
-            f'str(Path("{self.current_location.workdir}").expanduser().absolute())'
-            if self.current_location.workdir
-            else "os.getcwd()"
-        )
-        self.programs[self.current_location.name].write("""
-    logger.info("Terminated trace")
-    global stopping
-    stopping = True""")
-        locations = ",\n".join(
-            [
-                f"\t'{name}': ('{location.hostname}', {location.port})"
-                for name, location in self.workflow.locations.items()
-            ]
-        )
-        ports = ",\n".join(
-            [
-                f"'{self.location_ports.pop()}' : Event()"
-                for _ in range(len(self.location_ports))
-            ]
-        )
-        self.programs[self.current_location.name].write(f"""
-locations = {{
-{locations}
-}}
-available_port_data = {{
-{ports}
-}}
+        assert self.current_location is not None
 
-OUT_DIR = {out_dir}
-SCRATCH_DIR = {scratch_dir}
-""")
-        self.programs[self.current_location.name].write("""
-if __name__ == '__main__':
-    main()
-""")
-        self.programs[self.current_location.name].close()
+        location_name = self.current_location.name
+        super().end_location()
 
         try:
-            import black
-
             black.format_file_in_place(
-                Path(self.outdir, f"{self.current_location.name}.py"),
+                Path(self.outdir, f"{location_name}.py"),
                 fast=False,
-                mode=black.mode.Mode(
-                    target_versions={black.mode.TargetVersion.PY310}, line_length=88
-                ),
+                mode=black.Mode(line_length=88, target_versions={TargetVersion.PY38}),
                 write_back=WriteBack.YES,
             )
         except ImportError:
@@ -364,46 +256,15 @@ if __name__ == '__main__':
                 "`black` package not found. Install black to obtain pretty-printed output files."
             )
 
-        self.current_location = None
-
-    def end_par(self) -> None:
-        self.parallel_step_counter -= 1
-        if (
-            self.thread_stacks[self.current_location.name].get_group()
-            and not self.parathetized
-        ):
-            self.programs[self.current_location.name].write(
-                f"""
-        _wait([{', '.join(self.thread_stacks[self.current_location.name].delete_group())}])"""
-            )
-            self.thread_stacks[self.current_location.name].add_group()
-
-        if self.parallel_step_counter == 0:
-            thread_stack = ThreadStack()
-            while self.functions:
-                fun = self.functions.pop()
-                thr = thread_stack.add_thread()
-                self.programs[self.current_location.name].write(f"""
-    {thr} = _thread({fun})""")
-            if thread_stack.stack:
-                self.programs[self.current_location.name].write(f"""
-    _wait([{', '.join(thread_stack.get_group())}])""")
-
-    def end_paren(self):
-        self.parathetized = False
-        if self.thread_stacks[self.current_location.name].get_group():
-            self.programs[self.current_location.name].write(
-                f"""
-    {self._get_indentation()}_wait([{', '.join(self.thread_stacks[self.current_location.name].delete_group())}])"""
-            )
-            self.thread_stacks[self.current_location.name].add_group()
-
     def end_workflow(self) -> None:
+        assert self.current_workflow is not None
+
         script_name = "run.sh"
+        workflow = self.current_workflow
         copy_traces = " &\n".join(
             [
                 loc.get_copy_command(f"{loc.name}.py", f"{loc.hostname}:{loc.workdir}")
-                for loc in self.workflow.locations.values()
+                for loc in workflow.locations.values()
                 if loc.get_copy_command(
                     f"{loc.name}.py", f"{loc.hostname}:{loc.workdir}"
                 )
@@ -415,7 +276,7 @@ if __name__ == '__main__':
             " &\n".join(
                 [
                     loc.get_command(f"python {loc.name}.py")
-                    for loc in self.workflow.locations.values()
+                    for loc in workflow.locations.values()
                 ]
             )
             + " &"
@@ -437,62 +298,155 @@ echo "Workflow execution terminated"
         os.chmod(
             os.path.join(self.outdir, script_name), usr_permissions | grp_permissions
         )
+        super().end_workflow()
 
-    def exec(
+    # ======== Write methods ========
+
+    def write_location_start(self, location: Location, trace: TextIO):
+        assert self.current_workflow is not None
+
+        trace.write(preamble)
+        trace.write(f"""
+def main():
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.bind(locations["{location.name}"])
+    sock.settimeout(3)
+    sock.listen({len(self.current_workflow.locations) - 1})
+
+    _thread(_accept, sock)
+""")
+
+    def write_location_end(self, location: Location, trace: TextIO):
+        assert self.current_workflow is not None
+        trace.write("""
+    logger.info("Terminated trace")
+    global stopping
+    stopping = True
+""")
+
+        out_dir = (
+            f'str(Path("{location.outdir}").expanduser().absolute())'
+            if location.outdir
+            else "os.getcwd()"
+        )
+        scratch_dir = (
+            f'str(Path("{location.workdir}").expanduser().absolute())'
+            if location.workdir
+            else "os.getcwd()"
+        )
+        locations_str = ",\n".join(
+            [
+                f"\t'{name}': ('{loc.hostname}', {loc.port})"
+                for name, loc in self.current_workflow.locations.items()
+            ]
+        )
+        ports_str = ",\n".join([f"\t'{p}': Event()" for p in self.location_ports])
+        trace.write(f"""
+locations = {{
+{locations_str}
+}}
+available_port_data = {{
+{ports_str}
+}}
+
+OUT_DIR = {out_dir}
+SCRATCH_DIR = {scratch_dir}
+""")
+        trace.write("""
+if __name__ == '__main__':
+    main()
+""")
+
+    def write_thread_start(self, node: TraceNode, indent: int, trace: TextIO):
+        if node.depth == 0:
+            return
+        i = "    " * indent
+        trace.write(f"\n{i}def {node.id}():\n")
+
+    def write_thread_end(
         self,
+        node: TraceNode,
+        indent: int,
+        trace: TextIO,
+        comment: Optional[str] = None,
+    ):
+        if node.depth == 0:
+            return
+
+        i = "    " * indent
+        trace.write(f"{i}{node.handle} = _thread({node.id})\n")
+
+    def write_wait_for(self, node: TraceNode, indent: int, trace: TextIO):
+        if node.depth == 0:
+            return
+        i = "    " * indent
+        trace.write(f"{i}_wait([{node.handle}])\n")
+
+    def write_exec(
+        self,
+        node: TraceNode,
+        indent: int,
+        trace: TextIO,
         step: Step,
         flow: tuple[set[tuple[str, str]], set[tuple[str, str]]],
         mapping: set[str],
     ):
+        assert step.arguments is not None
+        assert step.processors is not None
+
         arguments = [
             (arg.name if isinstance(arg, Port) else arg, isinstance(arg, Port))
             for arg in step.arguments
         ]
-
-        if output_port_name := next(iter(flow[1]))[0] if flow[1] else "":
+        output_port_name = next(iter(flow[1]))[0] if flow[1] else ""
+        if output_port_name:
             self.location_ports.add(output_port_name)
-        self.programs[self.current_location.name].write(
-            f"""
-    {self._get_indentation()}_exec("{step.name}", "{step.display_name}", {[port_name for port_name, _ in flow[0]]}, "{output_port_name}", "{step.processors[output_port_name].type if output_port_name else ""}", "{step.processors[output_port_name].glob if output_port_name else ""}", "{step.command}", {arguments})"""
+        i = "    " * indent
+        glob_val = step.processors[output_port_name].glob if output_port_name else ""
+        type_val = step.processors[output_port_name].type if output_port_name else ""
+
+        trace.write(
+            f"""\n{i}_exec("{step.name}", "{step.display_name}", {[pn for pn, _ in flow[0]]}, "{output_port_name}", "{type_val}", "{glob_val}", "{step.command}", {arguments})\n"""
         )
 
-    def par(self) -> None:
-        if (
-            self.thread_stacks[self.current_location.name].get_group()
-            and not self.parathetized
-        ):
-            self.programs[self.current_location.name].write(
-                f"""
-        _wait([{', '.join(self.thread_stacks[self.current_location.name].delete_group())}])"""
-            )
-            self.thread_stacks[self.current_location.name].add_group()
-
-        if not self.parathetized:
-            self.programs[self.current_location.name].write(f"""
-    def f{self.function_counter}():""")
-            self.functions.append(f"f{self.function_counter}")
-            self.function_counter += 1
-
-    def recv(self, port: str, _data: str, data_type: str, src: str, dst: str):
+    def write_recv(
+        self,
+        node: TraceNode,
+        indent: int,
+        trace: TextIO,
+        port: str,
+        data: str,
+        data_type: str,
+        src: str,
+        dst: str,
+    ):
         self.location_ports.add(port)
-        self.programs[self.current_location.name].write(
-            f"""
-    {self._get_indentation()}{self._get_thread(self.current_location.name)} = _thread(_recv, "{port}", "{data_type}", "{src}")"""
+        i = "    " * indent
+        trace.write(
+            f"""{i}{node.handle} = _thread(_recv, "{port}", "{data_type}", "{src}")\n"""
         )
 
-    def send(self, data: str, port: str, data_type: str, src: str, dst: str):
-        self.programs[self.current_location.name].write(
-            f"""
-    {self._get_indentation()}{self._get_thread(self.current_location.name)} = _thread(_send, "{port}", "{data_type}", "{src}", "{dst}")"""
+    def write_send(
+        self,
+        node: TraceNode,
+        indent: int,
+        trace: TextIO,
+        data: str,
+        port: str,
+        data_type: str,
+        src: str,
+        dst: str,
+    ):
+        i = "    " * indent
+        trace.write(
+            f"""{i}{node.handle} = _thread(_send, "{port}", "{data_type}", "{src}", "{dst}")\n"""
         )
 
-    def seq(self):
-        if (
-            self.current_location.name in self.thread_stacks.keys()
-            and self.thread_stacks[self.current_location.name].get_group()
-        ):
-            self.programs[self.current_location.name].write(
-                f"""
-    {self._get_indentation()}_wait([{', '.join(self.thread_stacks[self.current_location.name].delete_group())}])"""
-            )
-            self.thread_stacks[self.current_location.name].add_group()
+    def write_dataset(
+        self, node: TraceNode, indent: int, trace: TextIO, port: str, data: Data
+    ):
+        assert self.current_location is not None
+
+        self.location_ports.add(port)
+        i = "    " * indent
+        trace.write(f"""{i}_init_dataset("{port}", "{data.value}")\n""")
