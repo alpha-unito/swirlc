@@ -51,7 +51,7 @@ bandit = [
 lint = [
     "codespell==2.4.2",
     "pyupgrade==3.21.2",
-    "ruff==0.15.15"
+    "ruff==0.15.16"
 ]
 test = [
     "pytest==9.0.3",
