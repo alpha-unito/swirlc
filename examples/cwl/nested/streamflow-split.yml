@@ -1,0 +1,28 @@
+version: v1.0
+workflows:
+  master:
+    type: cwl
+    config:
+      file: main.cwl
+      settings: inputs.yml
+    bindings:
+      - step: /step_preprocess
+        target:
+          deployment: remote
+      - step: /step_annotate
+        target:
+          deployment: local
+
+deployments:
+  local:
+    type: local
+    config: {}
+    workdir: /tmp/swirl
+  remote:
+    type: ssh
+    config:
+      nodes:
+        - hpc.example.org
+      username: user
+      sshKey: ~/.ssh/id_rsa
+    workdir: /home/user/swirl/tmp

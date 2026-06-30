@@ -1,0 +1,6 @@
+word: "hello"
+count: 3
+# label is optional — uncomment to see it appear in the output:
+# tag: "greeting"
+# verbose is a boolean flag — uncomment to enable:
+# verbose: true

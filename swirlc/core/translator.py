@@ -28,15 +28,14 @@ def _add_step(step, steps, workflow, dependencies):
         "displayName": step.display_name,
         "command": step.command,
     }
-    if step.arguments:
-        steps[step.name]["arguments"] = [
-            {
-                "valueFrom" if isinstance(arg, Port) else "value": (
-                    arg.name if isinstance(arg, Port) else arg
-                )
-            }
-            for arg in step.arguments
-        ]
+    steps[step.name]["arguments"] = [
+        {
+            "valueFrom" if isinstance(arg, Port) else "value": (
+                arg.name if isinstance(arg, Port) else arg
+            )
+        }
+        for arg in (step.arguments or [])
+    ]
     if step.processors:
         steps[step.name]["outputs"] = {}
         for port_name, processor in step.processors.items():
