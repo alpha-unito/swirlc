@@ -81,21 +81,117 @@ accept_function = """def _accept(sock: socket.socket):
     sock.close()
 """
 
+list_helper = """def _list_inner(data_type: str) -> str | None:
+    \"\"\"Return the inner type of a generic list type string, else None.
+
+    'list[file]' -> 'file', 'list[list[string]]' -> 'list[string]', 'file' -> None.
+    \"\"\"
+    if data_type.startswith("list[") and data_type.endswith("]"):
+        return data_type[len("list["):-1]
+    return None
+"""
+
+framing_helpers = """def _send_len(sock: socket.socket, n: int):
+    sock.sendall(n.to_bytes(8, "big"))
+
+
+def _recv_exactly(sock: socket.socket, n: int) -> bytes:
+    buf = bytearray()
+    while len(buf) < n:
+        chunk = sock.recv(min(BUF_SIZE, n - len(buf)))
+        if not chunk:
+            raise EOFError("Connection closed mid-frame")
+        buf.extend(chunk)
+    return bytes(buf)
+
+
+def _recv_len(sock: socket.socket) -> int:
+    return int.from_bytes(_recv_exactly(sock, 8), "big")
+
+
+def _send_value(sock: socket.socket, data_type: str, value: Any):
+    \"\"\"Serialise a (possibly nested) value onto the socket, framed by length.
+
+    Framing is driven by the type string, which is identical on both ends, so
+    nested lists (e.g. list[list[file]]) round-trip without an explicit schema.
+    \"\"\"
+    inner = _list_inner(data_type)
+    if inner is not None:
+        _send_len(sock, len(value))
+        for elem in value:
+            _send_value(sock, inner, elem)
+    elif data_type in ("file", "directory"):
+        if data_type == "directory":
+            raise NotImplementedError("Sending directories is not implemented yet")
+        name = os.path.basename(value).encode("utf-8")
+        _send_len(sock, len(name))
+        sock.sendall(name)
+        _send_len(sock, os.path.getsize(value))
+        with open(value, "rb") as fd:
+            while buf := fd.read(BUF_SIZE):
+                sock.sendall(buf)
+    else:
+        payload = value if isinstance(value, bytes) else str(value).encode("utf-8")
+        _send_len(sock, len(payload))
+        sock.sendall(payload)
+
+
+def _recv_value(sock: socket.socket, data_type: str) -> Any:
+    \"\"\"Inverse of _send_value: rebuild a value from the framed socket stream.\"\"\"
+    inner = _list_inner(data_type)
+    if inner is not None:
+        return [_recv_value(sock, inner) for _ in range(_recv_len(sock))]
+    elif data_type in ("file", "directory"):
+        if data_type == "directory":
+            raise NotImplementedError("Receiving directories is not implemented yet")
+        name = _recv_exactly(sock, _recv_len(sock)).decode("utf-8")
+        path = os.path.join(SCRATCH_DIR, f"rcv_{uuid.uuid4()}", name)
+        os.mkdir(os.path.dirname(path))
+        size = _recv_len(sock)
+        with open(path, "wb") as fd:
+            remaining = size
+            while remaining:
+                chunk = _recv_exactly(sock, min(BUF_SIZE, remaining))
+                fd.write(chunk)
+                remaining -= len(chunk)
+        return path
+    else:
+        payload = _recv_exactly(sock, _recv_len(sock))
+        return payload.decode("utf-8")
+"""
+
 exec_function = """def _exec(step_name: str, step_display_name: str, input_port_names: MutableSequence[str], output_port_name: str, data_type: str, glob_regex: str | None, cmd: str, args: MutableSequence[tuple[str,bool]]):
     for port_name in input_port_names:
         available_port_data[port_name].wait()
     workdir = os.path.join(SCRATCH_DIR, f"exec_{step_name}_{uuid.uuid4()}")
     os.mkdir(workdir)
     for port_name in input_port_names:
-        os.symlink(os.path.abspath(ports[port_name]), os.path.join(workdir, os.path.basename(ports[port_name])))
-    cmd = " ".join([cmd, *(ports[elem] if is_data else elem for elem, is_data in args)])
+        value = ports[port_name]
+        # A list input (e.g. list[file]) symlinks each element into the workdir.
+        for elem in (value if isinstance(value, list) else [value]):
+            os.symlink(os.path.abspath(elem), os.path.join(workdir, os.path.basename(elem)))
+    # A list argument expands to its space-joined elements on the command line.
+    cmd = " ".join([cmd, *(
+        (" ".join(str(e) for e in ports[elem]) if isinstance(ports[elem], list) else str(ports[elem])) if is_data else elem
+        for elem, is_data in args
+    )])
     if logger.isEnabledFor(logging.INFO):
         logger.info(f"Step {step_display_name}-{step_name} executes command '{cmd}'")
     result = subprocess.run(cmd, capture_output=True, shell=True, cwd=workdir)
     if result.returncode != 0:
         raise Exception(f"Step {step_display_name}-{step_name} failed with exit status {result.returncode}: {result.stderr.decode('utf-8')}")
     if output_port_name:
-        if data_type == "stdout":
+        inner_type = _list_inner(data_type)
+        if inner_type is not None:
+            # Generic list output. Only a flat list of files/directories collected
+            # via glob is materialised here; other/nested list outputs are TODO.
+            if inner_type not in ("file", "directory"):
+                raise NotImplementedError(f"Step {step_display_name}-{step_name} produces unsupported list output type: {data_type}")
+            res = sorted(glob.glob(os.path.join(workdir, glob_regex)))
+            ports[output_port_name] = res
+            if logger.isEnabledFor(logging.INFO):
+                logger.info(f"Step {step_display_name}-{step_name} result list ({len(res)}): {res}")
+        elif data_type == "stdout":
             ports[output_port_name] = result.stdout
             if logger.isEnabledFor(logging.INFO):
                 logger.info(f"Step {step_display_name}-{step_name} result: '{result.stdout.decode().strip()}'")
@@ -117,7 +213,7 @@ exec_function = """def _exec(step_name: str, step_display_name: str, input_port_
             logger.info(f"Step {step_display_name}-{step_name} has not an output port. Result: '{result.stdout.decode().strip()}'")
 """
 
-init_dataset_function = """def _init_dataset(port_name: str, data: str):
+init_dataset_function = """def _init_dataset(port_name: str, data: Any):
     ports[port_name] = data
     available_port_data[port_name].set()
 """
@@ -131,65 +227,26 @@ send_function = """def _send(port: str, data_type: str, src: str, dst: str):
         except socket.error:
             time.sleep(1)
     sock.send(f"{src} {port}".encode("utf-8"))
-    sock.recv(BUF_SIZE)
-    if data_type == "stout":
-        sock.send(ports[port])
-    elif data_type == "file":
-        sock.send(os.path.basename(ports[port]).encode("utf-8"))
-        sock.recv(BUF_SIZE)
-        fd = open(ports[port], "rb")
-        while True:
-            buf = fd.read(BUF_SIZE)
-            if not buf:
-                break
-            sock.sendall(buf)
-        fd.close()
-    elif data_type == "directory":
-        raise NotImplementedError(f"Recv directories not implemented yet")
-    else:
-        raise Exception(f"Unsupported data type: {data_type}")
+    sock.recv(BUF_SIZE)  # accept handshake ack
+    _send_value(sock, data_type, ports[port])
     if logger.isEnabledFor(logging.DEBUG):
         logger.debug(f"Sent data for port {port} to location {dst}")
     sock.close()
 """
 
 recv_function = """def _recv(port: str, data_type: str, src: str) -> Any:
-    buf = BytesIO()
     with condition:
         while connections.setdefault(src, {}).get(port) is None:
             logger.debug(f"Waiting connection for port {port} from location {src}")
             condition.wait()
     if logger.isEnabledFor(logging.DEBUG):
         logger.debug(f"Received connection for port {port} from location {src}")
-    if data_type == "stdout":
-        while True:
-            if not (data := connections[src][port].recv(BUF_SIZE)):
-                break
-            buf.write(data)
-        if logger.isEnabledFor(logging.DEBUG):
-            logger.debug(f"Received data for port {port} from location {src}")
-        buf.seek(0)
-        ports[port] = buf.read().decode("utf-8")
-        available_port_data[port].set()
-    elif data_type == "file":
-        filename = connections[src][port].recv(1024).decode()
-        connections[src][port].send("ack".encode("utf-8"))
-        filepath = os.path.join(SCRATCH_DIR, f"rcv_{port}_{uuid.uuid4()}", filename)
-        os.mkdir(os.path.dirname(filepath))
-        fd = open(filepath, "wb")
-        while True:
-            if not (data := connections[src][port].recv(BUF_SIZE)):
-                break
-            fd.write(data)
-        fd.close()
-        ports[port] = filepath
-        available_port_data[port].set()
-        logger.debug(f"Received file '{ports[port]}' on port {port}")
-    elif data_type == "directory":
-        raise NotImplementedError(f"Recv directories not implemented yet")
-    else:
-        raise Exception(f"Unsupported data type: {data_type}")
-    connections[src][port].close()
+    conn = connections[src][port]
+    ports[port] = _recv_value(conn, data_type)
+    available_port_data[port].set()
+    if logger.isEnabledFor(logging.DEBUG):
+        logger.debug(f"Received data for port {port} from location {src}: {ports[port]}")
+    conn.close()
     connections[src][port] = None
 """
 
@@ -210,6 +267,8 @@ preamble = "\n".join(
         imports,
         global_vars,
         accept_function,
+        list_helper,
+        framing_helpers,
         exec_function,
         init_dataset_function,
         send_function,
@@ -449,4 +508,5 @@ if __name__ == '__main__':
 
         self.location_ports.add(port)
         i = "    " * indent
-        trace.write(f"""{i}_init_dataset("{port}", "{data.value}")\n""")
+        # repr() so both scalar strings and list values emit as valid Python literals.
+        trace.write(f"""{i}_init_dataset("{port}", {data.value!r})\n""")

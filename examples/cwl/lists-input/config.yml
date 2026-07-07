@@ -1,0 +1,7 @@
+snp_files:
+  - type: File
+    path: data/snp_a.txt
+  - type: File
+    path: data/snp_b.txt
+  - type: File
+    path: data/snp_c.txt

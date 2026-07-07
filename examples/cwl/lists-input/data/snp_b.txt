@@ -1,0 +1,2 @@
+chr2 snpB1
+chr2 snpB2

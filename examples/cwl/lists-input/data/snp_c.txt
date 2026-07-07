@@ -1,0 +1,4 @@
+chr3 snpC1
+chr3 snpC2
+chr3 snpC3
+chr3 snpC4

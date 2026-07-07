@@ -1,0 +1,25 @@
+version: v1.0
+workflows:
+  master:
+    type: cwl
+    config:
+      file: main.cwl
+    bindings:
+      # default: everything on `alpha`
+      - step: /
+        target:
+          deployment: alpha
+      # step2 runs on `beta`, forcing the list[file] transfer alpha -> beta
+      - step: /step2
+        target:
+          deployment: beta
+
+deployments:
+  alpha:
+    type: local
+    config: {}
+    port: 35060
+  beta:
+    type: local
+    config: {}
+    port: 35061

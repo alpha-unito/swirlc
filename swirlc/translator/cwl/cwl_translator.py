@@ -24,8 +24,65 @@ from swirlc.core.entity import (
 from cwl_utils.parser import load_document_by_uri, save
 from swirlc.core.translator import AbstractTranslator
 
-# fixme: data_type cannot be always "file"
+# Fallback used when a CWL type cannot be resolved to a SWIRL type.
 DATA_TYPE = "file"
+
+# Map CWL scalar type names to SWIRL base types.
+_CWL_SCALAR_TO_SWIRL = {
+    "File": "file",
+    "Directory": "directory",
+    "string": "string",
+    "int": "int",
+    "long": "int",
+    "boolean": "bool",
+}
+
+
+def _list_inner_type(data_type: str) -> str | None:
+    """Return the inner type of a generic ``list[...]`` type string, else None."""
+    if data_type.startswith("list[") and data_type.endswith("]"):
+        return data_type[len("list[") : -1]
+    return None
+
+
+def _cwl_type_to_swirl(cwl_type) -> str:
+    """Convert a cwl_utils type to a SWIRL type string.
+
+    Handles scalars (``File`` -> ``file``), optional types (``File?``), arrays in
+    every cwl form -- the ``File[]`` string shorthand, ``{type: array, items: ...}``
+    dicts, and ``CommandInputArraySchema`` objects -- mapping them to the generic
+    ``list[<inner>]`` form. Arrays nest recursively (``list[list[file]]``). Unions
+    resolve to their first non-null member. Falls back to :data:`DATA_TYPE`.
+    """
+    if cwl_type is None:
+        return DATA_TYPE
+
+    # Union types: list of alternatives, e.g. ['null', 'File'].
+    if isinstance(cwl_type, (list, tuple)):
+        for member in cwl_type:
+            if member not in ("null", None):
+                return _cwl_type_to_swirl(member)
+        return DATA_TYPE
+
+    # Array schema object (cwl_utils CommandInput/OutputArraySchema).
+    items = getattr(cwl_type, "items", None)
+    obj_type = getattr(cwl_type, "type_", None) or getattr(cwl_type, "type", None)
+    if items is not None and obj_type == "array":
+        return f"list[{_cwl_type_to_swirl(items)}]"
+
+    # Array schema dict, e.g. {"type": "array", "items": "File"}.
+    if isinstance(cwl_type, dict):
+        if cwl_type.get("type") == "array":
+            return f"list[{_cwl_type_to_swirl(cwl_type.get('items'))}]"
+        return DATA_TYPE
+
+    if isinstance(cwl_type, str):
+        t = cwl_type.rstrip("?")  # strip optional marker
+        if t.endswith("[]"):
+            return f"list[{_cwl_type_to_swirl(t[:-2])}]"
+        return _CWL_SCALAR_TO_SWIRL.get(t, DATA_TYPE)
+
+    return DATA_TYPE
 
 
 class _EffStep:
@@ -76,8 +133,9 @@ def load_cwl_workflow_recursive_uri(
     if hasattr(doc, "steps"):  # Workflow — recurse into each step's run target
         for step in doc.steps:
             if isinstance(step.run, str):
-                load_cwl_workflow_recursive(step.run, _visited)
-                # Step: chromosome  run: <cwl_utils.parser.cwl_v1_2.Workflow object at 0x7b0493fecd70
+                # A string `run` is a URI to another document (tool or
+                # subworkflow); load it through the URI loader.
+                load_cwl_workflow_recursive_uri(step.run, _visited)
             if isinstance(step.run, cwl_utils.parser.cwl_v1_2.Workflow):
                 # Step: chromosome  run: <cwl_utils.parser.cwl_v1_2.Workflow object at 0x7b0493fecd70
                 # Already loaded, but we can still recurse into its steps
@@ -498,15 +556,24 @@ class CWLTranslator(AbstractTranslator):
             port_counter += 1
             port = Port(name=port_name, display_name=inp_name, data={data_name})
             source_to_port[inp_name] = port
+            data_type = _cwl_type_to_swirl(wf_inp.type_)
+
+            def _coerce(v):
+                # A CWL File/Directory value is a {"path": ...} object.
+                if isinstance(v, dict) and "path" in v:
+                    return v["path"]
+                return str(v)
+
             raw_val = settings_values.get(inp_name)
-            if isinstance(raw_val, dict) and "path" in raw_val:
-                str_val = raw_val["path"]
+            if _list_inner_type(data_type) is not None:
+                # List input: preserve the list, coercing each element.
+                val = [_coerce(v) for v in (raw_val or [])]
             elif raw_val is not None:
-                str_val = str(raw_val)
+                val = _coerce(raw_val)
             else:
-                str_val = ""
+                val = ""
             default_loc.data[data_name] = Data(
-                name=data_name, type=DATA_TYPE, value=str_val
+                name=data_name, type=data_type, value=val
             )
 
         # 4b. Create a Step per leaf, with its output ports + processors.
@@ -518,12 +585,16 @@ class CWLTranslator(AbstractTranslator):
 
             for out_port_id, gkey in eff.outputs:
                 glob_val = None
+                out_type = DATA_TYPE
                 if hasattr(eff.tool_obj, "outputs"):
                     for tool_out in eff.tool_obj.outputs:
                         if _local_name(tool_out.id).split("/")[-1] == out_port_id:
                             binding = getattr(tool_out, "outputBinding", None)
                             if binding and binding.glob:
                                 glob_val = binding.glob
+                            out_type = _cwl_type_to_swirl(
+                                getattr(tool_out, "type_", None)
+                            )
                             break
 
                 data_name = f"d{data_counter}"
@@ -535,7 +606,7 @@ class CWLTranslator(AbstractTranslator):
 
                 if step.processors is None:
                     step.processors = {}
-                step.processors[port_name] = Processor(type=DATA_TYPE, glob=glob_val)
+                step.processors[port_name] = Processor(type=out_type, glob=glob_val)
 
                 source_to_port[gkey] = port
 

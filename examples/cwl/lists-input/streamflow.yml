@@ -1,0 +1,26 @@
+version: v1.0
+workflows:
+  master:
+    type: cwl
+    config:
+      file: main.cwl
+      settings: config.yml
+    bindings:
+      # default: input data + `report` live on `alpha`
+      - step: /
+        target:
+          deployment: alpha
+      # `merge` runs on `beta`, forcing the list[file] input transfer alpha -> beta
+      - step: /merge
+        target:
+          deployment: beta
+
+deployments:
+  alpha:
+    type: local
+    config: {}
+    port: 35060
+  beta:
+    type: local
+    config: {}
+    port: 35061

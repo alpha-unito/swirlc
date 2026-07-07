@@ -18,18 +18,19 @@
       "properties": {
         "type": {
           "type": "string",
-          "enum": [
-            "string",
-            "int",
-            "bool",
-            "file",
-            "stdout"
-          ],
-          "description": "Data type. Valid types: (string, int, bool, file, stdout)"
+          "pattern": "^(string|int|bool|file|stdout|directory)$|^list\\[.+\\]$",
+          "description": "Data type. Base types: (string, int, bool, file, stdout, directory). Generic lists: list[<type>], nestable e.g. list[file], list[list[string]]."
         },
         "value": {
-          "type": "string",
-          "description": "Value of the data if it is input workflow data"
+          "oneOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "array"
+            }
+          ],
+          "description": "Value of the data if it is input workflow data. Array when the type is a list."
         }
       },
       "required": [
