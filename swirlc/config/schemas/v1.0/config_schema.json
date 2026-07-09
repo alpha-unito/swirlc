@@ -38,9 +38,18 @@
       ],
       "additionalProperties": false
     },
-    "location": {
+    "deployment": {
       "type": "object",
       "properties": {
+        "type": {
+          "type": "string",
+          "enum": [
+            "ssh",
+            "docker",
+            "slurm"
+          ],
+          "description": "It declares how to access the location."
+        },
         "hostname": {
           "type": "string",
           "description": "The IP address to connect to."
@@ -48,6 +57,73 @@
         "port": {
           "type": "integer",
           "description": "The port on which to open the connection."
+        },
+        "username": {
+          "type": "string",
+          "description": "The SSH username for remote locations."
+        },
+        "sshKey": {
+          "type": "string",
+          "description": "The SSH private key path for remote locations."
+        },
+        "checkHostKey": {
+          "type": "boolean",
+          "description": "Whether SSH host key checking should be enabled."
+        },
+        "workdir": {
+          "type": "string",
+          "description": "Path to the working directory."
+        },
+        "slurm": {
+          "type": "object",
+          "properties": {
+            "service": {
+              "type": "string",
+              "description": "The SLURM service selected from the source deployment configuration."
+            },
+            "options": {
+              "type": "object",
+              "description": "SBATCH options for the selected SLURM service.",
+              "additionalProperties": {
+                "type": [
+                  "string",
+                  "integer",
+                  "number",
+                  "boolean"
+                ]
+              }
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "location": {
+      "type": "object",
+      "properties": {
+        "deployment": {
+          "$ref": "#/$defs/deployment"
+        },
+        "hostname": {
+          "type": "string",
+          "description": "The IP address to connect to."
+        },
+        "port": {
+          "type": "integer",
+          "description": "The port on which to open the connection."
+        },
+        "username": {
+          "type": "string",
+          "description": "The SSH username for remote locations."
+        },
+        "sshKey": {
+          "type": "string",
+          "description": "The SSH private key path for remote locations."
+        },
+        "checkHostKey": {
+          "type": "boolean",
+          "description": "Whether SSH host key checking should be enabled."
         },
         "outdir": {
           "type": "string",
@@ -89,10 +165,6 @@
           "additionalProperties": false
         }
       },
-      "required": [
-        "hostname",
-        "port"
-      ],
       "additionalProperties": false
     },
     "step": {

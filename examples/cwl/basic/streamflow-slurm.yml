@@ -13,40 +13,45 @@ workflows:
             type: none
             config: {}
     bindings:
-      # Inputs and unbound steps stay local.
-      - step: /
+      # Keep both workflow steps on SLURM, but use distinct services so SWIRL
+      # creates two HPC locations instead of collapsing them into one process.
+      - step: /step1
         target:
-          deployment: local
-      # Deploy only the second CWL step through SLURM.
+          deployment: cluster-slurm
+          service: broadwell-step1
       - step: /step2
         target:
           deployment: cluster-slurm
-          service: broadwell
+          service: broadwell-step2
 
 deployments:
   local:
     type: local
     config: {}
-    workdir: /tmp/swirl-local
 
   cluster-login:
     type: ssh
     config:
       nodes:
-        - login.hpc.example.org
-      username: user
-      sshKey: ~/.ssh/id_rsa
+        - mercurio.hpc4ai.unito.it
+      username: tommaso.fogliobonda
+      sshKey: ~/.ssh/unito
       checkHostKey: false
-    workdir: /home/user/swirl
+    workdir: /beegfs/home/tommaso.fogliobonda/tmp/swirl
 
   cluster-slurm:
     type: slurm
     wraps: cluster-login
-    workdir: /scratch/user/swirl
+    workdir: /beegfs/home/tommaso.fogliobonda/tmp/swirl
     config:
       maxConcurrentJobs: 4
       services:
-        broadwell:
+        broadwell-step1:
+          partition: broadwell
+          nodes: 1
+          ntasks: 1
+          time: "00:10:00"
+        broadwell-step2:
           partition: broadwell
           nodes: 1
           ntasks: 1

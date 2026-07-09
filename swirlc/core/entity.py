@@ -4,6 +4,7 @@ from collections.abc import MutableMapping, MutableSequence
 from pathlib import PurePath
 from typing import Any
 
+from swirlc.core.deployment import Deployment, make_deployment
 from swirlc.core.utils import flatten_list
 
 
@@ -27,6 +28,10 @@ class Location:
         "hostname",
         "port",
         "slurm",
+        "username",
+        "ssh_key",
+        "check_host_key",
+        "deployment",
     )
 
     def __init__(
@@ -40,64 +45,51 @@ class Location:
         workdir: str | None = None,
         outdir: str | None = None,
         slurm: MutableMapping[str, Any] | None = None,
+        username: str | None = None,
+        ssh_key: str | None = None,
+        check_host_key: bool | None = None,
+        deployment: Deployment | None = None,
     ):
         self.data: MutableMapping[str, Any] = data
         self.display_name: str = display_name
         self.name: str = name
-        self.connection_type: str = connection_type
-        self.hostname: str | None = hostname
-        self.port: str | None = port
+        self.deployment = deployment or make_deployment(
+            connection_type=connection_type,
+            hostname=hostname,
+            port=port,
+            workdir=workdir,
+            username=username,
+            ssh_key=ssh_key,
+            check_host_key=check_host_key,
+            slurm=slurm,
+        )
+        self.connection_type: str | None = self.deployment.connection_type
+        self.hostname: str | None = self.deployment.hostname
+        self.port: str | None = self.deployment.port
         self.outdir: str | None = str(PurePath(outdir)) if outdir else outdir
-        self.workdir: str | None = str(PurePath(workdir)) if workdir else workdir
-        self.slurm: MutableMapping[str, Any] | None = slurm
+        self.workdir: str | None = self.deployment.workdir
+        self.slurm: MutableMapping[str, Any] | None = self.deployment.slurm
+        self.username: str | None = self.deployment.username
+        self.ssh_key: str | None = self.deployment.ssh_key
+        self.check_host_key: bool | None = self.deployment.check_host_key
 
     def get_command(self, cmd: str) -> str:
-        if self.connection_type == "ssh":
-            return " ".join(["ssh", self.hostname, f'"cd {self.workdir} && {cmd}"'])
-        elif self.connection_type == "slurm":
-            submit = f"sbatch --wait {self.name}.sbatch"
-            if self.hostname and self.hostname not in ("127.0.0.1", "localhost"):
-                if self.workdir:
-                    return " ".join(
-                        ["ssh", self.hostname, f'"cd {self.workdir} && {submit}"']
-                    )
-                return " ".join(["ssh", self.hostname, f'"{submit}"'])
-            return (f"cd {self.workdir} && " if self.workdir else "") + submit
-        elif self.connection_type == "docker":
-            return " ".join(
-                [
-                    "docker",
-                    "exec",
-                    "--workdir",
-                    self.workdir,
-                    self.hostname,
-                    "sh",
-                    "-c",
-                    f'"{cmd}"',
-                ]
-            )
-        elif self.connection_type is None:
-            return (f"cd {self.workdir} && " if self.workdir else "") + cmd
-        else:
-            raise NotImplementedError(
-                f"Connection type: {self.connection_type} not supported"
-            )
+        return self.deployment.get_command(cmd, self.name)
+
+    def get_prepare_command(self) -> str:
+        return self.deployment.get_prepare_command()
 
     def get_copy_command(self, src, dst):
-        if self.connection_type == "ssh":
-            return " ".join(["scp", src, dst])
-        elif self.connection_type == "slurm":
-            if self.hostname and self.hostname not in ("127.0.0.1", "localhost"):
-                return " ".join(["scp", src, dst])
-            return ""
-        elif self.connection_type == "docker":
-            return " ".join(["docker", "cp", src, dst])
-        elif self.connection_type is None:
-            return ""
-        else:
-            raise NotImplementedError(
-                f"Connection type: {self.connection_type} not supported"
-            )
+        return self.deployment.get_copy_command(src, dst)
+
+    def get_fetch_command(self, src, dst):
+        return self.deployment.get_fetch_command(src, dst)
+
+    def get_bind_host(self) -> str:
+        return self.deployment.get_bind_host()
+
+    def get_advertise_command(self) -> str:
+        return self.deployment.get_advertise_command()
 
 
 class Port:

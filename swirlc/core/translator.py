@@ -11,18 +11,28 @@ from swirlc.core.entity import Port, Workflow
 
 def _add_location(location, locations):
     locations[location.name] = {}
-    if location.hostname:
-        locations[location.name]["hostname"] = location.hostname
-    if location.port:
-        locations[location.name]["port"] = location.port
-    if location.connection_type:
-        locations[location.name]["connectionType"] = location.connection_type
-    if location.workdir:
-        locations[location.name]["workdir"] = location.workdir
     if location.outdir:
         locations[location.name]["outdir"] = location.outdir
+
+    deployment = {}
+    if location.connection_type:
+        deployment["type"] = location.connection_type
+    if location.hostname:
+        deployment["hostname"] = location.hostname
+    if location.port:
+        deployment["port"] = location.port
+    if location.workdir:
+        deployment["workdir"] = location.workdir
+    if location.username:
+        deployment["username"] = location.username
+    if location.ssh_key:
+        deployment["sshKey"] = location.ssh_key
+    if location.check_host_key is not None:
+        deployment["checkHostKey"] = location.check_host_key
     if location.slurm:
-        locations[location.name]["slurm"] = location.slurm
+        deployment["slurm"] = location.slurm
+    if deployment:
+        locations[location.name]["deployment"] = deployment
 
 
 def _add_step(step, steps, workflow, dependencies):

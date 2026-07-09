@@ -2,39 +2,19 @@
 cwlVersion: v1.2
 class: CommandLineTool
 
-baseCommand: echo
-
-requirements:
-  - class: InlineJavascriptRequirement
+baseCommand: >-
+  sh -c 'if [ "$#" -eq 1 ]; then echo "$1 from $(hostname)"; else printf "%s\n%s from %s\n" "$1" "$2" "$(hostname)"; fi' _
 
 inputs:
-  first:
-    type: string
+  previous:
+    type: string?
     inputBinding:
       position: 1
 
-  second:
+  greeting:
     type: string
     inputBinding:
       position: 2
-
-  times:
-    type: int
-    inputBinding:
-      prefix: --times
-      position: 0
-
-  label:
-    type: string?
-    inputBinding:
-      prefix: --label
-      position: 3
-
-  verbose:
-    type: boolean?
-    inputBinding:
-      prefix: --verbose
-      position: 4
 
 outputs:
   command_line:

@@ -31,8 +31,11 @@ python_header = f"""#!/usr/bin/env python
 imports = """from __future__ import annotations
 
 import glob
+import argparse
+import json
 import logging
 import os
+import shlex
 import socket
 import subprocess
 import time
@@ -50,6 +53,7 @@ BUF_SIZE = 8192
 
 condition: Condition = Condition()
 connections: MutableMapping[str, MutableMapping[str, socket.socket]] = {}
+locations: MutableMapping[str, tuple[str, int]] = {}
 ports: MutableMapping[str, Any] = {}
 stopping: bool = False
 
@@ -79,6 +83,70 @@ accept_function = """def _accept(sock: socket.socket):
         except socket.timeout:
             pass
     sock.close()
+"""
+
+file_rendezvous_helpers = """
+def _advertise_host() -> str:
+    try:
+        host = subprocess.check_output(
+            ADVERTISE_COMMAND,
+            shell=True,
+            text=True,
+        ).strip()
+    except subprocess.SubprocessError:
+        host = ""
+    return host or socket.getfqdn()
+
+
+def _write_address_file(port: int):
+    payload = {
+        "runId": RUN_ID,
+        "name": LOCATION_NAME,
+        "host": _advertise_host(),
+        "port": port,
+    }
+    tmp_path = f"{ADDRESS_FILE}.tmp"
+    with open(tmp_path, "w") as fd:
+        json.dump(payload, fd)
+        fd.write("\\n")
+    os.replace(tmp_path, ADDRESS_FILE)
+    if logger.isEnabledFor(logging.INFO):
+        logger.info("Wrote address file %s: %s", ADDRESS_FILE, payload)
+
+
+def _load_address_book():
+    timeout = int(os.environ.get("SWIRLC_ADDRESS_BOOK_TIMEOUT", "600"))
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            with open(ADDRESS_BOOK_FILE) as fd:
+                payload = json.load(fd)
+        except FileNotFoundError:
+            payload = None
+        if payload and payload.get("runId") == RUN_ID:
+            locations.update(
+                {
+                    name: (value["host"], int(value["port"]))
+                    for name, value in payload["locations"].items()
+                }
+            )
+            if logger.isEnabledFor(logging.INFO):
+                logger.info("Loaded address book %s: %s", ADDRESS_BOOK_FILE, locations)
+            return
+        remaining = int(deadline - time.monotonic())
+        if remaining <= 0:
+            raise TimeoutError(
+                f"Location {LOCATION_NAME} did not receive address book "
+                f"{ADDRESS_BOOK_FILE} for run {RUN_ID} after {timeout}s"
+            )
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug(
+                "Waiting for address book %s for run %s (%ss left)",
+                ADDRESS_BOOK_FILE,
+                RUN_ID,
+                remaining,
+            )
+        time.sleep(1)
 """
 
 list_helper = """def _list_inner(data_type: str) -> str | None:
@@ -169,12 +237,25 @@ exec_function = """def _exec(step_name: str, step_display_name: str, input_port_
         value = ports[port_name]
         # A list input (e.g. list[file]) symlinks each element into the workdir.
         for elem in (value if isinstance(value, list) else [value]):
-            os.symlink(os.path.abspath(elem), os.path.join(workdir, os.path.basename(elem)))
+            if not elem:
+                continue
+            elem_path = os.fspath(elem)
+            if not os.path.exists(elem_path):
+                continue
+            target_name = os.path.basename(os.path.normpath(elem_path))
+            if not target_name:
+                continue
+            os.symlink(os.path.abspath(elem_path), os.path.join(workdir, target_name))
+    def _quote_arg(value: Any) -> str:
+        return shlex.quote(str(value))
+
     # A list argument expands to its space-joined elements on the command line.
     cmd = " ".join([cmd, *(
-        (" ".join(str(e) for e in ports[elem]) if isinstance(ports[elem], list) else str(ports[elem])) if is_data else elem
+        (" ".join(_quote_arg(e) for e in ports[elem]) if isinstance(ports[elem], list) else _quote_arg(ports[elem])) if is_data else _quote_arg(elem)
         for elem, is_data in args
     )])
+    if data_type in ("string", "int", "bool") and glob_regex:
+        cmd = f"{cmd} > {shlex.quote(glob_regex)}"
     if logger.isEnabledFor(logging.INFO):
         logger.info(f"Step {step_display_name}-{step_name} executes command '{cmd}'")
     result = subprocess.run(cmd, capture_output=True, shell=True, cwd=workdir)
@@ -195,6 +276,24 @@ exec_function = """def _exec(step_name: str, step_display_name: str, input_port_
             ports[output_port_name] = result.stdout
             if logger.isEnabledFor(logging.INFO):
                 logger.info(f"Step {step_display_name}-{step_name} result: '{result.stdout.decode().strip()}'")
+        elif data_type in ("string", "int", "bool"):
+            if glob_regex:
+                res = [path for path in glob.glob(os.path.join(workdir, glob_regex))]
+                if len(res) == 0:
+                    raise FileNotFoundError(f"Step {step_display_name}-{step_name} did not produce a file which matches the glob regex: {glob_regex}")
+                if len(res) > 1:
+                    raise Exception(f"Step {step_display_name}-{step_name} produced too many files which match glob regex: {res}")
+                with open(res[0]) as fd:
+                    value = fd.read().strip()
+            else:
+                value = result.stdout.decode().strip()
+            if data_type == "int":
+                value = int(value)
+            elif data_type == "bool":
+                value = value.lower() in ("1", "true", "yes", "on")
+            ports[output_port_name] = value
+            if logger.isEnabledFor(logging.INFO):
+                logger.info(f"Step {step_display_name}-{step_name} result {data_type}: '{ports[output_port_name]}'")
         elif data_type in ("file", "directory"):
             res = [path for path in glob.glob(os.path.join(workdir, glob_regex))]
             if len(res) == 0:
@@ -251,7 +350,14 @@ recv_function = """def _recv(port: str, data_type: str, src: str) -> Any:
 """
 
 thread_function = """def _thread(f, *args) -> Thread:
-    thread = Thread(target=f, args=args)
+    def _target():
+        try:
+            f(*args)
+        except BaseException:
+            logger.exception("Thread %s failed", f.__name__)
+            os._exit(1)
+
+    thread = Thread(target=_target)
     thread.start()
     return thread
 """
@@ -267,6 +373,7 @@ preamble = "\n".join(
         imports,
         global_vars,
         accept_function,
+        file_rendezvous_helpers,
         list_helper,
         framing_helpers,
         exec_function,
@@ -295,11 +402,16 @@ class DefaultTarget(StandardCompiler):
         slurm = location.slurm or {}
         options = dict(slurm.get("options") or {})
         script_path = os.path.join(self.outdir, f"{location.name}.sbatch")
+        command = f"python3 {location.name}.py --run-id $SWIRLC_RUN_ID"
 
         lines = [
             "#!/bin/bash",
             f"#SBATCH --job-name=swirl-{location.name}",
         ]
+        if "output" not in options:
+            lines.append(f"#SBATCH --output={location.name}.slurm.out")
+        if "error" not in options:
+            lines.append(f"#SBATCH --error={location.name}.slurm.err")
         for key, value in sorted(options.items()):
             if key == "file":
                 continue
@@ -313,7 +425,12 @@ class DefaultTarget(StandardCompiler):
             [
                 "",
                 "set -euo pipefail",
-                f"python {location.name}.py",
+                "echo \"SWIRL Slurm job started at $(date -Iseconds)\"",
+                "echo \"Host: $(hostname -f 2>/dev/null || hostname)\"",
+                "echo \"Working directory: $(pwd)\"",
+                "echo \"Run id: ${SWIRLC_RUN_ID:-<unset>}\"",
+                "echo \"Python: $(command -v python3)\"",
+                command,
                 "",
             ]
         )
@@ -366,6 +483,24 @@ class DefaultTarget(StandardCompiler):
                     commands.append(command)
             return commands
 
+        def fetch_address_command(location: Location) -> str:
+            filename = f"{location.name}_address.json"
+            return location.get_fetch_command(filename, filename)
+
+        def copy_address_book_command(location: Location) -> str:
+            return location.get_copy_command(
+                "address_book.json", f"{location.hostname}:{location.workdir}"
+            )
+
+        prepare_commands = " &\n".join(
+            [
+                command
+                for loc in workflow.locations.values()
+                if (command := loc.get_prepare_command())
+            ]
+        )
+        if prepare_commands:
+            prepare_commands += " &\nwait"
         copy_traces = " &\n".join(
             [
                 command
@@ -375,10 +510,30 @@ class DefaultTarget(StandardCompiler):
         )
         if copy_traces:
             copy_traces += " &\nwait"
+        fetch_addresses = "\n".join(
+            [
+                f"{command} >/dev/null 2>&1 || true"
+                for loc in workflow.locations.values()
+                if (command := fetch_address_command(loc))
+            ]
+        )
+        copy_address_book = " &\n".join(
+            [
+                command
+                for loc in workflow.locations.values()
+                if (command := copy_address_book_command(loc))
+            ]
+        )
+        if copy_address_book:
+            copy_address_book += " &\nwait"
+        address_files = " ".join(
+            [f"{loc.name}_address.json" for loc in workflow.locations.values()]
+        )
+        location_command = "python3 {name}.py --run-id $SWIRLC_RUN_ID"
         commands = (
             " &\n".join(
                 [
-                    loc.get_command(f"python {loc.name}.py")
+                    loc.get_command(location_command.format(name=loc.name))
                     for loc in workflow.locations.values()
                 ]
             )
@@ -387,12 +542,95 @@ class DefaultTarget(StandardCompiler):
         with open(os.path.join(self.outdir, script_name), "w") as f:
             f.write(f"""{bash_header}
 
-trap "echo Force termination; pkill -P $$" INT
+SWIRLC_RUN_ID="${{SWIRLC_RUN_ID:-$(date +%s)-$$}}"
+export SWIRLC_RUN_ID
+ADDRESS_FILES="{address_files}"
+
+cleanup() {{
+    rm -f address_book.json address_book.json.tmp *_address.json
+}}
+
+terminate() {{
+    echo Force termination
+    trap - INT TERM
+    pkill -P $$ 2>/dev/null || true
+    cleanup
+    exit 130
+}}
+
+check_workflow_processes() {{
+    for pid in $WORKFLOW_PIDS; do
+        if ! kill -0 "$pid" 2>/dev/null; then
+            wait "$pid"
+            status=$?
+            if [ "$status" -ne 0 ]; then
+                echo "Workflow process $pid exited before rendezvous completed with status $status"
+                exit "$status"
+            fi
+            echo "Workflow process $pid exited before rendezvous completed"
+            exit 1
+        fi
+    done
+}}
+
+all_addresses_ready() {{
+    for file in $ADDRESS_FILES; do
+        if [ ! -s "$file" ]; then
+            return 1
+        fi
+        if ! grep -q "\\"runId\\": \\"$SWIRLC_RUN_ID\\"" "$file"; then
+            return 1
+        fi
+    done
+    return 0
+}}
+
+build_address_book() {{
+    python3 -c 'import json, os, sys
+run_id = sys.argv[1]
+locations = {{}}
+for path in sys.argv[2:]:
+    with open(path) as fd:
+        payload = json.load(fd)
+    if payload.get("runId") != run_id:
+        bad_run = payload.get("runId")
+        raise SystemExit(f"stale address file {{path}} for run {{bad_run}}")
+    locations[payload["name"]] = {{"host": payload["host"], "port": int(payload["port"])}}
+with open("address_book.json.tmp", "w") as fd:
+    json.dump({{"runId": run_id, "locations": locations}}, fd)
+    fd.write("\\n")
+os.replace("address_book.json.tmp", "address_book.json")
+' "$SWIRLC_RUN_ID" $ADDRESS_FILES
+}}
+
+trap "terminate" INT TERM
+trap "cleanup" EXIT
+
+{prepare_commands}
 
 {copy_traces}
 
-# Start workflow execution
+# Start workflow execution. Locations will publish their address file and then
+# wait until this script distributes address_book.json.
+echo "SWIRL run id: $SWIRLC_RUN_ID"
 {commands}
+WORKFLOW_PIDS="$(jobs -p)"
+
+deadline=$(( $(date +%s) + ${{SWIRLC_ADDRESS_GATHER_TIMEOUT:-600}} ))
+while ! all_addresses_ready; do
+{fetch_addresses}
+    check_workflow_processes
+    if [ "$(date +%s)" -ge "$deadline" ]; then
+        echo "Timed out waiting for address files: $ADDRESS_FILES"
+        exit 1
+    fi
+    sleep 1
+done
+
+build_address_book
+echo "Address book ready"
+{copy_address_book}
+
 wait
 echo "Workflow execution terminated"
 """)
@@ -411,12 +649,22 @@ echo "Workflow execution terminated"
         trace.write(preamble)
         trace.write(f"""
 def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--run-id", required=True)
+    args = parser.parse_args()
+    global RUN_ID
+    RUN_ID = args.run_id
+
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    sock.bind(locations["{location.name}"])
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    bind_port = LOCATION_PORT if os.environ.get("SWIRLC_USE_CONFIGURED_PORT") else 0
+    sock.bind((BIND_HOST, bind_port))
     sock.settimeout(3)
     sock.listen({len(self.current_workflow.locations) - 1})
 
     _thread(_accept, sock)
+    _write_address_file(sock.getsockname()[1])
+    _load_address_book()
 """)
 
     def write_location_end(self, location: Location, trace: TextIO):
@@ -437,21 +685,19 @@ def main():
             if location.workdir
             else "os.getcwd()"
         )
-        locations_str = ",\n".join(
-            [
-                f"\t'{name}': ('{loc.hostname}', {loc.port})"
-                for name, loc in self.current_workflow.locations.items()
-            ]
-        )
         ports_str = ",\n".join([f"\t'{p}': Event()" for p in self.location_ports])
         trace.write(f"""
-locations = {{
-{locations_str}
-}}
 available_port_data = {{
 {ports_str}
 }}
 
+LOCATION_NAME = "{location.name}"
+LOCATION_PORT = {location.port or 0}
+BIND_HOST = "{location.get_bind_host()}"
+ADVERTISE_COMMAND = {location.get_advertise_command()!r}
+RUN_ID = ""
+ADDRESS_FILE = f"{{LOCATION_NAME}}_address.json"
+ADDRESS_BOOK_FILE = "address_book.json"
 OUT_DIR = {out_dir}
 SCRATCH_DIR = {scratch_dir}
 """)
@@ -509,7 +755,7 @@ if __name__ == '__main__':
         type_val = step.processors[output_port_name].type if output_port_name else ""
 
         trace.write(
-            f"""\n{i}_exec("{step.name}", "{step.display_name}", {[pn for pn, _ in flow[0]]}, "{output_port_name}", "{type_val}", "{glob_val}", "{step.command}", {arguments})\n"""
+            f"""\n{i}_exec({step.name!r}, {step.display_name!r}, {[pn for pn, _ in flow[0]]!r}, {output_port_name!r}, {type_val!r}, {glob_val!r}, {step.command!r}, {arguments!r})\n"""
         )
 
     def write_recv(

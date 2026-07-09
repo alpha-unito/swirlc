@@ -86,6 +86,17 @@ def _cwl_type_to_swirl(cwl_type) -> str:
     return DATA_TYPE
 
 
+def _is_optional_cwl_type(cwl_type) -> bool:
+    if isinstance(cwl_type, list):
+        return any(_is_optional_cwl_type(member) for member in cwl_type)
+    if isinstance(cwl_type, str):
+        return cwl_type == "null" or cwl_type.endswith("?")
+    if isinstance(cwl_type, dict):
+        return _is_optional_cwl_type(cwl_type.get("type"))
+    obj_type = getattr(cwl_type, "type_", None) or getattr(cwl_type, "type", None)
+    return _is_optional_cwl_type(obj_type) if obj_type is not None else False
+
+
 class _EffStep:
     """A flattened leaf step (CommandLineTool / ExpressionTool).
 
@@ -514,6 +525,26 @@ class CWLTranslator(AbstractTranslator):
                     return _resolve_hostname_transitive(sf_deployments[wraps])
             return _resolve_hostname(dep_cfg)
 
+        def _resolve_ssh_config_transitive(dep_cfg: dict) -> dict:
+            t = dep_cfg.get("type", "local")
+            if t == "slurm":
+                wraps = dep_cfg.get("wraps")
+                if wraps and wraps in sf_deployments:
+                    return _resolve_ssh_config_transitive(sf_deployments[wraps])
+                return {}
+            if t != "ssh":
+                return {}
+            config = dep_cfg.get("config", {}) or {}
+            return {
+                key: value
+                for key, value in {
+                    "username": config.get("username"),
+                    "ssh_key": config.get("sshKey"),
+                    "check_host_key": config.get("checkHostKey"),
+                }.items()
+                if value is not None
+            }
+
         def _resolve_slurm(dep_cfg: dict, service: str | None) -> dict:
             services = dep_cfg.get("config", {}).get("services", {}) or {}
             selected_service = service
@@ -536,6 +567,7 @@ class CWLTranslator(AbstractTranslator):
             if dep_type != "slurm":
                 services = {None}
             for service in sorted(services, key=lambda item: item or ""):
+                ssh_config = _resolve_ssh_config_transitive(dep_cfg)
                 loc = Location(
                     name=f"l{len(deployment_to_loc)}",
                     display_name=(
@@ -546,6 +578,9 @@ class CWLTranslator(AbstractTranslator):
                     port=dep_cfg.get("port", 35050),
                     workdir=dep_cfg.get("workdir"),
                     connection_type=_resolve_connection_type(dep_cfg),
+                    username=ssh_config.get("username"),
+                    ssh_key=ssh_config.get("ssh_key"),
+                    check_host_key=ssh_config.get("check_host_key"),
                     slurm=(
                         _resolve_slurm(dep_cfg, service)
                         if dep_type == "slurm"
@@ -589,6 +624,7 @@ class CWLTranslator(AbstractTranslator):
         port_counter = 0
         # Map a global producer key -> the Port that carries its data.
         source_to_port: dict[str, Port] = {}
+        unset_optional_sources: set[str] = set()
 
         # 5a. Root workflow inputs → data at default location.
         for wf_inp in self.cwl_obj.inputs:
@@ -608,6 +644,8 @@ class CWLTranslator(AbstractTranslator):
                 return str(v)
 
             raw_val = settings_values.get(inp_name)
+            if raw_val is None and _is_optional_cwl_type(wf_inp.type_):
+                unset_optional_sources.add(inp_name)
             if _list_inner_type(data_type) is not None:
                 # List input: preserve the list, coercing each element.
                 val = [_coerce(v) for v in (raw_val or [])]
@@ -656,9 +694,33 @@ class CWLTranslator(AbstractTranslator):
         # 5c. Wire leaf-step inputs to the ports that produce their data.
         for eff in effective_steps:
             swirl_step = path_to_swirl[eff.path]
+            arg_bindings = []
+            tool_inputs = {
+                _local_name(tool_in.id).split("/")[-1]: tool_in
+                for tool_in in getattr(eff.tool_obj, "inputs", [])
+            }
             for _param, gkey in eff.inputs:
                 if gkey is not None and gkey in source_to_port:
-                    workflow.add_input_port(swirl_step, source_to_port[gkey])
+                    if gkey in unset_optional_sources:
+                        continue
+                    input_port = source_to_port[gkey]
+                    workflow.add_input_port(swirl_step, input_port)
+                    tool_in = tool_inputs.get(_param)
+                    binding = getattr(tool_in, "inputBinding", None) if tool_in else None
+                    if binding is None:
+                        continue
+                    pos = binding.position if binding.position is not None else 999
+                    args: list[str | Port] = []
+                    if binding.prefix:
+                        args.append(binding.prefix)
+                    args.append(input_port)
+                    arg_bindings.append((pos, _param, args))
+            if arg_bindings:
+                swirl_step.arguments = []
+                for _pos, _param, args in sorted(
+                    arg_bindings, key=lambda item: (item[0], item[1])
+                ):
+                    swirl_step.arguments.extend(args)
 
         # 6. Map steps to locations. Streamflow bindings use "/"-separated step
         # paths; match the longest bound prefix of each leaf's path.

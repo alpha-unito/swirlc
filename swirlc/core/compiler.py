@@ -117,17 +117,31 @@ class CompileVisitor(SWIRLVisitor, ABC):
         self.metadata: MutableMapping[str, Any] = metadata
         self.workflow: DistributedWorkflow = DistributedWorkflow()
         for name, settings in self.metadata["locations"].items():
+            deployment = settings.get("deployment", {})
+            connection_type = deployment.get(
+                "type",
+                deployment.get("connectionType", settings.get("connectionType", None)),
+            )
             self.workflow.add_location(
                 Location(
                     name,
                     name,
                     {},
-                    hostname=settings["hostname"],
-                    port=settings["port"],
-                    connection_type=settings.get("connectionType", None),
-                    workdir=settings.get("workdir", None),
+                    hostname=deployment.get(
+                        "hostname", settings.get("hostname", None)
+                    ),
+                    port=deployment.get("port", settings.get("port", None)),
+                    username=deployment.get(
+                        "username", settings.get("username", None)
+                    ),
+                    ssh_key=deployment.get("sshKey", settings.get("sshKey", None)),
+                    check_host_key=deployment.get(
+                        "checkHostKey", settings.get("checkHostKey", None)
+                    ),
+                    connection_type=connection_type,
+                    workdir=deployment.get("workdir", settings.get("workdir", None)),
                     outdir=settings.get("outdir", None),
-                    slurm=settings.get("slurm", None),
+                    slurm=deployment.get("slurm", settings.get("slurm", None)),
                 )
             )
 

@@ -1,8 +1,0 @@
-<l0, {(p0,d0),(p1,d1),(p10,d10),(p2,d2),(p3,d3),(p4,d4),(p5,d5),(p6,d6),(p7,d7),(p8,d8),(p9,d9)},
-	(send(d2->p2,l0,l2) | send(d1->p1,l0,l3) | send(d0->p0,l0,l3) | send(d0->p0,l0,l2) | send(d8->p8,l0,l1) | send(d6->p6,l0,l1) | send(d10->p10,l0,l2) | send(d5->p5,l0,l3) | send(d7->p7,l0,l1) | send(d8->p8,l0,l2) | send(d4->p4,l0,l3)) | (exec(s1,{(p10,d10),(p9,d9)}->{(p12,d12),(p13,d13)},{l0}).(send(d13->p13,l0,l2) | send(d12->p12,l0,l2))) | ((recv(p11 -> d11,l1,l0) | recv(p14 -> d14,l2,l0)).exec(s3,{(p11,d11),(p14,d14),(p3,d3)}->{(p15,d15)},{l0}).(send(d15->p15,l0,l3)))> |
-<l1, {},
-	((recv(p8 -> d8,l0,l1)).exec(s0,{(p8,d8)}->{(p11,d11)},{l1}).(send(d11->p11,l1,l3) | send(d11->p11,l1,l2) | send(d11->p11,l1,l0))) | ((recv(p6 -> d6,l0,l1) | recv(p7 -> d7,l0,l1)).exec(s4,{(p11,d11),(p6,d6),(p7,d7)}->{(p16,d16)},{l1}).(send(d16->p16,l1,l3)))> |
-<l2, {},
-	((recv(p11 -> d11,l1,l2) | recv(p10 -> d10,l0,l2) | recv(p8 -> d8,l0,l2) | recv(p12 -> d12,l0,l2) | recv(p2 -> d2,l0,l2) | recv(p0 -> d0,l0,l2) | recv(p13 -> d13,l0,l2)).exec(s2,{(p0,d0),(p10,d10),(p11,d11),(p12,d12),(p13,d13),(p2,d2),(p8,d8)}->{(p14,d14)},{l2}).(send(d14->p14,l2,l0)))> |
-<l3, {},
-	((recv(p5 -> d5,l0,l3) | recv(p4 -> d4,l0,l3) | recv(p15 -> d15,l0,l3) | recv(p0 -> d0,l0,l3) | recv(p11 -> d11,l1,l3) | recv(p16 -> d16,l1,l3)).exec(s5,{(p0,d0),(p11,d11),(p15,d15),(p16,d16),(p4,d4),(p5,d5)}->{(p17,d17)},{l3})) | ((recv(p1 -> d1,l0,l3)).exec(s6,{(p0,d0),(p1,d1),(p11,d11),(p15,d15),(p16,d16),(p5,d5)}->{(p18,d18)},{l3}))>
