@@ -26,6 +26,7 @@ from swirlc.core.translator import AbstractTranslator
 
 # Fallback used when a CWL type cannot be resolved to a SWIRL type.
 DATA_TYPE = "file"
+_WRAPPER_DEPLOYMENT_TYPES = {"docker", "singularity", "none"}
 
 # Map CWL scalar type names to SWIRL base types.
 _CWL_SCALAR_TO_SWIRL = {
@@ -456,9 +457,40 @@ class CWLTranslator(AbstractTranslator):
     def _translate(self) -> Workflow:
         workflow = DistributedWorkflow()
 
-        # 1. Locations from streamflow deployments
+        # 1. Parse step→deployment bindings. StreamFlow container wrappers are
+        # handled by StreamFlow itself, so only execution deployments become
+        # SWIRL locations.
+        first_wf = next(iter(self.streamflow_config.get("workflows", {}).values()))
+        default_target: tuple[str | None, str | None] = (None, None)
+        step_to_target: dict[str, tuple[str, str | None]] = {}
+        deployment_services: dict[str, set[str | None]] = {}
+
+        for binding in first_wf.get("bindings", []):
+            if "step" not in binding:
+                continue
+            target = binding.get("target") or {}
+            dep_name = target.get("deployment")
+            if not dep_name:
+                continue
+            service = target.get("service")
+            deployment_services.setdefault(dep_name, set()).add(service)
+            step_path: str = binding["step"]
+            if step_path == "/":
+                default_target = (dep_name, service)
+            else:
+                step_to_target[step_path.lstrip("/")] = (dep_name, service)
+
+        # 2. Locations from streamflow deployments
         sf_deployments = self.streamflow_config.get("deployments", {})
-        deployment_to_loc: dict[str, Location] = {}
+        deployment_to_loc: dict[tuple[str, str | None], Location] = {}
+
+        if not deployment_services:
+            for dep_name, dep_cfg in sf_deployments.items():
+                if dep_cfg.get("type", "local") not in _WRAPPER_DEPLOYMENT_TYPES:
+                    deployment_services[dep_name] = {None}
+                    if default_target[0] is None:
+                        default_target = (dep_name, None)
+                    break
 
         def _resolve_hostname(dep_cfg: dict) -> str:
             nodes = dep_cfg.get("config", {}).get("nodes", [])
@@ -466,11 +498,12 @@ class CWLTranslator(AbstractTranslator):
 
         def _resolve_connection_type(dep_cfg: dict) -> str | None:
             t = dep_cfg.get("type", "local")
-            if t in ("ssh", "slurm"):
-                wraps = dep_cfg.get("wraps")
-                if wraps and wraps in sf_deployments:
-                    return _resolve_connection_type(sf_deployments[wraps])
+            if t == "ssh":
                 return "ssh"
+            if t == "slurm":
+                return "slurm"
+            if t in _WRAPPER_DEPLOYMENT_TYPES:
+                return None
             return None
 
         def _resolve_hostname_transitive(dep_cfg: dict) -> str:
@@ -481,18 +514,46 @@ class CWLTranslator(AbstractTranslator):
                     return _resolve_hostname_transitive(sf_deployments[wraps])
             return _resolve_hostname(dep_cfg)
 
+        def _resolve_slurm(dep_cfg: dict, service: str | None) -> dict:
+            services = dep_cfg.get("config", {}).get("services", {}) or {}
+            selected_service = service
+            if selected_service is None and len(services) == 1:
+                selected_service = next(iter(services))
+            options = dict(services.get(selected_service, {}) or {})
+            slurm = {"options": options}
+            if selected_service:
+                slurm["service"] = selected_service
+            return slurm
+
         for i, (dep_name, dep_cfg) in enumerate(sf_deployments.items()):
-            loc = Location(
-                name=f"l{i}",
-                display_name=dep_name,
-                data={},
-                hostname=_resolve_hostname_transitive(dep_cfg),
-                port=dep_cfg.get("port", 35050),
-                workdir=dep_cfg.get("workdir"),
-                connection_type=_resolve_connection_type(dep_cfg),
-            )
-            workflow.add_location(loc)
-            deployment_to_loc[dep_name] = loc
+            dep_type = dep_cfg.get("type", "local")
+            if dep_name not in deployment_services:
+                continue
+            if dep_type in _WRAPPER_DEPLOYMENT_TYPES:
+                continue
+
+            services = deployment_services.get(dep_name, {None})
+            if dep_type != "slurm":
+                services = {None}
+            for service in sorted(services, key=lambda item: item or ""):
+                loc = Location(
+                    name=f"l{len(deployment_to_loc)}",
+                    display_name=(
+                        dep_name if service is None else f"{dep_name}:{service}"
+                    ),
+                    data={},
+                    hostname=_resolve_hostname_transitive(dep_cfg),
+                    port=dep_cfg.get("port", 35050),
+                    workdir=dep_cfg.get("workdir"),
+                    connection_type=_resolve_connection_type(dep_cfg),
+                    slurm=(
+                        _resolve_slurm(dep_cfg, service)
+                        if dep_type == "slurm"
+                        else None
+                    ),
+                )
+                workflow.add_location(loc)
+                deployment_to_loc[(dep_name, service)] = loc
 
         if not deployment_to_loc:
             loc = Location(
@@ -503,10 +564,9 @@ class CWLTranslator(AbstractTranslator):
                 port=35050,
             )
             workflow.add_location(loc)
-            deployment_to_loc["local"] = loc
+            deployment_to_loc[("local", None)] = loc
 
-        # 2a. Load job settings for workflow input values
-        first_wf = next(iter(self.streamflow_config.get("workflows", {}).values()))
+        # 3a. Load job settings for workflow input values
         settings_rel = first_wf.get("config", {}).get("settings")
         settings_values: dict = {}
         if settings_rel:
@@ -515,31 +575,14 @@ class CWLTranslator(AbstractTranslator):
                 with open(settings_path) as f:
                     settings_values = YAML(typ="safe").load(f) or {}
 
-        # 2b. Parse step→deployment bindings
-        default_deployment: str | None = None
-        step_to_deployment: dict[str, str] = {}
-
-        for binding in first_wf.get("bindings", []):
-            if "step" not in binding:
-                continue
-            target = binding.get("target") or {}
-            dep_name = target.get("deployment")
-            if not dep_name:
-                continue
-            step_path: str = binding["step"]
-            if step_path == "/":
-                default_deployment = dep_name
-            else:
-                step_to_deployment[step_path.lstrip("/")] = dep_name
-
-        if default_deployment is None:
-            default_deployment = next(iter(deployment_to_loc), None)
+        if default_target[0] is None:
+            default_target = next(iter(deployment_to_loc), (None, None))
 
         default_loc = deployment_to_loc.get(
-            default_deployment or "", next(iter(deployment_to_loc.values()))
+            default_target, next(iter(deployment_to_loc.values()))
         )
 
-        # 3. Flatten nested subworkflows into leaf steps.
+        # 4. Flatten nested subworkflows into leaf steps.
         effective_steps = self._flatten_leaf_steps()
 
         data_counter = 0
@@ -547,7 +590,7 @@ class CWLTranslator(AbstractTranslator):
         # Map a global producer key -> the Port that carries its data.
         source_to_port: dict[str, Port] = {}
 
-        # 4a. Root workflow inputs → data at default location.
+        # 5a. Root workflow inputs → data at default location.
         for wf_inp in self.cwl_obj.inputs:
             inp_name = _local_name(wf_inp.id)
             data_name = f"d{data_counter}"
@@ -576,7 +619,7 @@ class CWLTranslator(AbstractTranslator):
                 name=data_name, type=data_type, value=val
             )
 
-        # 4b. Create a Step per leaf, with its output ports + processors.
+        # 5b. Create a Step per leaf, with its output ports + processors.
         path_to_swirl: dict[str, Step] = {}
         for i, eff in enumerate(effective_steps):
             step = Step(name=f"s{i}", display_name=eff.path, command=eff.command)
@@ -610,27 +653,29 @@ class CWLTranslator(AbstractTranslator):
 
                 source_to_port[gkey] = port
 
-        # 4c. Wire leaf-step inputs to the ports that produce their data.
+        # 5c. Wire leaf-step inputs to the ports that produce their data.
         for eff in effective_steps:
             swirl_step = path_to_swirl[eff.path]
             for _param, gkey in eff.inputs:
                 if gkey is not None and gkey in source_to_port:
                     workflow.add_input_port(swirl_step, source_to_port[gkey])
 
-        # 5. Map steps to locations. Streamflow bindings use "/"-separated step
+        # 6. Map steps to locations. Streamflow bindings use "/"-separated step
         # paths; match the longest bound prefix of each leaf's path.
-        def _deployment_for(path: str) -> str | None:
+        def _target_for(path: str) -> tuple[str | None, str | None]:
             parts = path.split("/")
             for n in range(len(parts), 0, -1):
                 prefix = "/".join(parts[:n])
-                if prefix in step_to_deployment:
-                    return step_to_deployment[prefix]
-            return default_deployment
+                if prefix in step_to_target:
+                    return step_to_target[prefix]
+            return default_target
 
         for eff in effective_steps:
             swirl_step = path_to_swirl[eff.path]
-            dep_name = _deployment_for(eff.path)
-            loc = deployment_to_loc.get(dep_name or "") if dep_name else None
+            target = _target_for(eff.path)
+            loc = deployment_to_loc.get(target)
+            if loc is None and target[0] is not None:
+                loc = deployment_to_loc.get((target[0], None))
             if loc is None:
                 loc = next(iter(deployment_to_loc.values()))
             workflow.map(swirl_step, loc)

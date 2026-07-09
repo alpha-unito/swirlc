@@ -21,6 +21,8 @@ def _add_location(location, locations):
         locations[location.name]["workdir"] = location.workdir
     if location.outdir:
         locations[location.name]["outdir"] = location.outdir
+    if location.slurm:
+        locations[location.name]["slurm"] = location.slurm
 
 
 def _add_step(step, steps, workflow, dependencies):

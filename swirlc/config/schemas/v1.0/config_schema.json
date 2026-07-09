@@ -61,9 +61,32 @@
           "type": "string",
           "enum": [
             "ssh",
-            "docker"
+            "docker",
+            "slurm"
           ],
           "description": "It declares how to access to the location."
+        },
+        "slurm": {
+          "type": "object",
+          "properties": {
+            "service": {
+              "type": "string",
+              "description": "The SLURM service selected from the source deployment configuration."
+            },
+            "options": {
+              "type": "object",
+              "description": "SBATCH options for the selected SLURM service.",
+              "additionalProperties": {
+                "type": [
+                  "string",
+                  "integer",
+                  "number",
+                  "boolean"
+                ]
+              }
+            }
+          },
+          "additionalProperties": false
         }
       },
       "required": [

@@ -127,6 +127,7 @@ class CompileVisitor(SWIRLVisitor, ABC):
                     connection_type=settings.get("connectionType", None),
                     workdir=settings.get("workdir", None),
                     outdir=settings.get("outdir", None),
+                    slurm=settings.get("slurm", None),
                 )
             )
 

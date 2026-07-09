@@ -26,6 +26,7 @@ class Location:
         "outdir",
         "hostname",
         "port",
+        "slurm",
     )
 
     def __init__(
@@ -38,6 +39,7 @@ class Location:
         port: str | None = None,
         workdir: str | None = None,
         outdir: str | None = None,
+        slurm: MutableMapping[str, Any] | None = None,
     ):
         self.data: MutableMapping[str, Any] = data
         self.display_name: str = display_name
@@ -47,10 +49,20 @@ class Location:
         self.port: str | None = port
         self.outdir: str | None = str(PurePath(outdir)) if outdir else outdir
         self.workdir: str | None = str(PurePath(workdir)) if workdir else workdir
+        self.slurm: MutableMapping[str, Any] | None = slurm
 
     def get_command(self, cmd: str) -> str:
         if self.connection_type == "ssh":
             return " ".join(["ssh", self.hostname, f'"cd {self.workdir} && {cmd}"'])
+        elif self.connection_type == "slurm":
+            submit = f"sbatch --wait {self.name}.sbatch"
+            if self.hostname and self.hostname not in ("127.0.0.1", "localhost"):
+                if self.workdir:
+                    return " ".join(
+                        ["ssh", self.hostname, f'"cd {self.workdir} && {submit}"']
+                    )
+                return " ".join(["ssh", self.hostname, f'"{submit}"'])
+            return (f"cd {self.workdir} && " if self.workdir else "") + submit
         elif self.connection_type == "docker":
             return " ".join(
                 [
@@ -74,6 +86,10 @@ class Location:
     def get_copy_command(self, src, dst):
         if self.connection_type == "ssh":
             return " ".join(["scp", src, dst])
+        elif self.connection_type == "slurm":
+            if self.hostname and self.hostname not in ("127.0.0.1", "localhost"):
+                return " ".join(["scp", src, dst])
+            return ""
         elif self.connection_type == "docker":
             return " ".join(["docker", "cp", src, dst])
         elif self.connection_type is None:

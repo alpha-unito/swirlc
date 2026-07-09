@@ -1,0 +1,53 @@
+version: v1.0
+workflows:
+  master:
+    type: cwl
+    config:
+      file: main.cwl
+      settings: inputs.yml
+      docker:
+        # Container wrapping is a StreamFlow runtime concern. The SWIRL
+        # translator ignores this block and uses only `bindings` to place steps.
+        - step: /
+          deployment:
+            type: none
+            config: {}
+    bindings:
+      # Inputs and unbound steps stay local.
+      - step: /
+        target:
+          deployment: local
+      # Deploy only the second CWL step through SLURM.
+      - step: /step2
+        target:
+          deployment: cluster-slurm
+          service: broadwell
+
+deployments:
+  local:
+    type: local
+    config: {}
+    workdir: /tmp/swirl-local
+
+  cluster-login:
+    type: ssh
+    config:
+      nodes:
+        - login.hpc.example.org
+      username: user
+      sshKey: ~/.ssh/id_rsa
+      checkHostKey: false
+    workdir: /home/user/swirl
+
+  cluster-slurm:
+    type: slurm
+    wraps: cluster-login
+    workdir: /scratch/user/swirl
+    config:
+      maxConcurrentJobs: 4
+      services:
+        broadwell:
+          partition: broadwell
+          nodes: 1
+          ntasks: 1
+          time: "00:10:00"

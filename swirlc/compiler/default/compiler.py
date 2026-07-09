@@ -291,6 +291,35 @@ class DefaultTarget(StandardCompiler):
     def _open_location_trace(self, location: Location) -> TextIO:
         return open(os.path.join(self.outdir, f"{location.name}.py"), "w")
 
+    def _write_slurm_script(self, location: Location) -> None:
+        slurm = location.slurm or {}
+        options = dict(slurm.get("options") or {})
+        script_path = os.path.join(self.outdir, f"{location.name}.sbatch")
+
+        lines = [
+            "#!/bin/bash",
+            f"#SBATCH --job-name=swirl-{location.name}",
+        ]
+        for key, value in sorted(options.items()):
+            if key == "file":
+                continue
+            option = key.replace("_", "-")
+            if isinstance(value, bool):
+                if value:
+                    lines.append(f"#SBATCH --{option}")
+            else:
+                lines.append(f"#SBATCH --{option}={value}")
+        lines.extend(
+            [
+                "",
+                "set -euo pipefail",
+                f"python {location.name}.py",
+                "",
+            ]
+        )
+        with open(script_path, "w") as f:
+            f.write("\n".join(lines))
+
     # ======== Lifecycle overrides ========
 
     def begin_location(self, location: Location) -> None:
@@ -320,13 +349,28 @@ class DefaultTarget(StandardCompiler):
 
         script_name = "run.sh"
         workflow = self.current_workflow
+        for loc in workflow.locations.values():
+            if loc.connection_type == "slurm":
+                self._write_slurm_script(loc)
+
+        def copy_commands(location: Location) -> list[str]:
+            filenames = [f"{location.name}.py"]
+            if location.connection_type == "slurm":
+                filenames.append(f"{location.name}.sbatch")
+            commands = []
+            for filename in filenames:
+                command = location.get_copy_command(
+                    filename, f"{location.hostname}:{location.workdir}"
+                )
+                if command:
+                    commands.append(command)
+            return commands
+
         copy_traces = " &\n".join(
             [
-                loc.get_copy_command(f"{loc.name}.py", f"{loc.hostname}:{loc.workdir}")
+                command
                 for loc in workflow.locations.values()
-                if loc.get_copy_command(
-                    f"{loc.name}.py", f"{loc.hostname}:{loc.workdir}"
-                )
+                for command in copy_commands(loc)
             ]
         )
         if copy_traces:
