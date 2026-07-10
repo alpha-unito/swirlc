@@ -54,3 +54,23 @@ cd build
 - Support for list types in CWL workflows
 - Groundwork for more advanced deployments
 - SLURM deployment
+
+# What is missing:
+- Scatter operations
+- Optional types (& choices)
+- Nested deployements (like streamflow)
+- Communication graph between locations (ex: a node on broadwell cannot be reached from outside, needs a bridge on login node or some other tunnel system)
+- a lot of CWL things (javascript, expressions, requirements, etc)
+- probably a thousand other things and edge cases
+
+# examples:
+- **examples/cwl/basic/streamflow.yml**: Simple CWL workflow running on local nodes.
+- **examples/cwl/basic/streamflow-slurm.yml**: Simple CWL workflow running on slurm nodes.
+- **examples/cwl/basic/streamflow-split.yml**: Simple CWL workflow running one step on local and one on slurm. Does **NOT** work yet.
+
+- **examples/cwl/lists/streamflow.yml**: Simple CWL workflow with list types running on local nodes.
+- **examples/cwl/lists-input/streamflow.yml**: Simple CWL workflow with list types as workflow inputs running on local nodes.
+
+- **examples/cwl/nested/streamflow.yml**: Simple CWL workflow with nested workflows running on local nodes.
+
+- **examples/1000-genome-cpp/streamflow.yml**: 1000 genome workflow. does not work yet.
