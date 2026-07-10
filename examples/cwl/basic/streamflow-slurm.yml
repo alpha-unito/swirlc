@@ -5,13 +5,6 @@ workflows:
     config:
       file: main.cwl
       settings: inputs.yml
-      docker:
-        # Container wrapping is a StreamFlow runtime concern. The SWIRL
-        # translator ignores this block and uses only `bindings` to place steps.
-        - step: /
-          deployment:
-            type: none
-            config: {}
     bindings:
       # Keep both workflow steps on SLURM, but use distinct services so SWIRL
       # creates two HPC locations instead of collapsing them into one process.
