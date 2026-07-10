@@ -20,6 +20,11 @@ uv pip install -r requirements.txt
 
 ## to run the basic cwl example
 
+
+```sh
+source .venv/bin/activate
+```
+
 the example is at `examples/cwl/basic/streamflow-slurm.yml`
 
 
