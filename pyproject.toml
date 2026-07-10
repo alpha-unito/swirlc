@@ -34,6 +34,7 @@ dependencies = [
     "black==26.5.1",
     "importlib_resources==7.1.0",
     "jsonschema==4.26.0",
+    "pyjsparser==2.7.1",
     "referencing==0.37.0",
     "ruamel.yaml==0.19.1"
 ]

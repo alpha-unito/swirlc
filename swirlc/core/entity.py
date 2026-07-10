@@ -116,6 +116,11 @@ class Step:
         "command",
         "arguments",
         "processors",
+        "expression",
+        "expression_python",
+        "expression_inputs",
+        "expression_input_types",
+        "expression_outputs",
     )
 
     def __init__(
@@ -125,12 +130,22 @@ class Step:
         command: str | None = None,
         arguments: MutableSequence[str | Port] | None = None,
         processors: MutableMapping[str, Processor] | None = None,
+        expression: str | None = None,
+        expression_python: str | None = None,
+        expression_inputs: MutableMapping[str, Port] | None = None,
+        expression_input_types: MutableMapping[str, str] | None = None,
+        expression_outputs: MutableMapping[str, Port] | None = None,
     ):
         self.name: str = name
         self.display_name: str = display_name
         self.command: str | None = command
         self.arguments: MutableSequence[str | Port] | None = arguments
         self.processors: MutableMapping[str, Processor] | None = processors
+        self.expression = expression
+        self.expression_python = expression_python
+        self.expression_inputs = expression_inputs
+        self.expression_input_types = expression_input_types
+        self.expression_outputs = expression_outputs
 
 
 class Workflow:

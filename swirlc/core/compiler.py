@@ -17,6 +17,7 @@ from swirlc.core.entity import (
     Step,
     Workflow,
 )
+from swirlc.core.js_expression import translate_expression_to_python
 
 
 class BaseCompiler:
@@ -185,6 +186,8 @@ class CompileVisitor(SWIRLVisitor, ABC):
 
             data_port = {d: p for p, d in list(inputs) + list(outputs)}
             outdata_patterns = step_metadata.get("outputs", {})
+            expression = step_metadata.get("expression", {})
+            expression_source = expression.get("source")
             step = Step(
                 name,
                 step_metadata["displayName"],
@@ -196,6 +199,14 @@ class CompileVisitor(SWIRLVisitor, ABC):
                     )
                     for port_name, value in outdata_patterns.items()
                 },
+                expression=expression_source,
+                expression_python=(
+                    translate_expression_to_python(
+                        expression_source, step_metadata["displayName"]
+                    )
+                    if expression_source is not None
+                    else None
+                ),
             )
             self.workflow.add_step(step)
             for port_name, _ in inputs:
@@ -243,6 +254,19 @@ class CompileVisitor(SWIRLVisitor, ABC):
                 )
                 for arg in step_metadata["arguments"]
             ]
+            expression_inputs = expression.get("inputs", {})
+            step.expression_inputs = {
+                input_name: self.workflow.ports[value["port"]]
+                for input_name, value in expression_inputs.items()
+            }
+            step.expression_input_types = {
+                input_name: value["type"]
+                for input_name, value in expression_inputs.items()
+            }
+            step.expression_outputs = {
+                output_name: self.workflow.ports[port_name]
+                for output_name, port_name in expression.get("outputs", {}).items()
+            }
         for loc in mapping:
             self.workflow.map(self.workflow.steps[name], self.workflow.locations[loc])
         return self.compiler.exec(self.workflow.steps[name], flow, mapping)

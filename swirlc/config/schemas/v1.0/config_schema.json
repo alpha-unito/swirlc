@@ -27,6 +27,12 @@
               "type": "string"
             },
             {
+              "type": "integer"
+            },
+            {
+              "type": "boolean"
+            },
+            {
               "type": "array"
             }
           ],
@@ -210,6 +216,34 @@
                 "additionalProperties": false
               }
             }
+        },
+        "expression": {
+          "type": "object",
+          "properties": {
+            "source": {
+              "type": "string"
+            },
+            "inputs": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "object",
+                "properties": {
+                  "port": {"type": "string"},
+                  "type": {"type": "string"}
+                },
+                "required": ["port", "type"],
+                "additionalProperties": false
+              }
+            },
+            "outputs": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "string"
+              }
+            }
+          },
+          "required": ["source", "inputs", "outputs"],
+          "additionalProperties": false
         }
       },
       "required": [

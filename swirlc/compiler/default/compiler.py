@@ -34,6 +34,7 @@ import glob
 import argparse
 import json
 import logging
+import math
 import os
 import shlex
 import socket
@@ -157,6 +158,94 @@ list_helper = """def _list_inner(data_type: str) -> str | None:
     if data_type.startswith("list[") and data_type.endswith("]"):
         return data_type[len("list["):-1]
     return None
+"""
+
+expression_function = r"""def _js_file_object(value: Any, data_type: str) -> Any:
+    inner = _list_inner(data_type)
+    if inner is not None:
+        return [_js_file_object(item, inner) for item in value]
+    if data_type == "int":
+        return int(value)
+    if data_type == "bool":
+        return value if isinstance(value, bool) else str(value).lower() == "true"
+    if data_type == "string":
+        return str(value)
+    if data_type not in ("file", "directory"):
+        return value
+    if isinstance(value, list):
+        if len(value) != 1:
+            raise ValueError(
+                f"Expected one {data_type} value, received {len(value)}; scatter expansion is not supported"
+            )
+        value = value[0]
+    path = os.fspath(value)
+    basename = os.path.basename(os.path.normpath(path))
+    nameroot, nameext = os.path.splitext(basename)
+    return {
+        "class": "File" if data_type == "file" else "Directory",
+        "path": path,
+        "location": path,
+        "dirname": os.path.dirname(path),
+        "basename": basename,
+        "nameroot": nameroot,
+        "nameext": nameext,
+    }
+
+
+def _js_get(value: Any, key: Any) -> Any:
+    if key == "length" and isinstance(value, (str, list, dict)):
+        return len(value)
+    if isinstance(value, dict):
+        return value.get(key)
+    if isinstance(value, (list, tuple)):
+        return value[int(key)]
+    if isinstance(value, str):
+        if key == "split":
+            return lambda separator=None: value.split(separator)
+        if key == "substring":
+            def substring(start: Any, end: Any = None) -> str:
+                start_index = max(0, int(start))
+                end_index = len(value) if end is None else max(0, int(end))
+                start_index, end_index = min(start_index, end_index), max(start_index, end_index)
+                return value[start_index:end_index]
+            return substring
+    raise TypeError(f"Cannot read JavaScript property {key!r} from {value!r}")
+
+
+def _js_parse_int(value: Any, radix: Any = 10) -> int:
+    return int(str(value), int(radix))
+
+
+def _coerce_expression_output(value: Any, data_type: str) -> Any:
+    inner = _list_inner(data_type)
+    if inner is not None:
+        if not isinstance(value, list):
+            raise TypeError(f"Expression result for {data_type} is not a list")
+        return [_coerce_expression_output(item, inner) for item in value]
+    if data_type == "int":
+        return int(value)
+    if data_type == "bool":
+        return bool(value)
+    if data_type == "string":
+        return str(value)
+    return value
+
+
+def _expression(step_display_name: str, input_specs: MutableMapping[str, tuple[str, str]], output_specs: MutableMapping[str, tuple[str, str]], function):
+    for port_name, _ in input_specs.values():
+        available_port_data[port_name].wait()
+    inputs = {
+        name: _js_file_object(ports[port_name], data_type)
+        for name, (port_name, data_type) in input_specs.items()
+    }
+    result = function(inputs)
+    if not isinstance(result, dict):
+        raise TypeError(f"ExpressionTool {step_display_name} must return an object")
+    for output_name, (port_name, data_type) in output_specs.items():
+        if output_name not in result:
+            raise KeyError(f"ExpressionTool {step_display_name} did not return output {output_name}")
+        ports[port_name] = _coerce_expression_output(result[output_name], data_type)
+        available_port_data[port_name].set()
 """
 
 framing_helpers = """def _send_len(sock: socket.socket, n: int):
@@ -375,6 +464,7 @@ preamble = "\n".join(
         accept_function,
         file_rendezvous_helpers,
         list_helper,
+        expression_function,
         framing_helpers,
         exec_function,
         init_dataset_function,
@@ -743,6 +833,32 @@ if __name__ == '__main__':
         assert step.arguments is not None
         assert step.processors is not None
 
+        i = "    " * indent
+        if step.expression_python is not None:
+            assert self.current_workflow is not None
+            input_specs = {
+                name: (port.name, step.expression_input_types[name])
+                for name, port in (step.expression_inputs or {}).items()
+            }
+            output_specs = {}
+            for output_name, port in (step.expression_outputs or {}).items():
+                port_name = port.name
+                self.location_ports.add(port_name)
+                output_specs[output_name] = (
+                    port_name,
+                    step.processors[port_name].type,
+                )
+            function_name = f"_expression_{step.name}"
+            body = "\n".join(
+                f"{i}    {line}" if line else ""
+                for line in step.expression_python.splitlines()
+            )
+            trace.write(f"\n{i}def {function_name}(inputs):\n{body}\n")
+            trace.write(
+                f"{i}_expression({step.display_name!r}, {input_specs!r}, {output_specs!r}, {function_name})\n"
+            )
+            return
+
         arguments = [
             (arg.name if isinstance(arg, Port) else arg, isinstance(arg, Port))
             for arg in step.arguments
@@ -750,7 +866,6 @@ if __name__ == '__main__':
         output_port_name = next(iter(flow[1]))[0] if flow[1] else ""
         if output_port_name:
             self.location_ports.add(output_port_name)
-        i = "    " * indent
         glob_val = step.processors[output_port_name].glob if output_port_name else ""
         type_val = step.processors[output_port_name].type if output_port_name else ""
 

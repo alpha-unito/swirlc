@@ -5,6 +5,7 @@ from abc import abstractmethod
 from typing import TextIO
 
 from ruamel.yaml import YAML
+from ruamel.yaml.scalarstring import LiteralScalarString
 
 from swirlc.core.entity import Port, Workflow
 
@@ -48,6 +49,21 @@ def _add_step(step, steps, workflow, dependencies):
         }
         for arg in (step.arguments or [])
     ]
+    if step.expression is not None:
+        steps[step.name]["expression"] = {
+            "source": LiteralScalarString(step.expression),
+            "inputs": {
+                name: {
+                    "port": port.name,
+                    "type": step.expression_input_types[name],
+                }
+                for name, port in (step.expression_inputs or {}).items()
+            },
+            "outputs": {
+                name: port.name
+                for name, port in (step.expression_outputs or {}).items()
+            },
+        }
     if step.processors:
         steps[step.name]["outputs"] = {}
         for port_name, processor in step.processors.items():

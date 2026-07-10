@@ -369,6 +369,12 @@ wheels = [
 ]
 
 [[package]]
+name = "pyjsparser"
+version = "2.7.1"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/48/ef/c72abcfa2c6accd03e7c89c400790fc3d908c5804d50a7c4e9ceabd74d23/pyjsparser-2.7.1.tar.gz", hash = "sha256:be60da6b778cc5a5296a69d8e7d614f1f870faf94e1b1b6ac591f2ad5d729579", size = 24196, upload-time = "2019-04-21T21:56:17.708Z" }
+
+[[package]]
 name = "pytest"
 version = "9.0.3"
 source = { registry = "https://pypi.org/simple" }
@@ -729,6 +735,7 @@ dependencies = [
     { name = "black" },
     { name = "importlib-resources" },
     { name = "jsonschema" },
+    { name = "pyjsparser" },
     { name = "referencing" },
     { name = "ruamel-yaml" },
 ]
@@ -763,6 +770,7 @@ requires-dist = [
     { name = "black", specifier = "==26.5.1" },
     { name = "importlib-resources", specifier = "==7.1.0" },
     { name = "jsonschema", specifier = "==4.26.0" },
+    { name = "pyjsparser", specifier = "==2.7.1" },
     { name = "referencing", specifier = "==0.37.0" },
     { name = "ruamel-yaml", specifier = "==0.19.1" },
 ]

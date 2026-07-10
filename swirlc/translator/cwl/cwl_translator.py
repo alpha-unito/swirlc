@@ -637,20 +637,24 @@ class CWLTranslator(AbstractTranslator):
             source_to_port[inp_name] = port
             data_type = _cwl_type_to_swirl(wf_inp.type_)
 
-            def _coerce(v):
+            def _coerce(v, value_type: str):
                 # A CWL File/Directory value is a {"path": ...} object.
                 if isinstance(v, dict) and "path" in v:
                     return v["path"]
+                inner_type = _list_inner_type(value_type)
+                if inner_type is not None:
+                    return [_coerce(item, inner_type) for item in (v or [])]
+                if value_type == "int":
+                    return int(v)
+                if value_type == "bool":
+                    return v if isinstance(v, bool) else str(v).lower() == "true"
                 return str(v)
 
             raw_val = settings_values.get(inp_name)
             if raw_val is None and _is_optional_cwl_type(wf_inp.type_):
                 unset_optional_sources.add(inp_name)
-            if _list_inner_type(data_type) is not None:
-                # List input: preserve the list, coercing each element.
-                val = [_coerce(v) for v in (raw_val or [])]
-            elif raw_val is not None:
-                val = _coerce(raw_val)
+            if raw_val is not None:
+                val = _coerce(raw_val, data_type)
             else:
                 val = ""
             default_loc.data[data_name] = Data(
@@ -660,7 +664,16 @@ class CWLTranslator(AbstractTranslator):
         # 5b. Create a Step per leaf, with its output ports + processors.
         path_to_swirl: dict[str, Step] = {}
         for i, eff in enumerate(effective_steps):
-            step = Step(name=f"s{i}", display_name=eff.path, command=eff.command)
+            expression = getattr(eff.tool_obj, "expression", None)
+            step = Step(
+                name=f"s{i}",
+                display_name=eff.path,
+                command=eff.command,
+                expression=expression,
+                expression_inputs={} if expression else None,
+                expression_input_types={} if expression else None,
+                expression_outputs={} if expression else None,
+            )
             workflow.add_step(step)
             path_to_swirl[eff.path] = step
 
@@ -684,6 +697,8 @@ class CWLTranslator(AbstractTranslator):
                 port_counter += 1
                 port = Port(name=port_name, display_name=gkey, data={data_name})
                 workflow.add_output_port(step, port)
+                if step.expression is not None:
+                    step.expression_outputs[out_port_id] = port
 
                 if step.processors is None:
                     step.processors = {}
@@ -706,7 +721,14 @@ class CWLTranslator(AbstractTranslator):
                     input_port = source_to_port[gkey]
                     workflow.add_input_port(swirl_step, input_port)
                     tool_in = tool_inputs.get(_param)
-                    binding = getattr(tool_in, "inputBinding", None) if tool_in else None
+                    if swirl_step.expression is not None and tool_in is not None:
+                        swirl_step.expression_inputs[_param] = input_port
+                        swirl_step.expression_input_types[_param] = _cwl_type_to_swirl(
+                            tool_in.type_
+                        )
+                    binding = (
+                        getattr(tool_in, "inputBinding", None) if tool_in else None
+                    )
                     if binding is None:
                         continue
                     pos = binding.position if binding.position is not None else 999
