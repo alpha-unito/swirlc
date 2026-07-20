@@ -49,7 +49,7 @@ bandit = [
     "bandit==1.9.4"
 ]
 lint = [
-    "codespell==2.4.2",
+    "codespell==2.4.3",
     "pyupgrade==3.21.2",
     "ruff==0.15.22"
 ]
