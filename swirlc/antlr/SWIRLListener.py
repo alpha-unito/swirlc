@@ -1,4 +1,4 @@
-# Generated from /swirl/grammar/SWIRL.g4 by ANTLR 4.13.1
+# Generated from /home/tommo/Coding/Alpha/swirlc/grammar/SWIRL.g4 by ANTLR 4.13.1
 from antlr4 import *
 if "." in __name__:
     from .SWIRLParser import SWIRLParser
@@ -26,6 +26,15 @@ class SWIRLListener(ParseTreeListener):
         pass
 
 
+    # Enter a parse tree produced by SWIRLParser#TraceRepl.
+    def enterTraceRepl(self, ctx:SWIRLParser.TraceReplContext):
+        pass
+
+    # Exit a parse tree produced by SWIRLParser#TraceRepl.
+    def exitTraceRepl(self, ctx:SWIRLParser.TraceReplContext):
+        pass
+
+
     # Enter a parse tree produced by SWIRLParser#TraceParen.
     def enterTraceParen(self, ctx:SWIRLParser.TraceParenContext):
         pass
@@ -41,6 +50,15 @@ class SWIRLListener(ParseTreeListener):
 
     # Exit a parse tree produced by SWIRLParser#TracePred.
     def exitTracePred(self, ctx:SWIRLParser.TracePredContext):
+        pass
+
+
+    # Enter a parse tree produced by SWIRLParser#TraceZero.
+    def enterTraceZero(self, ctx:SWIRLParser.TraceZeroContext):
+        pass
+
+    # Exit a parse tree produced by SWIRLParser#TraceZero.
+    def exitTraceZero(self, ctx:SWIRLParser.TraceZeroContext):
         pass
 
 
@@ -86,6 +104,15 @@ class SWIRLListener(ParseTreeListener):
 
     # Exit a parse tree produced by SWIRLParser#recv.
     def exitRecv(self, ctx:SWIRLParser.RecvContext):
+        pass
+
+
+    # Enter a parse tree produced by SWIRLParser#move.
+    def enterMove(self, ctx:SWIRLParser.MoveContext):
+        pass
+
+    # Exit a parse tree produced by SWIRLParser#move.
+    def exitMove(self, ctx:SWIRLParser.MoveContext):
         pass
 
 

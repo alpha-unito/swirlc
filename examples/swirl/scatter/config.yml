@@ -1,0 +1,68 @@
+version: v1.0
+
+steps:
+  s1:
+    displayName: "UnzipArchive"
+    command: unzip
+    arguments:
+      - value: "-o"
+      - valueFrom: p_zip
+      - value: "-d"
+      - value: "extracted"
+    outputs:
+      p_file:
+        dataName: file_ID
+        glob: "extracted/*"
+
+  s2:
+    displayName: "CalculateFileSize"
+    command: wc
+    arguments:
+      - value: "-c"
+      - valueFrom: p_file
+    outputs:
+      p_size:
+        dataName: size_ID
+        glob: "size.txt"
+
+  s3:
+    displayName: "GatherSizes"
+    command: cat
+    arguments:
+      - valueFrom: p_size
+    outputs:
+      p_out:
+        dataName: d_out
+        glob: "sizes_summary.txt"
+
+locations:
+  l0:
+    hostname: 127.0.0.1
+    port: 8080
+  l1:
+    hostname: 127.0.0.1
+    port: 8081
+  l2:
+    hostname: 127.0.0.1
+    port: 8082
+  l3:
+    hostname: 127.0.0.1
+    port: 8083
+  lG:
+    hostname: 127.0.0.1
+    port: 8084
+
+dependencies:
+  d_zip:
+    type: file
+    value: "/home/tommo/Coding/Alpha/swirlc/examples/swirl/scatter/data/Archive.zip"
+  ID:
+    type: string
+  file_ID:
+    type: file
+  size_ID:
+    type: file
+  d_out:
+    type: file
+  eof:
+    type: string

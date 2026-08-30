@@ -132,3 +132,6 @@ dmypy.json
 # AI
 .claude
 .antigravitycli
+
+# swirlc
+/tmp

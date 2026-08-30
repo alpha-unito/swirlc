@@ -15,7 +15,7 @@ from ruamel.yaml import YAML
 
 from swirlc.main import main
 
-_EXAMPLES_PATH = pathlib.Path(__file__).parent.parent / "examples"
+_EXAMPLES_PATH = pathlib.Path(__file__).parent.parent / "examples" / "swirl"
 
 
 @contextlib.contextmanager
@@ -141,9 +141,9 @@ def test_example1() -> None:
 
 def test_example2() -> None:
     _compile_and_run(
-        example_name="example2",
-        trace_filename="example2.swirl",
-        expected_generated_files=["run.sh", "ld.py", "l1.py", "l2.py"],
+        example_name="basic",
+        trace_filename="source.swirl",
+        expected_generated_files=["run.sh", "l0.py", "l1.py", "l2.py"],
         extra_files_to_copy=["world.txt"],
         expected_stdout="Workflow execution terminated",
         expected_stderr_patterns=[
@@ -152,3 +152,11 @@ def test_example2() -> None:
             r"Step ThirdStep-s3 has not an output port\. Result: 'Hello'",
         ],
     )
+
+
+def test_scatter() -> None:
+    _compile(
+        str(_EXAMPLES_PATH / "scatter" / "source.swirl"),
+        str(_EXAMPLES_PATH / "scatter" / "config.yml"),
+    )
+

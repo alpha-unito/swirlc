@@ -200,7 +200,7 @@
         "outputs": {
           "type": "object",
           "patternProperties": {
-              "[a-z][a-zA-Z0-9]": {
+              "^[a-zA-Z_][a-zA-Z0-9_]*$": {
                 "type": "object",
                 "properties": {
                   "dataName": {
@@ -256,7 +256,7 @@
     "dependencies": {
       "type": "object",
       "patternProperties": {
-        "^[a-z][a-zA-Z0-9]*$": {
+        "^[a-zA-Z_][a-zA-Z0-9_]*$": {
           "$ref": "#/$defs/dependency"
         }
       },
@@ -265,7 +265,7 @@
     "locations":  {
       "type": "object",
       "patternProperties": {
-        "^[a-z][a-zA-Z0-9]*$": {
+        "^[a-zA-Z_][a-zA-Z0-9_]*$": {
           "$ref": "#/$defs/location"
         }
       },
@@ -274,25 +274,24 @@
     "steps": {
       "type": "object",
       "patternProperties": {
-        "^[a-z][a-zA-Z0-9]*$": {
+        "^[a-zA-Z_][a-zA-Z0-9_]*$": {
           "$ref": "#/$defs/step"
-        }
-      },
-      "additionalProperties": false
-    },
-    "choices": {
-      "type": "object",
-      "patternProperties": {
-        "^[a-z][a-zA-Z0-9]*$": {
-          "$ref": "#/$defs/choice"
         }
       },
       "additionalProperties": false
     },
     "version": {
       "type": "string"
+    },
+    "tmpdir": {
+      "type": "string"
+    },
+    "workdir": {
+      "type": "string"
     }
   },
+
+
   "required": [
     "version"
   ],

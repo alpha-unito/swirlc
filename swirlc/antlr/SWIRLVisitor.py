@@ -1,4 +1,4 @@
-# Generated from /swirl/grammar/SWIRL.g4 by ANTLR 4.13.1
+# Generated from /home/tommo/Coding/Alpha/swirlc/grammar/SWIRL.g4 by ANTLR 4.13.1
 from antlr4 import *
 if "." in __name__:
     from .SWIRLParser import SWIRLParser
@@ -19,6 +19,11 @@ class SWIRLVisitor(ParseTreeVisitor):
         return self.visitChildren(ctx)
 
 
+    # Visit a parse tree produced by SWIRLParser#TraceRepl.
+    def visitTraceRepl(self, ctx:SWIRLParser.TraceReplContext):
+        return self.visitChildren(ctx)
+
+
     # Visit a parse tree produced by SWIRLParser#TraceParen.
     def visitTraceParen(self, ctx:SWIRLParser.TraceParenContext):
         return self.visitChildren(ctx)
@@ -26,6 +31,11 @@ class SWIRLVisitor(ParseTreeVisitor):
 
     # Visit a parse tree produced by SWIRLParser#TracePred.
     def visitTracePred(self, ctx:SWIRLParser.TracePredContext):
+        return self.visitChildren(ctx)
+
+
+    # Visit a parse tree produced by SWIRLParser#TraceZero.
+    def visitTraceZero(self, ctx:SWIRLParser.TraceZeroContext):
         return self.visitChildren(ctx)
 
 
@@ -51,6 +61,11 @@ class SWIRLVisitor(ParseTreeVisitor):
 
     # Visit a parse tree produced by SWIRLParser#recv.
     def visitRecv(self, ctx:SWIRLParser.RecvContext):
+        return self.visitChildren(ctx)
+
+
+    # Visit a parse tree produced by SWIRLParser#move.
+    def visitMove(self, ctx:SWIRLParser.MoveContext):
         return self.visitChildren(ctx)
 
 

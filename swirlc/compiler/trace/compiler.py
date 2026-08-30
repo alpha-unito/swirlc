@@ -7,8 +7,9 @@ from swirlc.core.entity import Data, Location, Step
 
 
 class TraceTarget(StandardCompiler):
-    def __init__(self, outdir: str) -> None:
-        super().__init__(outdir)
+    def __init__(self, outdir: str, tmpdir: str | None = None) -> None:
+        super().__init__(outdir, tmpdir)
+
 
     # ======== Writes =======
     def write_thread_start(self, node: TraceNode, indent: int, trace: TextIO):
@@ -68,6 +69,48 @@ class TraceTarget(StandardCompiler):
             f"{'  ' * indent}{node.id} = Send: {data} of type {data_type} from {src} to {dst} on port {port}\n"
         )
 
+    def write_move(
+        self,
+        node: TraceNode,
+        indent: int,
+        trace: TextIO,
+        data: str,
+        port: str,
+        data_type: str,
+        src: str,
+        dst: str,
+    ):
+        trace.write(
+            f"{'  ' * indent}{node.id} = Move: {data} of type {data_type} from {src} to {dst} on port {port}\n"
+        )
+
+    def write_choice_start(self, node: TraceNode, indent: int, trace: TextIO):
+        trace.write(f"{'  ' * indent}{node.id} = Choice {{\n")
+
+    def write_choice_alt(self, node: TraceNode, indent: int, trace: TextIO):
+        trace.write(f"{'  ' * indent}}} or {{\n")
+
+    def write_choice_end(self, node: TraceNode, indent: int, trace: TextIO):
+        trace.write(f"{'  ' * indent}}} // End of {node.id}\n")
+
+    def write_repl_start(
+        self,
+        node: TraceNode,
+        indent: int,
+        trace: TextIO,
+        param: str | None = None,
+        domain: str | None = None,
+    ):
+        param_str = f"[{param} in {domain}] " if param else ""
+        trace.write(f"{'  ' * indent}{node.id} = Replicate {param_str}{{\n")
+
+
+    def write_repl_end(self, node: TraceNode, indent: int, trace: TextIO):
+        trace.write(f"{'  ' * indent}}} // End of {node.id}\n")
+
+    def write_zero(self, node: TraceNode, indent: int, trace: TextIO):
+        trace.write(f"{'  ' * indent}{node.id} = Zero\n")
+
     def write_dataset(
         self, node: TraceNode, indent: int, trace: TextIO, port: str, data: Data
     ):
@@ -81,3 +124,4 @@ class TraceTarget(StandardCompiler):
 
     def write_location_end(self, location: Location, trace: TextIO):
         trace.write("```\n")
+

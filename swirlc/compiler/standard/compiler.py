@@ -16,6 +16,9 @@ class TraceNode:
         self.depth = depth
         self.parent = parent
         self.is_threaded = is_threaded
+        self.is_repl = False
+        self.repl_sources: set[str] = set()
+
 
         self.id = f"thread_{TraceNode.counter}"
         self.handle = f"handle_{TraceNode.counter}"
@@ -55,8 +58,9 @@ class TraceNode:
 
 
 class StandardCompiler(BaseCompiler):
-    def __init__(self, outdir: str) -> None:
-        super().__init__(outdir)
+    def __init__(self, outdir: str, tmpdir: str | None = None) -> None:
+        super().__init__(outdir, tmpdir)
+
 
         self.current_workflow: Optional[DistributedWorkflow] = None
         self.current_location: Optional[Location] = None
@@ -116,6 +120,45 @@ class StandardCompiler(BaseCompiler):
     ):
         pass
 
+    def write_move(
+        self,
+        node: TraceNode,
+        indent: int,
+        trace: TextIO,
+        data: str,
+        port: str,
+        data_type: str,
+        src: str,
+        dst: str,
+    ):
+        pass
+
+    def write_choice_start(self, node: TraceNode, indent: int, trace: TextIO):
+        pass
+
+    def write_choice_alt(self, node: TraceNode, indent: int, trace: TextIO):
+        pass
+
+    def write_choice_end(self, node: TraceNode, indent: int, trace: TextIO):
+        pass
+
+    def write_repl_start(
+        self,
+        node: TraceNode,
+        indent: int,
+        trace: TextIO,
+        param: str | None = None,
+        domain: str | None = None,
+    ):
+        pass
+
+
+    def write_repl_end(self, node: TraceNode, indent: int, trace: TextIO):
+        pass
+
+    def write_zero(self, node: TraceNode, indent: int, trace: TextIO):
+        pass
+
     def write_dataset(
         self, node: TraceNode, indent: int, trace: TextIO, port: str, data: Data
     ):
@@ -136,6 +179,10 @@ class StandardCompiler(BaseCompiler):
 
     def send_is_threaded(self) -> bool:
         return True
+
+    def move_is_threaded(self) -> bool:
+        return True
+
 
     # ======== Utils ========
     def _open_location_trace(self, location: Location) -> TextIO:
@@ -273,3 +320,78 @@ class StandardCompiler(BaseCompiler):
         node = self.current_node.add_child(trace, is_threaded=self.send_is_threaded())
 
         self.write_send(node, node.depth, trace, data, port, data_type, src, dst)
+
+    def move(self, data: str, port: str, data_type: str, src: str, dst: str):
+        assert self.current_location is not None
+        assert self.current_node is not None
+        trace = self._get_location_trace(self.current_location)
+        node = self.current_node.add_child(trace, is_threaded=self.move_is_threaded())
+
+        self.write_move(node, node.depth, trace, data, port, data_type, src, dst)
+
+    # ======== Choice ========
+    def begin_choice(self) -> None:
+        assert self.current_location is not None
+        assert self.current_node is not None
+        trace = self._get_location_trace(self.current_location)
+
+        self.current_node = self.current_node.add_child(trace)
+        self.write_choice_start(self.current_node, self.current_node.depth, trace)
+
+    def choice(self) -> None:
+        assert self.current_location is not None
+        assert self.current_node is not None
+        trace = self._get_location_trace(self.current_location)
+
+        self._close_node(self.current_node, trace)
+        self.write_choice_alt(self.current_node, self.current_node.depth, trace)
+
+    def end_choice(self) -> None:
+        assert self.current_location is not None
+        assert self.current_node is not None
+        trace = self._get_location_trace(self.current_location)
+
+        self._close_node(self.current_node, trace)
+        self.write_choice_end(self.current_node, self.current_node.depth, trace)
+
+        assert (
+            self.current_node.parent is not None
+        ), "Current node has no parent to return to"
+        self.current_node = self.current_node.parent
+
+    # ======== Replication ========
+    def begin_repl(self, param: str | None = None, domain: str | None = None) -> None:
+        assert self.current_location is not None
+        assert self.current_node is not None
+        trace = self._get_location_trace(self.current_location)
+
+        self.current_node = self.current_node.add_child(trace)
+        self.current_node.is_repl = True
+        self.write_repl_start(self.current_node, self.current_node.depth, trace, param=param, domain=domain)
+        self.current_node.depth += 1
+
+
+
+    def end_repl(self) -> None:
+        assert self.current_location is not None
+        assert self.current_node is not None
+        trace = self._get_location_trace(self.current_location)
+
+        self._close_node(self.current_node, trace)
+        self.current_node.depth -= 1
+        self.write_repl_end(self.current_node, self.current_node.depth, trace)
+
+        assert (
+            self.current_node.parent is not None
+        ), "Current node has no parent to return to"
+        self.current_node = self.current_node.parent
+
+
+    # ======== Zero ========
+    def zero(self) -> None:
+        assert self.current_location is not None
+        assert self.current_node is not None
+        trace = self._get_location_trace(self.current_location)
+        node = self.current_node.add_child(trace, is_threaded=False)
+        self.write_zero(node, node.depth, trace)
+

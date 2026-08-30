@@ -1,0 +1,94 @@
+// ==============================================================================
+// SWIRL Scatter-Gather Example (Shell Commands Only)
+// Pipeline:
+//   Step 1 (unzip archive.zip) -> Step 2 (scattered: wc -c file size) -> Step 3 (gather: cat)
+// ==============================================================================
+
+// ------------------------------------------------------------------------------
+// Location l0: Step 1 (Unzip Archive & Scatter Files)
+// - Executes step s1 (unzip) to extract files from archive.zip.
+// - Iteratively moves each extracted file (tagged with ID) to scatter workers.
+// - Emits EOF on port p_file to all worker locations when finished.
+// ------------------------------------------------------------------------------
+<l0, {(p_zip, d_zip)},
+  exec(s1, {(p_zip, d_zip)} -> {(p_file, file_ID)}, {l0})
+  .
+  (
+    !(
+      move(file_ID -> p_file, l0, {l1, l2, l3})
+    )
+    +
+    (
+      send(eof -> p_file, l0, l1) |
+      send(eof -> p_file, l0, l2) |
+      send(eof -> p_file, l0, l3)
+    )
+  )
+> |
+
+
+
+// ------------------------------------------------------------------------------
+// Worker Location l1: Step 2 (Scatter Worker 1 - Calculate File Size)
+// ------------------------------------------------------------------------------
+<l1, {},
+  !(
+    recv(file_ID -> p_file, l0, l1) .
+    exec(s2, {(p_file, file_ID)} -> {(p_size, size_ID)}, {l1}) .
+    send(size_ID -> p_size, l1, lG)
+  )
+  +
+  (
+    recv(eof -> p_file, l0, l1) .
+    send(eof -> p_size, l1, lG)
+  )
+> |
+
+// ------------------------------------------------------------------------------
+// Worker Location l2: Step 2 (Scatter Worker 2 - Calculate File Size)
+// ------------------------------------------------------------------------------
+<l2, {},
+  !(
+    recv(file_ID -> p_file, l0, l2) .
+    exec(s2, {(p_file, file_ID)} -> {(p_size, size_ID)}, {l2}) .
+    send(size_ID -> p_size, l2, lG)
+  )
+  +
+  (
+    recv(eof -> p_file, l0, l2) .
+    send(eof -> p_size, l2, lG)
+  )
+> |
+
+// ------------------------------------------------------------------------------
+// Worker Location l3: Step 2 (Scatter Worker 3 - Calculate File Size)
+// ------------------------------------------------------------------------------
+<l3, {},
+  !(
+    recv(file_ID -> p_file, l0, l3) .
+    exec(s2, {(p_file, file_ID)} -> {(p_size, size_ID)}, {l3}) .
+    send(size_ID -> p_size, l3, lG)
+  )
+  +
+  (
+    recv(eof -> p_file, l0, l3) .
+    send(eof -> p_size, l3, lG)
+  )
+> |
+
+
+// ------------------------------------------------------------------------------
+// Location lG: Step 3 (Gather & Concatenate File Sizes)
+// - Concurrently collects size_ID items from all scatter workers until EOF.
+// - Executes step s3 (cat) to concatenate the gathered sizes into final output.
+// ------------------------------------------------------------------------------
+<lG, {},
+  (
+    !(recv(size_ID -> p_size, l1, lG)) |
+    !(recv(size_ID -> p_size, l2, lG)) |
+    !(recv(size_ID -> p_size, l3, lG))
+  )
+  .
+  exec(s3, {(p_size, size_ID)} -> {(p_out, d_out)}, {lG})
+>
+

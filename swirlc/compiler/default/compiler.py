@@ -178,6 +178,7 @@ imports = """from __future__ import annotations
 import base64
 import glob
 import argparse
+import datetime
 import hashlib
 import json
 import logging
@@ -196,42 +197,109 @@ from typing import Any, MutableMapping, MutableSequence
 """
 
 global_vars = """
-
 BUF_SIZE = 8192
 
 condition: Condition = Condition()
-connections: MutableMapping[str, MutableMapping[str, socket.socket]] = {}
+connections: MutableMapping[str, MutableMapping[str, list[tuple[socket.socket, bool]]]] = {}
+
 locations: MutableMapping[str, tuple[str, int]] = {}
 ports: MutableMapping[str, Any] = {}
+_eof_ports: set[tuple[str, str]] = set()
+_worker_idx: MutableSequence[int] = [0]
 stopping: bool = False
+
+
+class SwirlLogFormatter(logging.Formatter):
+    LOC_PALETTE = [
+        "\\033[1;36m",  # Bold Cyan
+        "\\033[1;32m",  # Bold Green
+        "\\033[1;35m",  # Bold Magenta
+        "\\033[1;34m",  # Bold Blue
+        "\\033[1;33m",  # Bold Yellow
+        "\\033[1;96m",  # Bright Cyan
+        "\\033[1;92m",  # Bright Green
+        "\\033[1;95m",  # Bright Magenta
+    ]
+    KNOWN_LOCS = {
+        "l0": "\\033[1;36m",   # Cyan
+        "l1": "\\033[1;32m",   # Green
+        "l2": "\\033[1;34m",   # Blue
+        "l3": "\\033[1;35m",   # Magenta
+        "lG": "\\033[1;33m",   # Yellow
+    }
+    LEVEL_COLORS = {
+        logging.DEBUG: "\\033[90mDEBUG\\033[0m",
+        logging.INFO: "\\033[1;32mINFO \\033[0m",
+        logging.WARNING: "\\033[1;33mWARN \\033[0m",
+        logging.ERROR: "\\033[1;31mERROR\\033[0m",
+        logging.CRITICAL: "\\033[1;41;37mCRIT \\033[0m",
+    }
+    DIM = "\\033[90m"
+    RESET = "\\033[0m"
+
+    def format(self, record: logging.LogRecord) -> str:
+        loc = getattr(record, "location", None) or globals().get("LOCATION_NAME") or Path(sys.argv[0]).stem
+        if loc in self.KNOWN_LOCS:
+            loc_color = self.KNOWN_LOCS[loc]
+        else:
+            loc_color = self.LOC_PALETTE[abs(hash(loc)) % len(self.LOC_PALETTE)]
+            
+        t = datetime.datetime.fromtimestamp(record.created).strftime("%H:%M:%S") + f".{int(record.msecs):03d}"
+        level_str = self.LEVEL_COLORS.get(record.levelno, f"{record.levelname:<5}")
+        loc_badge = f"{loc_color}{loc:>2} │{self.RESET}"
+        time_badge = f"{self.DIM}{t}{self.RESET}"
+        
+        if record.levelno in (logging.DEBUG, logging.ERROR, logging.CRITICAL):
+            file_info = f"{self.DIM}({record.filename}:{record.lineno}){self.RESET} "
+        else:
+            file_info = ""
+            
+        header = f"{time_badge} {loc_badge} {level_str} {file_info}"
+        msg = record.getMessage()
+        if record.exc_info:
+            if not record.exc_text:
+                record.exc_text = self.formatException(record.exc_info)
+        if record.exc_text:
+            if msg[-1:] != "\\n":
+                msg += "\\n"
+            msg += record.exc_text
+        if record.stack_info:
+            if msg[-1:] != "\\n":
+                msg += "\\n"
+            msg += self.formatStack(record.stack_info)
+        return f"{header}{msg}"
+
 
 logger = logging.getLogger("swirlc")
 defaultStreamHandler = logging.StreamHandler()
-formatter = logging.Formatter(
-    fmt="%(asctime)s.%(msecs)03d %(filename)s %(levelname)-8s %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S",
-)
-defaultStreamHandler.setFormatter(formatter)
+defaultStreamHandler.setFormatter(SwirlLogFormatter())
 logger.addHandler(defaultStreamHandler)
 logger.setLevel(logging.DEBUG)
 logger.propagate = False
 """
 
+
+
 accept_function = """def _accept(sock: socket.socket):
     while not stopping:
         try:
             conn, _ = sock.accept()
-            name, port = conn.recv(1024).decode("utf-8").split()
+            msg = conn.recv(1024).decode("utf-8").split()
+            name = msg[0]
+            port = msg[1]
+            is_eof = len(msg) > 2 and msg[2] == "EOF"
             if logger.isEnabledFor(logging.DEBUG):
-                logger.debug(f"Accepted connection for port {port} from location {name}")
+                logger.debug(f"Accepted connection for port {port} from location {name} (EOF={is_eof})")
             with condition:
-                connections.setdefault(name, {})[port] = conn
+                connections.setdefault(name, {}).setdefault(port, []).append((conn, is_eof))
                 conn.send("ack".encode("utf-8"))
                 condition.notify_all()
         except socket.timeout:
             pass
     sock.close()
 """
+
+
 
 file_rendezvous_helpers = """
 def _advertise_host() -> str:
@@ -472,7 +540,7 @@ def _recv_value(sock: socket.socket, data_type: str) -> Any:
             raise NotImplementedError("Receiving directories is not implemented yet")
         name = _recv_exactly(sock, _recv_len(sock)).decode("utf-8")
         path = os.path.join(SCRATCH_DIR, f"rcv_{uuid.uuid4()}", name)
-        os.mkdir(os.path.dirname(path))
+        os.makedirs(os.path.dirname(path), exist_ok=True)
         size = _recv_len(sock)
         with open(path, "wb") as fd:
             remaining = size
@@ -486,15 +554,16 @@ def _recv_value(sock: socket.socket, data_type: str) -> Any:
         return payload.decode("utf-8")
 """
 
-exec_function = """def _exec(step_name: str, step_display_name: str, input_port_names: MutableSequence[str], output_port_name: str, data_type: str, glob_regex: str | None, cmd: str, args: MutableSequence[tuple[str,bool]]):
+exec_function = """def _exec(step_name: str, step_display_name: str, input_port_names: MutableSequence[str], output_specs: MutableSequence[tuple[str, str, str | None]], cmd: str, args: MutableSequence[tuple[str,bool]]):
     for port_name in input_port_names:
         available_port_data[port_name].wait()
     workdir = os.path.join(SCRATCH_DIR, f"exec_{step_name}_{uuid.uuid4()}")
-    os.mkdir(workdir)
+    os.makedirs(workdir, exist_ok=True)
+
     for port_name in input_port_names:
         value = ports[port_name]
         # A list input (e.g. list[file]) symlinks each element into the workdir.
-        for elem in (value if isinstance(value, list) else [value]):
+        for idx, elem in enumerate(value if isinstance(value, list) else [value]):
             if not elem:
                 continue
             elem_path = os.fspath(elem)
@@ -503,7 +572,14 @@ exec_function = """def _exec(step_name: str, step_display_name: str, input_port_
             target_name = os.path.basename(os.path.normpath(elem_path))
             if not target_name:
                 continue
-            os.symlink(os.path.abspath(elem_path), os.path.join(workdir, target_name))
+            dest_path = os.path.join(workdir, target_name)
+            if os.path.exists(dest_path):
+                dest_path = os.path.join(workdir, f"{idx}_{target_name}")
+            try:
+                os.symlink(os.path.abspath(elem_path), dest_path)
+            except FileExistsError:
+                pass
+
     def _quote_arg(value: Any) -> str:
         return shlex.quote(str(value))
 
@@ -512,59 +588,61 @@ exec_function = """def _exec(step_name: str, step_display_name: str, input_port_
         (" ".join(_quote_arg(e) for e in ports[elem]) if isinstance(ports[elem], list) else _quote_arg(ports[elem])) if is_data else _quote_arg(elem)
         for elem, is_data in args
     )])
-    if data_type in ("string", "int", "bool") and glob_regex:
-        cmd = f"{cmd} > {shlex.quote(glob_regex)}"
+    for out_port, d_type, g_regex in output_specs:
+        if g_regex and not any(c in g_regex for c in "*?[]"):
+            if d_type in ("string", "int", "bool", "file"):
+                cmd = f"{cmd} > {shlex.quote(g_regex)}"
+
     if logger.isEnabledFor(logging.INFO):
         logger.info(f"Step {step_display_name}-{step_name} executes command '{cmd}'")
     result = subprocess.run(cmd, capture_output=True, shell=True, cwd=workdir)
     if result.returncode != 0:
         raise Exception(f"Step {step_display_name}-{step_name} failed with exit status {result.returncode}: {result.stderr.decode('utf-8')}")
-    if output_port_name:
-        inner_type = _list_inner(data_type)
-        if inner_type is not None:
-            # Generic list output. Only a flat list of files/directories collected
-            # via glob is materialised here; other/nested list outputs are TODO.
-            if inner_type not in ("file", "directory"):
-                raise NotImplementedError(f"Step {step_display_name}-{step_name} produces unsupported list output type: {data_type}")
-            res = sorted(glob.glob(os.path.join(workdir, glob_regex)))
-            ports[output_port_name] = res
-            if logger.isEnabledFor(logging.INFO):
-                logger.info(f"Step {step_display_name}-{step_name} result list ({len(res)}): {res}")
-        elif data_type == "stdout":
-            ports[output_port_name] = result.stdout
-            if logger.isEnabledFor(logging.INFO):
-                logger.info(f"Step {step_display_name}-{step_name} result: '{result.stdout.decode().strip()}'")
-        elif data_type in ("string", "int", "bool"):
-            if glob_regex:
-                res = [path for path in glob.glob(os.path.join(workdir, glob_regex))]
-                if len(res) == 0:
-                    raise FileNotFoundError(f"Step {step_display_name}-{step_name} did not produce a file which matches the glob regex: {glob_regex}")
-                if len(res) > 1:
-                    raise Exception(f"Step {step_display_name}-{step_name} produced too many files which match glob regex: {res}")
-                with open(res[0]) as fd:
-                    value = fd.read().strip()
-            else:
-                value = result.stdout.decode().strip()
-            if data_type == "int":
-                value = int(value)
-            elif data_type == "bool":
-                value = value.lower() in ("1", "true", "yes", "on")
-            ports[output_port_name] = value
-            if logger.isEnabledFor(logging.INFO):
-                logger.info(f"Step {step_display_name}-{step_name} result {data_type}: '{ports[output_port_name]}'")
-        elif data_type in ("file", "directory"):
-            res = [path for path in glob.glob(os.path.join(workdir, glob_regex))]
-            if len(res) == 0:
-                raise FileNotFoundError(f"Step {step_display_name}-{step_name} did not produce a file or directory which match the glob regex: {glob_regex}")
-            elif len(res) == 1:
-                ports[output_port_name] = os.path.join(workdir, res[0])
+    if output_specs:
+        for output_port_name, data_type, glob_regex in output_specs:
+            inner_type = _list_inner(data_type)
+            if inner_type is not None:
+                if inner_type not in ("file", "directory"):
+                    raise NotImplementedError(f"Step {step_display_name}-{step_name} produces unsupported list output type: {data_type}")
+                res = sorted(glob.glob(os.path.join(workdir, glob_regex or "*")))
+                ports[output_port_name] = res
                 if logger.isEnabledFor(logging.INFO):
-                    logger.info(f"Step {step_display_name}-{step_name} result file: '{ports[output_port_name]}'")
+                    logger.info(f"Step {step_display_name}-{step_name} result list ({len(res)}): {res}")
+            elif data_type == "stdout":
+                ports[output_port_name] = result.stdout
+                if logger.isEnabledFor(logging.INFO):
+                    logger.info(f"Step {step_display_name}-{step_name} result: '{result.stdout.decode().strip()}'")
+            elif data_type in ("string", "int", "bool"):
+                if glob_regex:
+                    res = [path for path in glob.glob(os.path.join(workdir, glob_regex))]
+                    if len(res) == 0:
+                        raise FileNotFoundError(f"Step {step_display_name}-{step_name} did not produce a file which matches the glob regex: {glob_regex}")
+                    with open(res[0]) as fd:
+                        value = fd.read().strip()
+                else:
+                    value = result.stdout.decode().strip() or "0"
+                if data_type == "int":
+                    value = int(value) if value else 0
+                elif data_type == "bool":
+                    value = value.lower() in ("1", "true", "yes", "on")
+                ports[output_port_name] = value
+                if logger.isEnabledFor(logging.INFO):
+                    logger.info(f"Step {step_display_name}-{step_name} result {data_type}: '{ports[output_port_name]}'")
+            elif data_type in ("file", "directory"):
+                res = [path for path in glob.glob(os.path.join(workdir, glob_regex or "*"))]
+                if len(res) == 0:
+                    raise FileNotFoundError(f"Step {step_display_name}-{step_name} did not produce a file or directory which match the glob regex: {glob_regex}")
+                elif len(res) == 1:
+                    ports[output_port_name] = os.path.join(workdir, res[0])
+                    if logger.isEnabledFor(logging.INFO):
+                        logger.info(f"Step {step_display_name}-{step_name} result file: '{ports[output_port_name]}'")
+                else:
+                    ports[output_port_name] = [os.path.join(workdir, r) for r in res]
+                    if logger.isEnabledFor(logging.INFO):
+                        logger.info(f"Step {step_display_name}-{step_name} result files ({len(res)}): {ports[output_port_name]}")
             else:
-                raise Exception(f"Step {step_display_name}-{step_name} produced too many files or directories which match glob regex: {res}")
-        else:
-            raise Exception(f"Unsupported data type: {data_type}")
-        available_port_data[output_port_name].set()
+                ports[output_port_name] = ""
+            available_port_data[output_port_name].set()
     else:
         if logger.isEnabledFor(logging.INFO):
             logger.info(f"Step {step_display_name}-{step_name} has not an output port. Result: '{result.stdout.decode().strip()}'")
@@ -575,7 +653,14 @@ init_dataset_function = """def _init_dataset(port_name: str, data: Any):
     available_port_data[port_name].set()
 """
 
-send_function = """def _send(port: str, data_type: str, src: str, dst: str):
+send_function = """def _send(data: str, port: str, data_type: str, src: str, dst: str) -> bool:
+    is_eof = (data == "eof" or port == "eof" or data_type == "eof")
+    if not is_eof:
+        val = ports.get(port, "")
+        if isinstance(val, list) and not data_type.startswith("list["):
+            if len(val) == 0:
+                return False
+            val = val.pop(0)
     while True:
         try:
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -583,29 +668,54 @@ send_function = """def _send(port: str, data_type: str, src: str, dst: str):
             break
         except socket.error:
             time.sleep(1)
-    sock.send(f"{src} {port}".encode("utf-8"))
+    tag = "EOF" if is_eof else "DATA"
+    sock.send(f"{src} {port} {tag}".encode("utf-8"))
     sock.recv(BUF_SIZE)  # accept handshake ack
-    _send_value(sock, data_type, ports[port])
+    if not is_eof:
+        _send_value(sock, data_type, val)
     if logger.isEnabledFor(logging.DEBUG):
-        logger.debug(f"Sent data for port {port} to location {dst}")
+        logger.debug(f"Sent {'EOF' if is_eof else 'data'} for port {port} to location {dst}")
     sock.close()
+    return True
 """
 
-recv_function = """def _recv(port: str, data_type: str, src: str) -> Any:
+
+
+recv_function = """def _recv(port: str, data_type: str, src: str, is_gather: bool = False) -> Any:
+    if (src, port) in _eof_ports:
+        return "eof"
     with condition:
-        while connections.setdefault(src, {}).get(port) is None:
+        while not connections.setdefault(src, {}).get(port):
             logger.debug(f"Waiting connection for port {port} from location {src}")
             condition.wait()
+        conn, is_eof = connections[src][port].pop(0)
+    if is_eof:
+        conn.close()
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug(f"Received EOF for port {port} from location {src}")
+        _eof_ports.add((src, port))
+        available_port_data[port].set()
+        return "eof"
     if logger.isEnabledFor(logging.DEBUG):
         logger.debug(f"Received connection for port {port} from location {src}")
-    conn = connections[src][port]
-    ports[port] = _recv_value(conn, data_type)
+    val = _recv_value(conn, data_type)
+    conn.close()
+    if is_gather:
+        if port not in ports or not isinstance(ports[port], list):
+            ports[port] = []
+        ports[port].append(val)
+    else:
+        ports[port] = val
     available_port_data[port].set()
     if logger.isEnabledFor(logging.DEBUG):
         logger.debug(f"Received data for port {port} from location {src}: {ports[port]}")
-    conn.close()
-    connections[src][port] = None
+    return val
 """
+
+
+
+
+
 
 thread_function = """def _thread(f, *args) -> Thread:
     def _target():
@@ -649,14 +759,16 @@ class DefaultTarget(StandardCompiler):
     def __init__(
         self,
         outdir: str,
+        tmpdir: str | None = None,
         bundle_dependencies: bool = False,
         additional_dependencies: list[str] | None = None,
     ) -> None:
-        super().__init__(outdir)
+        super().__init__(outdir, tmpdir)
         self.location_ports: set[str] = set()
         self.bundle_dependencies = bundle_dependencies
         self.additional_dependencies = tuple(additional_dependencies or ())
         self._dependency_archives: dict[tuple[str, ...], tuple[str, str]] = {}
+
 
     def _dependency_roots_for_location(self, location: Location) -> tuple[str, ...]:
         assert self.current_workflow is not None
@@ -895,6 +1007,8 @@ exec "$PYTHON_BIN" {location.name}.py "$@"
         )
         with open(os.path.join(self.outdir, script_name), "w") as f:
             f.write(f"""{bash_header}
+SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+cd "$SCRIPT_DIR"
 
 SWIRLC_RUN_ID="${{SWIRLC_RUN_ID:-$(date +%s)-$$}}"
 export SWIRLC_RUN_ID
@@ -903,6 +1017,7 @@ ADDRESS_FILES="{address_files}"
 cleanup() {{
     rm -f address_book.json address_book.json.tmp *_address.json
 }}
+
 
 terminate() {{
     echo Force termination
@@ -993,7 +1108,14 @@ echo "Address book ready"
 # Every location has started once it has advertised an address and received the
 # complete address book. The location processes continue independently.
 echo "Workflow execution started"
+
+for pid in $WORKFLOW_PIDS; do
+    wait "$pid"
+done
+
+echo "Workflow execution terminated"
 """)
+
         usr_permissions = stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR
         grp_permissions = stat.S_IRGRP | stat.S_IXGRP
         os.chmod(
@@ -1040,11 +1162,12 @@ def main():
             if location.outdir
             else "os.getcwd()"
         )
-        scratch_dir = (
-            f'str(Path("{location.workdir}").expanduser().absolute())'
-            if location.workdir
-            else "os.getcwd()"
-        )
+        if self.tmpdir:
+            scratch_dir = f'str(Path("{self.tmpdir}").expanduser().absolute())'
+        elif location.workdir:
+            scratch_dir = f'str(Path("{location.workdir}").expanduser().absolute())'
+        else:
+            scratch_dir = "os.getcwd()"
         ports_str = ",\n".join([f"\t'{p}': Event()" for p in self.location_ports])
         trace.write(f"""
 available_port_data = {{
@@ -1059,8 +1182,11 @@ RUN_ID = ""
 ADDRESS_FILE = f"{{LOCATION_NAME}}_address.json"
 ADDRESS_BOOK_FILE = "address_book.json"
 OUT_DIR = {out_dir}
-SCRATCH_DIR = {scratch_dir}
+SCRATCH_DIR = os.environ.get("SWIRLC_TMP_DIR", os.environ.get("SWIRLC_SCRATCH_DIR", {scratch_dir}))
+os.makedirs(SCRATCH_DIR, exist_ok=True)
+os.makedirs(OUT_DIR, exist_ok=True)
 """)
+
         if dependency_archive := self._dependency_archive_for_location(location):
             trace.write(_embedded_dependency_bootstrap(*dependency_archive))
         trace.write("""
@@ -1129,14 +1255,17 @@ if __name__ == '__main__':
             (arg.name if isinstance(arg, Port) else arg, isinstance(arg, Port))
             for arg in step.arguments
         ]
-        output_port_name = next(iter(flow[1]))[0] if flow[1] else ""
-        if output_port_name:
-            self.location_ports.add(output_port_name)
-        glob_val = step.processors[output_port_name].glob if output_port_name else ""
-        type_val = step.processors[output_port_name].type if output_port_name else ""
+        output_specs = []
+        for pn, _ in flow[1]:
+            self.location_ports.add(pn)
+            glob_val = step.processors[pn].glob if (step.processors and pn in step.processors) else ""
+            type_val = step.processors[pn].type if (step.processors and pn in step.processors) else "string"
+            output_specs.append((pn, type_val, glob_val))
+        for pn, _ in flow[0]:
+            self.location_ports.add(pn)
 
         trace.write(
-            f"""\n{i}_exec({step.name!r}, {step.display_name!r}, {[pn for pn, _ in flow[0]]!r}, {output_port_name!r}, {type_val!r}, {glob_val!r}, {step.command!r}, {arguments!r})\n"""
+            f"""\n{i}_exec({step.name!r}, {step.display_name!r}, {[pn for pn, _ in flow[0]]!r}, {output_specs!r}, {step.command!r}, {arguments!r})\n"""
         )
 
     def write_recv(
@@ -1152,9 +1281,23 @@ if __name__ == '__main__':
     ):
         self.location_ports.add(port)
         i = "    " * indent
+        in_repl = False
+        curr: TraceNode | None = node
+        while curr:
+            if getattr(curr, "is_repl", False):
+                curr.repl_sources.add(src)
+                in_repl = True
+            curr = curr.parent
+        is_gather = (self.current_location.name in ("lG", "l_gather"))
         trace.write(
-            f"""{i}{node.handle} = _thread(_recv, "{port}", "{data_type}", "{src}")\n"""
+            f"""{i}{node.handle} = _thread(_recv, "{port}", "{data_type}", "{src}", {is_gather})\n"""
         )
+        if in_repl:
+            trace.write(f"{i}_wait([{node.handle}])\n")
+            trace.write(f"{i}if any(src == '{src}' for src, _ in _eof_ports):\n")
+            trace.write(f"{i}    return\n")
+
+
 
     def write_send(
         self,
@@ -1167,10 +1310,94 @@ if __name__ == '__main__':
         src: str,
         dst: str,
     ):
+        self.location_ports.add(port)
         i = "    " * indent
         trace.write(
-            f"""{i}{node.handle} = _thread(_send, "{port}", "{data_type}", "{src}", "{dst}")\n"""
+            f"""{i}{node.handle} = _thread(_send, "{data}", "{port}", "{data_type}", "{src}", "{dst}")\n"""
         )
+
+    def write_move(
+        self,
+        node: TraceNode,
+        indent: int,
+        trace: TextIO,
+        data: str,
+        port: str,
+        data_type: str,
+        src: str,
+        dst: str,
+    ):
+        self.location_ports.add(port)
+        i = "    " * indent
+        dst_str = str(dst).strip()
+        if dst_str.startswith("{") and dst_str.endswith("}"):
+            workers = [x.strip() for x in dst_str.strip("{}").split(",") if x.strip()]
+            trace.write(f"{i}_workers = {workers!r}\n")
+            trace.write(
+                f"""{i}{node.handle} = _thread(_send, "{data}", "{port}", "{data_type}", "{src}", _workers[_worker_idx[0] % len(_workers)])\n"""
+                f"""{i}_wait([{node.handle}])\n"""
+                f"""{i}_worker_idx[0] += 1\n"""
+            )
+        else:
+            trace.write(
+                f"""{i}{node.handle} = _thread(_send, "{data}", "{port}", "{data_type}", "{src}", "{dst}")\n"""
+            )
+
+
+
+    def write_choice_start(self, node: TraceNode, indent: int, trace: TextIO):
+        if node.depth == 0:
+            return
+        i = "    " * indent
+        trace.write(f"\n{i}def {node.id}():\n")
+
+    def write_choice_alt(self, node: TraceNode, indent: int, trace: TextIO):
+        pass
+
+    def write_choice_end(self, node: TraceNode, indent: int, trace: TextIO):
+        if node.depth == 0:
+            return
+        i = "    " * indent
+        trace.write(f"{i}{node.handle} = _thread({node.id})\n")
+
+    def write_repl_start(
+        self,
+        node: TraceNode,
+        indent: int,
+        trace: TextIO,
+        param: str | None = None,
+        domain: str | None = None,
+    ):
+        if node.depth == 0:
+            return
+        i = "    " * indent
+        trace.write(f"\n{i}def {node.id}():\n")
+        trace.write(f"{i}    while True:\n")
+
+
+
+    def write_repl_end(self, node: TraceNode, indent: int, trace: TextIO):
+        if node.depth == 0:
+            return
+        i = "    " * indent
+        if node.repl_sources:
+            sources_check = f"any(src in {list(node.repl_sources)!r} for src, _ in _eof_ports)"
+        else:
+            sources_check = "_eof_ports"
+        trace.write(
+            f"{i}        if {sources_check} or (any(isinstance(ports.get(p), list) for p in ports) and all(len(ports[p]) == 0 for p in ports if isinstance(ports.get(p), list))):\n"
+        )
+        trace.write(f"{i}            break\n")
+        trace.write(f"{i}{node.handle} = _thread({node.id})\n")
+
+
+
+
+
+    def write_zero(self, node: TraceNode, indent: int, trace: TextIO):
+        i = "    " * indent
+        trace.write(f"{i}pass\n")
+
 
     def write_dataset(
         self, node: TraceNode, indent: int, trace: TextIO, port: str, data: Data
@@ -1181,3 +1408,4 @@ if __name__ == '__main__':
         i = "    " * indent
         # repr() so both scalar strings and list values emit as valid Python literals.
         trace.write(f"""{i}_init_dataset("{port}", {data.value!r})\n""")
+

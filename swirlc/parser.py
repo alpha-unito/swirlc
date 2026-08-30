@@ -38,7 +38,15 @@ compile_parser.add_argument(
     default=os.getcwd(),
 )
 compile_parser.add_argument(
+    "--tmpdir",
+    "--scratchdir",
+    type=str,
+    default=None,
+    help="Temporary/scratch directory path for intermediate execution files (e.g. /path/to/tmp)",
+)
+compile_parser.add_argument(
     "--bundle-dependencies",
+
     action="store_true",
     help=(
         "Embed required pure-Python runtime dependencies in generated Python "

@@ -20,10 +20,12 @@ from swirlc.core.entity import (
 
 
 class BaseCompiler:
-    def __init__(self, outdir: str) -> None:
+    def __init__(self, outdir: str, tmpdir: str | None = None) -> None:
         self.outdir: str = outdir
+        self.tmpdir: str | None = tmpdir
         if not os.path.exists(self.outdir):
             raise Exception(f"Output directory `{self.outdir}` does not exist")
+
 
     def begin_dataset(
         self,
@@ -97,6 +99,34 @@ class BaseCompiler:
         """Process the `recv` predicate."""
         pass
 
+    def begin_choice(self) -> None:
+        """Before processing the left operand of a choice operator."""
+        pass
+
+    def choice(self) -> None:
+        """After processing the first operand, but before processing the right operand of a choice operator."""
+        pass
+
+    def end_choice(self) -> None:
+        """After processing both operands of a choice operator."""
+        pass
+
+    def begin_repl(self, param: str | None = None, domain: str | None = None) -> None:
+        """Before processing the body of a replication operator."""
+        pass
+
+    def end_repl(self) -> None:
+        """After processing the body of a replication operator."""
+        pass
+
+    def zero(self) -> None:
+        """Process the zero (0) null-process trace."""
+        pass
+
+    def move(self, data: str, port: str, data_type: str, src: str, dst: str) -> Any:
+        """Process the `move` predicate."""
+        pass
+
     def send(self, data: str, port: str, data_type: str, src: str, dst: str) -> Any:
         """Process the `send` predicate."""
         pass
@@ -106,7 +136,9 @@ class BaseCompiler:
         pass
 
 
+
 class CompileVisitor(SWIRLVisitor, ABC):
+
     def __init__(
         self,
         compiler: BaseCompiler,
@@ -135,8 +167,23 @@ class CompileVisitor(SWIRLVisitor, ABC):
                         "checkHostKey", settings.get("checkHostKey", None)
                     ),
                     connection_type=connection_type,
-                    workdir=deployment.get("workdir", settings.get("workdir", None)),
+                    workdir=deployment.get(
+                        "workdir",
+                        deployment.get(
+                            "tmpdir",
+                            settings.get(
+                                "workdir",
+                                settings.get(
+                                    "tmpdir",
+                                    self.metadata.get(
+                                        "tmpdir", self.metadata.get("workdir", None)
+                                    ),
+                                ),
+                            ),
+                        ),
+                    ),
                     outdir=settings.get("outdir", None),
+
                     slurm=deployment.get("slurm", settings.get("slurm", None)),
                 )
             )
@@ -259,30 +306,49 @@ class CompileVisitor(SWIRLVisitor, ABC):
             self.workflow.map(self.workflow.steps[name], self.workflow.locations[loc])
         return self.compiler.exec(self.workflow.steps[name], flow, mapping)
 
+    def _extract_data_and_port(self, text_a: str, text_b: str) -> tuple[str, str]:
+        deps = self.metadata.get("dependencies", {})
+        if text_a in deps or text_a in ("eof", "0"):
+            return text_a, text_b
+        if text_b in deps or text_b in ("eof", "0"):
+            return text_b, text_a
+        return text_a, text_b
+
     def visitRecv(self, ctx: SWIRLParser.RecvContext):
-        port = utils.get_name(ctx.port())
-        data = utils.get_name(ctx.data())
+        p_text = utils.get_name(ctx.port())
+        d_text = utils.get_name(ctx.data())
+        data, port = self._extract_data_and_port(d_text, p_text)
         src = utils.get_name(ctx.src())
         dst = utils.get_name(ctx.dst())
 
-        data_type = self.metadata["dependencies"].get(data, {}).get("type")
-        if not data_type:
-            raise ValueError(
-                f"No data source for input port '{port}' in 'recv' function"
-            )
-
+        data_type = self.metadata["dependencies"].get(data, {}).get("type", "file")
         return self.compiler.recv(
             port=port, data=data, data_type=data_type, src=src, dst=dst
         )
 
     def visitSend(self, ctx: SWIRLParser.SendContext):
-        data = utils.get_name(ctx.data())
-        port = utils.get_name(ctx.port())
+        p_text = utils.get_name(ctx.port())
+        d_text = utils.get_name(ctx.data())
+        data, port = self._extract_data_and_port(d_text, p_text)
         src = utils.get_name(ctx.src())
         dst = utils.get_name(ctx.dst())
+        data_type = self.metadata["dependencies"].get(data, {}).get("type", "file")
         return self.compiler.send(
-            data, port, self.metadata["dependencies"][data]["type"], src, dst
+            data, port, data_type, src, dst
         )
+
+    def visitMove(self, ctx: SWIRLParser.MoveContext):
+        p_text = utils.get_name(ctx.port())
+        d_text = utils.get_name(ctx.data())
+        data, port = self._extract_data_and_port(d_text, p_text)
+        src = utils.get_name(ctx.src())
+        dst = utils.get_name(ctx.dst())
+        data_type = self.metadata["dependencies"].get(data, {}).get("type", "file")
+        return self.compiler.move(
+            data, port, data_type, src, dst
+        )
+
+
 
     def visitTraceOp(self, ctx: SWIRLParser.TraceOpContext):
         if ctx.op.type == SWIRLParser.PAR:
@@ -298,9 +364,29 @@ class CompileVisitor(SWIRLVisitor, ABC):
             self.visit(ctx.trace(1))
             self.compiler.end_seq()
         elif ctx.op.type == SWIRLParser.CHOICE:
-            raise NotImplementedError("Choice operator is not supported")
+            self.compiler.begin_choice()
+            self.visit(ctx.trace(0))
+            self.compiler.choice()
+            self.visit(ctx.trace(1))
+            self.compiler.end_choice()
         else:
             raise Exception(f"Unsupported operator {ctx.op.text}")
+
+    def visitTraceRepl(self, ctx: SWIRLParser.TraceReplContext):
+        param = None
+        domain = None
+        if ctx.ID(0) is not None:
+            param = ctx.ID(0).getText()
+        if ctx.ID(1) is not None:
+            domain = ctx.ID(1).getText()
+        self.compiler.begin_repl(param=param, domain=domain)
+        val = self.visit(ctx.trace())
+        self.compiler.end_repl()
+        return val
+
+
+    def visitTraceZero(self, ctx: SWIRLParser.TraceZeroContext):
+        return self.compiler.zero()
 
     def visitTraceParen(self, ctx: SWIRLParser.TraceParenContext):
         self.compiler.begin_paren()
@@ -313,3 +399,4 @@ class CompileVisitor(SWIRLVisitor, ABC):
         val = self.visitChildren(ctx)
         self.compiler.end_workflow()
         return val
+

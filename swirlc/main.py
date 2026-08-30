@@ -38,12 +38,14 @@ def main(args):
                 target = (
                     target_class(
                         args.outdir,
+                        tmpdir=args.tmpdir,
                         bundle_dependencies=bundle_dependencies,
                         additional_dependencies=args.bundle_dependency,
                     )
                     if args.target == "default"
-                    else target_class(args.outdir)
+                    else target_class(args.outdir, tmpdir=args.tmpdir)
                 )
+
                 lexer = SWIRLLexer(antlr4.InputStream(code))
                 tokens = antlr4.CommonTokenStream(lexer)
                 tree = SWIRLParser(tokens).workflow()
