@@ -85,6 +85,9 @@ class Location:
     def get_fetch_command(self, src, dst):
         return self.deployment.get_fetch_command(src, dst)
 
+    def get_setup_command(self, cmd: str) -> str:
+        return self.deployment.get_setup_command(cmd, self.name)
+
     def get_bind_host(self) -> str:
         return self.deployment.get_bind_host()
 
@@ -117,7 +120,6 @@ class Step:
         "arguments",
         "processors",
         "expression",
-        "expression_python",
         "expression_inputs",
         "expression_input_types",
         "expression_outputs",
@@ -131,7 +133,6 @@ class Step:
         arguments: MutableSequence[str | Port] | None = None,
         processors: MutableMapping[str, Processor] | None = None,
         expression: str | None = None,
-        expression_python: str | None = None,
         expression_inputs: MutableMapping[str, Port] | None = None,
         expression_input_types: MutableMapping[str, str] | None = None,
         expression_outputs: MutableMapping[str, Port] | None = None,
@@ -142,7 +143,6 @@ class Step:
         self.arguments: MutableSequence[str | Port] | None = arguments
         self.processors: MutableMapping[str, Processor] | None = processors
         self.expression = expression
-        self.expression_python = expression_python
         self.expression_inputs = expression_inputs
         self.expression_input_types = expression_input_types
         self.expression_outputs = expression_outputs

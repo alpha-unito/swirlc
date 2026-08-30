@@ -17,7 +17,6 @@ from swirlc.core.entity import (
     Step,
     Workflow,
 )
-from swirlc.core.js_expression import translate_expression_to_python
 
 
 class BaseCompiler:
@@ -128,13 +127,9 @@ class CompileVisitor(SWIRLVisitor, ABC):
                     name,
                     name,
                     {},
-                    hostname=deployment.get(
-                        "hostname", settings.get("hostname", None)
-                    ),
+                    hostname=deployment.get("hostname", settings.get("hostname", None)),
                     port=deployment.get("port", settings.get("port", None)),
-                    username=deployment.get(
-                        "username", settings.get("username", None)
-                    ),
+                    username=deployment.get("username", settings.get("username", None)),
                     ssh_key=deployment.get("sshKey", settings.get("sshKey", None)),
                     check_host_key=deployment.get(
                         "checkHostKey", settings.get("checkHostKey", None)
@@ -200,13 +195,6 @@ class CompileVisitor(SWIRLVisitor, ABC):
                     for port_name, value in outdata_patterns.items()
                 },
                 expression=expression_source,
-                expression_python=(
-                    translate_expression_to_python(
-                        expression_source, step_metadata["displayName"]
-                    )
-                    if expression_source is not None
-                    else None
-                ),
             )
             self.workflow.add_step(step)
             for port_name, _ in inputs:

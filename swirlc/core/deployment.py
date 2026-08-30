@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import shlex
 from collections.abc import MutableMapping
 from pathlib import PurePath
 from typing import Any
@@ -34,10 +35,25 @@ class Deployment:
         return f"mkdir -p {self.workdir}" if self.workdir else ""
 
     def get_copy_command(self, src: str, dst: str) -> str:
+        if self.workdir:
+            target = f"{self.workdir.rstrip('/')}/{os.path.basename(src)}"
+            return (
+                f"if [ ! {shlex.quote(src)} -ef {shlex.quote(target)} ]; "
+                f"then cp {shlex.quote(src)} {shlex.quote(target)}; fi"
+            )
         return ""
 
     def get_fetch_command(self, src: str, dst: str) -> str:
+        if self.workdir:
+            source = src if os.path.isabs(src) else f"{self.workdir.rstrip('/')}/{src}"
+            return (
+                f"if [ ! {shlex.quote(source)} -ef {shlex.quote(dst)} ]; "
+                f"then cp {shlex.quote(source)} {shlex.quote(dst)}; fi"
+            )
         return ""
+
+    def get_setup_command(self, cmd: str, location_name: str) -> str:
+        return self.get_command(cmd, location_name)
 
     def get_bind_host(self) -> str:
         return "0.0.0.0"
@@ -137,6 +153,20 @@ class DockerDeployment(Deployment):
     def get_copy_command(self, src: str, dst: str) -> str:
         return " ".join(["docker", "cp", src, dst])
 
+    def get_prepare_command(self) -> str:
+        if not self.workdir:
+            return ""
+        return " ".join(
+            [
+                "docker",
+                "exec",
+                str(self.hostname),
+                "mkdir",
+                "-p",
+                str(self.workdir),
+            ]
+        )
+
     def get_fetch_command(self, src: str, dst: str) -> str:
         source = (
             f"{self.hostname}:{self.workdir.rstrip('/')}/{src}"
@@ -149,12 +179,15 @@ class DockerDeployment(Deployment):
 class SlurmDeployment(SshDeployment):
     connection_type = "slurm"
 
+    def _uses_remote_login(self) -> bool:
+        return bool(self.hostname and self.hostname not in ("127.0.0.1", "localhost"))
+
     def get_command(self, cmd: str, location_name: str) -> str:
         submit = (
             "SWIRLC_RUN_ID=$SWIRLC_RUN_ID "
-            f"sbatch --export=ALL,SWIRLC_RUN_ID --wait {location_name}.sbatch"
+            f"sbatch --export=ALL,SWIRLC_RUN_ID {location_name}.sbatch"
         )
-        if self.hostname and self.hostname not in ("127.0.0.1", "localhost"):
+        if self._uses_remote_login():
             if self.workdir:
                 return " ".join(
                     [
@@ -169,15 +202,28 @@ class SlurmDeployment(SshDeployment):
             )
         return (f"cd {self.workdir} && " if self.workdir else "") + submit
 
+    def get_prepare_command(self) -> str:
+        if self._uses_remote_login():
+            return super().get_prepare_command()
+        return Deployment.get_prepare_command(self)
+
     def get_copy_command(self, src: str, dst: str) -> str:
-        if self.hostname and self.hostname not in ("127.0.0.1", "localhost"):
+        if self._uses_remote_login():
             return super().get_copy_command(src, dst)
-        return ""
+        return Deployment.get_copy_command(self, src, dst)
 
     def get_fetch_command(self, src: str, dst: str) -> str:
-        if self.hostname and self.hostname not in ("127.0.0.1", "localhost"):
+        if self._uses_remote_login():
             return super().get_fetch_command(src, dst)
-        return ""
+        return Deployment.get_fetch_command(self, src, dst)
+
+    def get_setup_command(self, cmd: str, location_name: str) -> str:
+        # Prepare on the login node before allocating compute resources. The
+        # launcher repeats this check in the job, which also covers clusters
+        # whose compute nodes do not share the configured work directory.
+        if self._uses_remote_login():
+            return SshDeployment.get_command(self, cmd, location_name)
+        return Deployment.get_command(self, cmd, location_name)
 
 
 def make_deployment(

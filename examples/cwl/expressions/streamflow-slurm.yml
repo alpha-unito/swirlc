@@ -1,0 +1,37 @@
+version: v1.0
+
+workflows:
+  master:
+    type: cwl
+    config:
+      file: main.cwl
+      settings: inputs.yml
+    bindings:
+      - step: /evaluate
+        target:
+          deployment: cluster-slurm
+          service: broadwell-expression
+
+deployments:
+  cluster-login:
+    type: ssh
+    config:
+      nodes:
+        - mercurio.hpc4ai.unito.it
+      username: tommaso.fogliobonda
+      sshKey: ~/.ssh/unito
+      checkHostKey: false
+    workdir: /beegfs/home/tommaso.fogliobonda/tmp/swirl
+
+  cluster-slurm:
+    type: slurm
+    wraps: cluster-login
+    workdir: /beegfs/home/tommaso.fogliobonda/tmp/swirl
+    config:
+      maxConcurrentJobs: 1
+      services:
+        broadwell-expression:
+          partition: broadwell
+          nodes: 1
+          ntasks: 1
+          time: "00:10:00"

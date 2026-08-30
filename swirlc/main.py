@@ -27,7 +27,23 @@ def main(args):
             with open(args.workflow) as f:
                 code = f.read()
             if args.target in swirlc.compiler.targets:
-                target = swirlc.compiler.targets[args.target](args.outdir)
+                bundle_dependencies = bool(
+                    args.bundle_dependencies or args.bundle_dependency
+                )
+                if bundle_dependencies and args.target != "default":
+                    raise ValueError(
+                        "--bundle-dependencies is supported only by the default target"
+                    )
+                target_class = swirlc.compiler.targets[args.target]
+                target = (
+                    target_class(
+                        args.outdir,
+                        bundle_dependencies=bundle_dependencies,
+                        additional_dependencies=args.bundle_dependency,
+                    )
+                    if args.target == "default"
+                    else target_class(args.outdir)
+                )
                 lexer = SWIRLLexer(antlr4.InputStream(code))
                 tokens = antlr4.CommonTokenStream(lexer)
                 tree = SWIRLParser(tokens).workflow()

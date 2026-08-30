@@ -1,44 +1,191 @@
 from __future__ import annotations
 
+import base64
+import hashlib
+import io
 import os
 import stat
 import sys
+import zipfile
+from importlib import metadata
 from pathlib import Path
 from typing import Optional, TextIO
 
-from black import WriteBack
 import black
+from black import WriteBack
 from black.mode import TargetVersion
+from packaging.markers import default_environment
+from packaging.requirements import Requirement
+from packaging.utils import canonicalize_name
 
 from swirlc.compiler.standard.compiler import StandardCompiler, TraceNode
-from swirlc.core.entity import Data, Location, Port, Step, Workflow
+from swirlc.core.entity import Data, Location, Port, Step
 from swirlc.log_handler import logger
 from swirlc.version import VERSION
 
 bash_header = f"""#!/bin/sh
 
 # This file was generated automatically using SWIRL v{VERSION},
-# using command swirlc {' '.join(sys.argv[1:])}
+# using command swirlc {" ".join(sys.argv[1:])}
 """
 
 python_header = f"""#!/usr/bin/env python
 # -*- coding: utf-8 -*-
 
 # This file was generated automatically using SWIRL v{VERSION},
-# using command swirlc {' '.join(sys.argv[1:])}
+# using command swirlc {" ".join(sys.argv[1:])}
 """
+
+javascript_requirements = """\
+Js2Py==0.74; python_version < "3.13"
+Js2Py-3.14==0.74.2; python_version >= "3.13"
+pyjsparser==2.7.1
+six==1.17.0
+tzlocal==5.4.4
+"""
+
+
+def _build_dependency_archive(root_distributions: tuple[str, ...]) -> tuple[str, str]:
+    """Return a deterministic base85 archive and its SHA-256 digest."""
+    files: dict[str, Path] = {}
+    pending = list(root_distributions)
+    seen: set[str] = set()
+    environment = default_environment()
+    while pending:
+        requested_name = pending.pop()
+        canonical_name = canonicalize_name(requested_name)
+        if canonical_name in seen:
+            continue
+        try:
+            distribution = metadata.distribution(requested_name)
+        except metadata.PackageNotFoundError as exc:
+            raise RuntimeError(
+                f"Cannot bundle Python distribution {requested_name!r}: it is not "
+                "installed in the compiler environment."
+            ) from exc
+        seen.add(canonical_name)
+
+        for requirement_text in distribution.requires or ():
+            requirement = Requirement(requirement_text)
+            if requirement.marker and not requirement.marker.evaluate(environment):
+                continue
+            pending.append(requirement.name)
+
+        for entry in distribution.files or ():
+            relative = Path(str(entry))
+            if relative.is_absolute() or ".." in relative.parts:
+                continue
+            source = Path(distribution.locate_file(entry))
+            if source.is_file() and "__pycache__" not in relative.parts:
+                if source.suffix.lower() in {".so", ".pyd", ".dylib"}:
+                    raise RuntimeError(
+                        f"Cannot portably bundle {requested_name!r}: {relative} is "
+                        "a compiled native extension. Use deployment-time "
+                        "requirements for platform-specific libraries."
+                    )
+                files[relative.as_posix()] = source
+
+    archive_buffer = io.BytesIO()
+    with zipfile.ZipFile(
+        archive_buffer, mode="w", compression=zipfile.ZIP_DEFLATED, compresslevel=9
+    ) as archive:
+        for archive_name, source in sorted(files.items()):
+            info = zipfile.ZipInfo(archive_name, date_time=(1980, 1, 1, 0, 0, 0))
+            info.compress_type = zipfile.ZIP_DEFLATED
+            info.external_attr = 0o644 << 16
+            archive.writestr(info, source.read_bytes())
+
+    archive_bytes = archive_buffer.getvalue()
+    payload = base64.b85encode(archive_bytes).decode("ascii")
+    return payload, hashlib.sha256(archive_bytes).hexdigest()
+
+
+def _embedded_dependency_bootstrap(payload: str, digest: str) -> str:
+    chunks = "\n".join(
+        f"    {payload[index : index + 100]!r}" for index in range(0, len(payload), 100)
+    )
+    return f"""
+_BUNDLED_DEPENDENCIES_SHA256 = {digest!r}
+_BUNDLED_DEPENDENCIES_B85 = (
+{chunks}
+)
+
+
+def _activate_bundled_dependencies():
+    archive_path = Path(__file__).resolve().with_name(
+        f".swirlc-dependencies-{{_BUNDLED_DEPENDENCIES_SHA256}}.zip"
+    )
+    archive_bytes = base64.b85decode(_BUNDLED_DEPENDENCIES_B85)
+    if (
+        not archive_path.exists()
+        or hashlib.sha256(archive_path.read_bytes()).hexdigest()
+        != _BUNDLED_DEPENDENCIES_SHA256
+    ):
+        temporary_path = archive_path.with_suffix(".tmp")
+        temporary_path.write_bytes(archive_bytes)
+        os.replace(temporary_path, archive_path)
+    sys.path.insert(0, str(archive_path))
+
+
+_activate_bundled_dependencies()
+"""
+
+
+def _parallel_shell_block(commands: list[str]) -> str:
+    """Run commands concurrently while waiting only for this block's children."""
+    if not commands:
+        return ""
+    lines = ["(", '    auxiliary_pids=""']
+    for command in commands:
+        lines.extend(
+            [
+                f"    {command} &",
+                '    auxiliary_pids="$auxiliary_pids $!"',
+            ]
+        )
+    lines.extend(
+        [
+            "    auxiliary_status=0",
+            "    for auxiliary_pid in $auxiliary_pids; do",
+            '        wait "$auxiliary_pid" || auxiliary_status=$?',
+            "    done",
+            '    exit "$auxiliary_status"',
+            ")",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def _start_background_shell_commands(commands: list[str], pid_variable: str) -> str:
+    """Start commands and record their direct child PIDs in a shell variable."""
+    lines = [f'{pid_variable}=""']
+    for index, command in enumerate(commands):
+        lines.extend(
+            [
+                f"{command} &",
+                (
+                    f'{pid_variable}="$!"'
+                    if index == 0
+                    else f'{pid_variable}="${{{pid_variable}}} $!"'
+                ),
+            ]
+        )
+    return "\n".join(lines)
+
 
 imports = """from __future__ import annotations
 
+import base64
 import glob
 import argparse
+import hashlib
 import json
 import logging
-import math
 import os
 import shlex
 import socket
 import subprocess
+import sys
 import time
 import uuid
 
@@ -192,28 +339,42 @@ expression_function = r"""def _js_file_object(value: Any, data_type: str) -> Any
     }
 
 
-def _js_get(value: Any, key: Any) -> Any:
-    if key == "length" and isinstance(value, (str, list, dict)):
-        return len(value)
+def _to_python(value: Any) -> Any:
+    if hasattr(value, "to_dict"):
+        value = value.to_dict()
+    elif hasattr(value, "to_list"):
+        value = value.to_list()
     if isinstance(value, dict):
-        return value.get(key)
+        return {str(key): _to_python(item) for key, item in value.items()}
     if isinstance(value, (list, tuple)):
-        return value[int(key)]
-    if isinstance(value, str):
-        if key == "split":
-            return lambda separator=None: value.split(separator)
-        if key == "substring":
-            def substring(start: Any, end: Any = None) -> str:
-                start_index = max(0, int(start))
-                end_index = len(value) if end is None else max(0, int(end))
-                start_index, end_index = min(start_index, end_index), max(start_index, end_index)
-                return value[start_index:end_index]
-            return substring
-    raise TypeError(f"Cannot read JavaScript property {key!r} from {value!r}")
+        return [_to_python(item) for item in value]
+    return value
 
 
-def _js_parse_int(value: Any, radix: Any = 10) -> int:
-    return int(str(value), int(radix))
+def _run_javascript_expression(expression: str, inputs: MutableMapping[str, Any]) -> Any:
+    try:
+        import js2py
+    except ImportError:
+        # Js2Py-3.14 uses a distinct import name so it can coexist with the
+        # original distribution while retaining the same public API.
+        import js2py_ as js2py
+
+    js2py.disable_pyimport()
+    source = expression.strip()
+    if source.startswith("${") and source.endswith("}"):
+        body = source[2:-1]
+    elif source.startswith("$(") and source.endswith(")"):
+        body = f"return ({source[2:-1]});"
+    else:
+        raise ValueError("CWL JavaScript expression must use $(...) or ${...} syntax")
+    invocation = (
+        "(function(inputs) {\n"
+        + body
+        + "\n})("
+        + json.dumps(inputs)
+        + ");"
+    )
+    return _to_python(js2py.eval_js(invocation))
 
 
 def _coerce_expression_output(value: Any, data_type: str) -> Any:
@@ -231,20 +392,28 @@ def _coerce_expression_output(value: Any, data_type: str) -> Any:
     return value
 
 
-def _expression(step_display_name: str, input_specs: MutableMapping[str, tuple[str, str]], output_specs: MutableMapping[str, tuple[str, str]], function):
+def _expression(step_display_name: str, expression: str, input_specs: MutableMapping[str, tuple[str, str]], output_specs: MutableMapping[str, tuple[str, str]]):
     for port_name, _ in input_specs.values():
         available_port_data[port_name].wait()
     inputs = {
         name: _js_file_object(ports[port_name], data_type)
         for name, (port_name, data_type) in input_specs.items()
     }
-    result = function(inputs)
+    result = _run_javascript_expression(expression, inputs)
     if not isinstance(result, dict):
         raise TypeError(f"ExpressionTool {step_display_name} must return an object")
     for output_name, (port_name, data_type) in output_specs.items():
         if output_name not in result:
             raise KeyError(f"ExpressionTool {step_display_name} did not return output {output_name}")
         ports[port_name] = _coerce_expression_output(result[output_name], data_type)
+        if logger.isEnabledFor(logging.INFO):
+            logger.info(
+                "ExpressionTool %s result %s (%s): %r",
+                step_display_name,
+                output_name,
+                data_type,
+                ports[port_name],
+            )
         available_port_data[port_name].set()
 """
 
@@ -477,9 +646,39 @@ preamble = "\n".join(
 
 
 class DefaultTarget(StandardCompiler):
-    def __init__(self, outdir: str) -> None:
+    def __init__(
+        self,
+        outdir: str,
+        bundle_dependencies: bool = False,
+        additional_dependencies: list[str] | None = None,
+    ) -> None:
         super().__init__(outdir)
         self.location_ports: set[str] = set()
+        self.bundle_dependencies = bundle_dependencies
+        self.additional_dependencies = tuple(additional_dependencies or ())
+        self._dependency_archives: dict[tuple[str, ...], tuple[str, str]] = {}
+
+    def _dependency_roots_for_location(self, location: Location) -> tuple[str, ...]:
+        assert self.current_workflow is not None
+        roots = list(self.additional_dependencies)
+        if any(
+            step.expression is not None
+            for step in self.current_workflow.get_location_steps(location)
+        ):
+            roots.append("Js2Py-3.14")
+        return tuple(sorted(set(roots), key=canonicalize_name))
+
+    def _dependency_archive_for_location(
+        self, location: Location
+    ) -> tuple[str, str] | None:
+        if not self.bundle_dependencies:
+            return None
+        roots = self._dependency_roots_for_location(location)
+        if not roots:
+            return None
+        if roots not in self._dependency_archives:
+            self._dependency_archives[roots] = _build_dependency_archive(roots)
+        return self._dependency_archives[roots]
 
     # ======== Threading policy ========
     def exec_is_threaded(self) -> bool:
@@ -488,11 +687,73 @@ class DefaultTarget(StandardCompiler):
     def _open_location_trace(self, location: Location) -> TextIO:
         return open(os.path.join(self.outdir, f"{location.name}.py"), "w")
 
+    def _write_runtime_bundle(self, location: Location) -> None:
+        assert self.current_workflow is not None
+
+        has_expressions = any(
+            step.expression is not None
+            for step in self.current_workflow.get_location_steps(location)
+        )
+        requirements_name = f"{location.name}.requirements.txt"
+        requirements_path = os.path.join(self.outdir, requirements_name)
+        with open(requirements_path, "w") as f:
+            if has_expressions and not self.bundle_dependencies:
+                f.write(javascript_requirements)
+
+        launcher_name = f"{location.name}.launch.sh"
+        launcher_path = os.path.join(self.outdir, launcher_name)
+        venv_name = f".swirlc-venv-{location.name}"
+        marker_name = ".swirlc-requirements.txt"
+        with open(launcher_path, "w") as f:
+            f.write(
+                f"""#!/bin/sh
+set -eu
+
+SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+cd "$SCRIPT_DIR"
+
+PYTHON_BIN="${{SWIRLC_PYTHON:-python3}}"
+VENV_DIR="${{SWIRLC_VENV_DIR:-{venv_name}}}"
+REQUIREMENTS={requirements_name!r}
+MARKER="$VENV_DIR/{marker_name}"
+
+prepare_runtime() {{
+    if [ ! -s "$REQUIREMENTS" ]; then
+        return
+    fi
+    if [ ! -x "$VENV_DIR/bin/python" ]; then
+        echo "Creating SWIRL runtime environment $VENV_DIR" >&2
+        "$PYTHON_BIN" -m venv "$VENV_DIR"
+    fi
+    if [ ! -f "$MARKER" ] || ! cmp -s "$REQUIREMENTS" "$MARKER"; then
+        echo "Installing SWIRL runtime requirements for {location.name}" >&2
+        "$VENV_DIR/bin/python" -m pip install \\
+            --disable-pip-version-check \\
+            --requirement "$REQUIREMENTS"
+        cp "$REQUIREMENTS" "$MARKER"
+    fi
+}}
+
+prepare_runtime
+if [ "${{1:-}}" = "--prepare" ]; then
+    exit 0
+fi
+
+if [ -s "$REQUIREMENTS" ]; then
+    exec "$VENV_DIR/bin/python" {location.name}.py "$@"
+fi
+exec "$PYTHON_BIN" {location.name}.py "$@"
+"""
+            )
+        usr_permissions = stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR
+        grp_permissions = stat.S_IRGRP | stat.S_IXGRP
+        os.chmod(launcher_path, usr_permissions | grp_permissions)
+
     def _write_slurm_script(self, location: Location) -> None:
         slurm = location.slurm or {}
         options = dict(slurm.get("options") or {})
         script_path = os.path.join(self.outdir, f"{location.name}.sbatch")
-        command = f"python3 {location.name}.py --run-id $SWIRLC_RUN_ID"
+        command = f"./{location.name}.launch.sh --run-id $SWIRLC_RUN_ID"
 
         lines = [
             "#!/bin/bash",
@@ -515,11 +776,11 @@ class DefaultTarget(StandardCompiler):
             [
                 "",
                 "set -euo pipefail",
-                "echo \"SWIRL Slurm job started at $(date -Iseconds)\"",
-                "echo \"Host: $(hostname -f 2>/dev/null || hostname)\"",
-                "echo \"Working directory: $(pwd)\"",
-                "echo \"Run id: ${SWIRLC_RUN_ID:-<unset>}\"",
-                "echo \"Python: $(command -v python3)\"",
+                'echo "SWIRL Slurm job started at $(date -Iseconds)"',
+                'echo "Host: $(hostname -f 2>/dev/null || hostname)"',
+                'echo "Working directory: $(pwd)"',
+                'echo "Run id: ${SWIRLC_RUN_ID:-<unset>}"',
+                'echo "Python: $(command -v python3)"',
                 command,
                 "",
             ]
@@ -557,11 +818,16 @@ class DefaultTarget(StandardCompiler):
         script_name = "run.sh"
         workflow = self.current_workflow
         for loc in workflow.locations.values():
+            self._write_runtime_bundle(loc)
             if loc.connection_type == "slurm":
                 self._write_slurm_script(loc)
 
         def copy_commands(location: Location) -> list[str]:
-            filenames = [f"{location.name}.py"]
+            filenames = [
+                f"{location.name}.py",
+                f"{location.name}.launch.sh",
+                f"{location.name}.requirements.txt",
+            ]
             if location.connection_type == "slurm":
                 filenames.append(f"{location.name}.sbatch")
             commands = []
@@ -582,24 +848,26 @@ class DefaultTarget(StandardCompiler):
                 "address_book.json", f"{location.hostname}:{location.workdir}"
             )
 
-        prepare_commands = " &\n".join(
+        prepare_commands = _parallel_shell_block(
             [
                 command
                 for loc in workflow.locations.values()
                 if (command := loc.get_prepare_command())
             ]
         )
-        if prepare_commands:
-            prepare_commands += " &\nwait"
-        copy_traces = " &\n".join(
+        copy_traces = _parallel_shell_block(
             [
                 command
                 for loc in workflow.locations.values()
                 for command in copy_commands(loc)
             ]
         )
-        if copy_traces:
-            copy_traces += " &\nwait"
+        setup_runtimes = _parallel_shell_block(
+            [
+                loc.get_setup_command(f"./{loc.name}.launch.sh --prepare")
+                for loc in workflow.locations.values()
+            ]
+        )
         fetch_addresses = "\n".join(
             [
                 f"{command} >/dev/null 2>&1 || true"
@@ -607,27 +875,23 @@ class DefaultTarget(StandardCompiler):
                 if (command := fetch_address_command(loc))
             ]
         )
-        copy_address_book = " &\n".join(
+        copy_address_book = _parallel_shell_block(
             [
                 command
                 for loc in workflow.locations.values()
                 if (command := copy_address_book_command(loc))
             ]
         )
-        if copy_address_book:
-            copy_address_book += " &\nwait"
         address_files = " ".join(
             [f"{loc.name}_address.json" for loc in workflow.locations.values()]
         )
-        location_command = "python3 {name}.py --run-id $SWIRLC_RUN_ID"
-        commands = (
-            " &\n".join(
-                [
-                    loc.get_command(location_command.format(name=loc.name))
-                    for loc in workflow.locations.values()
-                ]
-            )
-            + " &"
+        location_command = "./{name}.launch.sh --run-id $SWIRLC_RUN_ID"
+        commands = _start_background_shell_commands(
+            [
+                loc.get_command(location_command.format(name=loc.name))
+                for loc in workflow.locations.values()
+            ],
+            "WORKFLOW_PIDS",
         )
         with open(os.path.join(self.outdir, script_name), "w") as f:
             f.write(f"""{bash_header}
@@ -649,18 +913,20 @@ terminate() {{
 }}
 
 check_workflow_processes() {{
+    running_pids=""
     for pid in $WORKFLOW_PIDS; do
-        if ! kill -0 "$pid" 2>/dev/null; then
-            wait "$pid"
-            status=$?
+        if kill -0 "$pid" 2>/dev/null; then
+            running_pids="$running_pids $pid"
+        else
+            status=0
+            wait "$pid" || status=$?
             if [ "$status" -ne 0 ]; then
-                echo "Workflow process $pid exited before rendezvous completed with status $status"
+                echo "Workflow startup process $pid failed with status $status"
                 exit "$status"
             fi
-            echo "Workflow process $pid exited before rendezvous completed"
-            exit 1
         fi
     done
+    WORKFLOW_PIDS="$running_pids"
 }}
 
 all_addresses_ready() {{
@@ -700,11 +966,14 @@ trap "cleanup" EXIT
 
 {copy_traces}
 
+# Create isolated Python environments and install any trace-specific runtime
+# dependencies before starting locations or submitting Slurm jobs.
+{setup_runtimes}
+
 # Start workflow execution. Locations will publish their address file and then
 # wait until this script distributes address_book.json.
 echo "SWIRL run id: $SWIRLC_RUN_ID"
 {commands}
-WORKFLOW_PIDS="$(jobs -p)"
 
 deadline=$(( $(date +%s) + ${{SWIRLC_ADDRESS_GATHER_TIMEOUT:-600}} ))
 while ! all_addresses_ready; do
@@ -721,8 +990,9 @@ build_address_book
 echo "Address book ready"
 {copy_address_book}
 
-wait
-echo "Workflow execution terminated"
+# Every location has started once it has advertised an address and received the
+# complete address book. The location processes continue independently.
+echo "Workflow execution started"
 """)
         usr_permissions = stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR
         grp_permissions = stat.S_IRGRP | stat.S_IXGRP
@@ -791,6 +1061,8 @@ ADDRESS_BOOK_FILE = "address_book.json"
 OUT_DIR = {out_dir}
 SCRATCH_DIR = {scratch_dir}
 """)
+        if dependency_archive := self._dependency_archive_for_location(location):
+            trace.write(_embedded_dependency_bootstrap(*dependency_archive))
         trace.write("""
 if __name__ == '__main__':
     main()
@@ -834,7 +1106,7 @@ if __name__ == '__main__':
         assert step.processors is not None
 
         i = "    " * indent
-        if step.expression_python is not None:
+        if step.expression is not None:
             assert self.current_workflow is not None
             input_specs = {
                 name: (port.name, step.expression_input_types[name])
@@ -848,14 +1120,8 @@ if __name__ == '__main__':
                     port_name,
                     step.processors[port_name].type,
                 )
-            function_name = f"_expression_{step.name}"
-            body = "\n".join(
-                f"{i}    {line}" if line else ""
-                for line in step.expression_python.splitlines()
-            )
-            trace.write(f"\n{i}def {function_name}(inputs):\n{body}\n")
             trace.write(
-                f"{i}_expression({step.display_name!r}, {input_specs!r}, {output_specs!r}, {function_name})\n"
+                f"\n{i}_expression({step.display_name!r}, {step.expression!r}, {input_specs!r}, {output_specs!r})\n"
             )
             return
 

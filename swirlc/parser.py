@@ -37,6 +37,24 @@ compile_parser.add_argument(
     help="Output directory path. It will be create a set of files: `run.sh` and `l*.py`",
     default=os.getcwd(),
 )
+compile_parser.add_argument(
+    "--bundle-dependencies",
+    action="store_true",
+    help=(
+        "Embed required pure-Python runtime dependencies in generated Python "
+        "traces so deployed locations do not need pip or network access"
+    ),
+)
+compile_parser.add_argument(
+    "--bundle-dependency",
+    action="append",
+    default=[],
+    metavar="DISTRIBUTION",
+    help=(
+        "Also embed an installed pure-Python distribution and its dependencies; "
+        "may be specified more than once and implies --bundle-dependencies"
+    ),
+)
 
 # Swirl translator
 translate_parser = subparsers.add_parser(

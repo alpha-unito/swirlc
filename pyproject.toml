@@ -32,9 +32,11 @@ classifiers = [
 dependencies = [
     "antlr4-python3-runtime==4.13.2",
     "black==26.5.1",
+    "cwl-utils==0.42",
     "importlib_resources==7.1.0",
+    "Js2Py-3.14==0.74.2",
     "jsonschema==4.26.0",
-    "pyjsparser==2.7.1",
+    "packaging==26.2",
     "referencing==0.37.0",
     "ruamel.yaml==0.19.1"
 ]
