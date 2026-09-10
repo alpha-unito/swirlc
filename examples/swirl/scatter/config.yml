@@ -73,9 +73,6 @@ locations:
   l3:
     hostname: 127.0.0.1
     port: 8083
-  lG:
-    hostname: 127.0.0.1
-    port: 8084
 
 dependencies:
   d_in1:

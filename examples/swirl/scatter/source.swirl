@@ -3,13 +3,13 @@
 // ==============================================================================
 // This workflow executes a distributed scatter-gather pipeline:
 //
-// - l0 (Controller): Scatters input items across worker nodes (l1, l2, l3).
-// - l1, l2, l3 (Workers): Process scattered items in parallel and send results to lG.
-// - lG (Gather Node): Collects all worker results and runs a final analysis step.
+// - l0 (Controller & Gather): Scatters input items across worker nodes (l1, l2, l3),
+//   gathers the results back, and executes the post-gather analysis.
+// - l1, l2, l3 (Workers): Process scattered items in parallel and send results back to l0.
 // ==============================================================================
 
 // ------------------------------------------------------------------------------
-// Location l0: Scatter Controller
+// Location l0: Scatter Controller & Gather Node
 // ------------------------------------------------------------------------------
 <l0, {(p_in1, d_in1), (p_in2, d_in2)},
   exec(s_sc, {(p_in1, d_in1), (p_in2, d_in2)} -> {(p_id, id_ID), (p_group, group_ID)}, {l0})
@@ -28,6 +28,16 @@
       )
     )
   )
+  .
+  (
+    !(recv(res_ID -> p_res, l1, l0) + recv(eof -> p_res, l1, l0)) |
+    !(recv(res_ID -> p_res, l2, l0) + recv(eof -> p_res, l2, l0)) |
+    !(recv(res_ID -> p_res, l3, l0) + recv(eof -> p_res, l3, l0))
+  )
+  .
+  exec(s_G, {(p_res, res_ID)} -> {(p_out, d_out)}, {l0})
+  .
+  exec(s_post, {(p_out, d_out)} -> {(p_report, d_report)}, {l0})
 > |
 
 // ------------------------------------------------------------------------------
@@ -40,12 +50,12 @@
       recv(group_ID -> p_group, l0, l1) .
       exec(s_op, {(p_group, group_ID)} -> {(p_a, a_ID), (p_b, b_ID)}, {l1}) .
       exec(s_work, {(p_id, id_ID), (p_a, a_ID), (p_b, b_ID)} -> {(p_res, res_ID)}, {l1}) .
-      send(res_ID -> p_res, l1, lG)
+      send(res_ID -> p_res, l1, l0)
     )
     +
     (
       recv(eof -> p_id, l0, l1) .
-      send(eof -> p_res, l1, lG)
+      send(eof -> p_res, l1, l0)
     )
   )
 > |
@@ -60,12 +70,12 @@
       recv(group_ID -> p_group, l0, l2) .
       exec(s_op, {(p_group, group_ID)} -> {(p_a, a_ID), (p_b, b_ID)}, {l2}) .
       exec(s_work, {(p_id, id_ID), (p_a, a_ID), (p_b, b_ID)} -> {(p_res, res_ID)}, {l2}) .
-      send(res_ID -> p_res, l2, lG)
+      send(res_ID -> p_res, l2, l0)
     )
     +
     (
       recv(eof -> p_id, l0, l2) .
-      send(eof -> p_res, l2, lG)
+      send(eof -> p_res, l2, l0)
     )
   )
 > |
@@ -80,29 +90,14 @@
       recv(group_ID -> p_group, l0, l3) .
       exec(s_op, {(p_group, group_ID)} -> {(p_a, a_ID), (p_b, b_ID)}, {l3}) .
       exec(s_work, {(p_id, id_ID), (p_a, a_ID), (p_b, b_ID)} -> {(p_res, res_ID)}, {l3}) .
-      send(res_ID -> p_res, l3, lG)
+      send(res_ID -> p_res, l3, l0)
     )
     +
     (
       recv(eof -> p_id, l0, l3) .
-      send(eof -> p_res, l3, lG)
+      send(eof -> p_res, l3, l0)
     )
   )
-> |
-
-// ------------------------------------------------------------------------------
-// Location lG: Gather Node
-// ------------------------------------------------------------------------------
-<lG, {},
-  (
-    !(recv(res_ID -> p_res, l1, lG) + recv(eof -> p_res, l1, lG)) |
-    !(recv(res_ID -> p_res, l2, lG) + recv(eof -> p_res, l2, lG)) |
-    !(recv(res_ID -> p_res, l3, lG) + recv(eof -> p_res, l3, lG))
-  )
-  .
-  exec(s_G, {(p_res, res_ID)} -> {(p_out, d_out)}, {lG})
-  .
-  exec(s_post, {(p_out, d_out)} -> {(p_report, d_report)}, {lG})
 >
 
 

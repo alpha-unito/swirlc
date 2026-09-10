@@ -1520,7 +1520,15 @@ if __name__ == '__main__':
                 curr.repl_sources.add(src)
                 in_repl = True
             curr = curr.parent
-        is_gather = (self.current_location.name in ("lG", "l_gather"))
+        is_gather = False
+        if self.current_workflow:
+            for step in self.current_workflow.get_location_steps(self.current_location):
+                if getattr(step, "step_type", None) == "scatter_gather":
+                    if any(p.name == port for p in self.current_workflow.get_input_ports(step)):
+                        is_gather = True
+                        break
+        if not is_gather:
+            is_gather = (self.current_location.name in ("lG", "l_gather"))
         trace.write(
             f"""{i}{node.handle} = _thread(_recv, "{port}", "{data_type}", "{src}", {is_gather})\n"""
         )

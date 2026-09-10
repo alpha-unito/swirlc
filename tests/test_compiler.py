@@ -163,8 +163,7 @@ def test_scatter() -> None:
         )
         l0 = (pathlib.Path(workdir) / "l0.py").read_text()
         l1 = (pathlib.Path(workdir) / "l1.py").read_text()
-        lG = (pathlib.Path(workdir) / "lG.py").read_text()
         assert "_scatter_pair(" in l0
         assert "_scatter_open(" in l1
-        assert "_scatter_gather(" in lG
+        assert "_scatter_gather(" in l0
 

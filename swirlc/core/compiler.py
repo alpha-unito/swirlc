@@ -219,11 +219,12 @@ class CompileVisitor(SWIRLVisitor, ABC):
         self.compiler.end_location()
         return val
 
-    def visitExec(self, ctx: SWIRLParser.ExecContext):
+    def _register_step(self, ctx: SWIRLParser.ExecContext):
         flow = utils.get_flow(ctx)
         inputs, outputs = flow
         mapping = {utils.get_name(el) for el in ctx.mapping().name()}
-        if (name := utils.get_name(ctx.step())) not in self.workflow.steps:
+        name = utils.get_name(ctx.step())
+        if name not in self.workflow.steps:
             step_metadata = self.metadata["steps"][name]
 
             data_port = {d: p for p, d in list(inputs) + list(outputs)}
@@ -317,6 +318,13 @@ class CompileVisitor(SWIRLVisitor, ABC):
             }
         for loc in mapping:
             self.workflow.map(self.workflow.steps[name], self.workflow.locations[loc])
+
+    def visitExec(self, ctx: SWIRLParser.ExecContext):
+        flow = utils.get_flow(ctx)
+        mapping = {utils.get_name(el) for el in ctx.mapping().name()}
+        name = utils.get_name(ctx.step())
+        if name not in self.workflow.steps:
+            self._register_step(ctx)
         return self.compiler.exec(self.workflow.steps[name], flow, mapping)
 
     def _extract_data_and_port(self, text_a: str, text_b: str) -> tuple[str, str]:
@@ -475,7 +483,15 @@ class CompileVisitor(SWIRLVisitor, ABC):
         self.compiler.end_paren()
         return val
 
+    def _pre_scan_execs(self, ctx):
+        if isinstance(ctx, SWIRLParser.ExecContext):
+            self._register_step(ctx)
+        elif hasattr(ctx, "getChildren"):
+            for child in ctx.getChildren():
+                self._pre_scan_execs(child)
+
     def visitWorkflow(self, ctx: SWIRLParser.WorkflowContext):
+        self._pre_scan_execs(ctx)
         self.compiler.begin_workflow(self.workflow)
         val = self.visitChildren(ctx)
         self.compiler.end_workflow()
