@@ -1,0 +1,36 @@
+version: v1.0
+workflows:
+  master:
+    type: cwl
+    config:
+      file: main.cwl
+      settings: inputs.yml
+    bindings:
+      - step: /
+        target:
+          deployment: coordinator
+      - step: /process_all_zips
+        target:
+          deployment: zip_workers
+          locations: 2
+      - step: /process_all_zips/inspect_step
+        target:
+          deployment: file_workers
+          locations: 3
+      - step: /final_summary
+        target:
+          deployment: coordinator
+
+deployments:
+  coordinator:
+    type: local
+    config: {}
+    port: 35200
+  zip_workers:
+    type: local
+    config: {}
+    port: 35210
+  file_workers:
+    type: local
+    config: {}
+    port: 35220
