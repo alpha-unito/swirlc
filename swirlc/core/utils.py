@@ -29,5 +29,9 @@ def get_pair(ctx: SWIRLParser.DataPairContext) -> tuple[str, str]:
 
 
 def get_name(el: antlr4.ParserRuleContext) -> str:
-    token = el.ID()
-    return token.getText() if token is not None else el.getText()
+    if isinstance(el, SWIRLParser.DataContext):
+        return el.getText()
+    token = getattr(el, "ID", lambda: None)()
+    if isinstance(token, antlr4.TerminalNode):
+        return token.getText()
+    return el.getText()

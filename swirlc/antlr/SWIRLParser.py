@@ -851,7 +851,13 @@ class SWIRLParser ( Parser ):
             self.match(SWIRLParser.T__10)
             self.state = 115
             self._errHandler.sync(self)
-            la_ = self._interp.adaptivePredict(self._input,6,self._ctx)
+            if self._input.LA(2) == SWIRLParser.T__3:
+                la_ = 2
+            else:
+                try:
+                    la_ = self._interp.adaptivePredict(self._input,6,self._ctx)
+                except RecognitionException:
+                    la_ = 2
             if la_ == 1:
                 self.state = 107
                 self.port()
@@ -943,7 +949,13 @@ class SWIRLParser ( Parser ):
             self.match(SWIRLParser.T__11)
             self.state = 132
             self._errHandler.sync(self)
-            la_ = self._interp.adaptivePredict(self._input,7,self._ctx)
+            if self._input.LA(2) == SWIRLParser.T__3:
+                la_ = 1
+            else:
+                try:
+                    la_ = self._interp.adaptivePredict(self._input,7,self._ctx)
+                except RecognitionException:
+                    la_ = 1
             if la_ == 1:
                 self.state = 124
                 self.data()
@@ -1023,8 +1035,13 @@ class SWIRLParser ( Parser ):
         self.enterRule(localctx, 16, self.RULE_dataPair)
         try:
             self.state = 152
-            self._errHandler.sync(self)
-            la_ = self._interp.adaptivePredict(self._input,8,self._ctx)
+            if self._input.LA(3) == SWIRLParser.T__3:
+                la_ = 2
+            else:
+                try:
+                    la_ = self._interp.adaptivePredict(self._input,8,self._ctx)
+                except RecognitionException:
+                    la_ = 1
             if la_ == 1:
                 self.enterOuterAlt(localctx, 1)
                 self.state = 140
@@ -1286,8 +1303,11 @@ class SWIRLParser ( Parser ):
             super().__init__(parent, invokingState)
             self.parser = parser
 
-        def ID(self):
-            return self.getToken(SWIRLParser.ID, 0)
+        def ID(self, i:int=None):
+            if i is None:
+                return self.getTokens(SWIRLParser.ID)
+            else:
+                return self.getToken(SWIRLParser.ID, i)
 
         def ZERO(self):
             return self.getToken(SWIRLParser.ZERO, 0)
@@ -1319,16 +1339,21 @@ class SWIRLParser ( Parser ):
 
         localctx = SWIRLParser.DataContext(self, self._ctx, self.state)
         self.enterRule(localctx, 24, self.RULE_data)
-        self._la = 0 # Token type
         try:
             self.enterOuterAlt(localctx, 1)
-            self.state = 186
-            _la = self._input.LA(1)
-            if not((((_la) & ~0x3f) == 0 and ((1 << _la) & 6815744) != 0)):
-                self._errHandler.recoverInline(self)
+            token = self._input.LA(1)
+            if token == SWIRLParser.ID:
+                self.match(SWIRLParser.ID)
+                if self._input.LA(1) == SWIRLParser.T__3:
+                    self.match(SWIRLParser.T__3)
+                    self.match(SWIRLParser.ID)
+                    self.match(SWIRLParser.T__4)
+            elif token == SWIRLParser.ZERO:
+                self.match(SWIRLParser.ZERO)
+            elif token == SWIRLParser.EOF_VAL:
+                self.match(SWIRLParser.EOF_VAL)
             else:
-                self._errHandler.reportMatch(self)
-                self.consume()
+                self._errHandler.recoverInline(self)
         except RecognitionException as re:
             localctx.exception = re
             self._errHandler.reportError(self, re)

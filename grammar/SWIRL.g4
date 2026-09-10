@@ -31,7 +31,7 @@ locationSet : '{' name? (',' name)* '}' | ID;
 mapping     : locationSet;
 
 // Variables
-data        : ID | ZERO | EOF_VAL;
+data        : ID ('[' ID ']')? | ZERO | EOF_VAL;
 dst         : locationSet;
 name        : ID;
 port        : ID;

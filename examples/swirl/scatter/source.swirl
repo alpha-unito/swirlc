@@ -1,94 +1,109 @@
 // ==============================================================================
-// SWIRL Scatter-Gather Example (Shell Commands Only)
-// Pipeline:
-//   Step 1 (unzip archive.zip) -> Step 2 (scattered: wc -c file size) -> Step 3 (gather: cat)
+// Scatter-Gather Workflow
+// ==============================================================================
+// This workflow executes a distributed scatter-gather pipeline:
+//
+// - l0 (Controller): Scatters input items across worker nodes (l1, l2, l3).
+// - l1, l2, l3 (Workers): Process scattered items in parallel and send results to lG.
+// - lG (Gather Node): Collects all worker results and runs a final analysis step.
 // ==============================================================================
 
 // ------------------------------------------------------------------------------
-// Location l0: Step 1 (Unzip Archive & Scatter Files)
-// - Executes step s1 (unzip) to extract files from archive.zip.
-// - Iteratively moves each extracted file (tagged with ID) to scatter workers.
-// - Emits EOF on port p_file to all worker locations when finished.
+// Location l0: Scatter Controller
 // ------------------------------------------------------------------------------
-<l0, {(p_zip, d_zip)},
-  exec(s1, {(p_zip, d_zip)} -> {(p_file, file_ID)}, {l0})
+<l0, {(p_in1, d_in1), (p_in2, d_in2)},
+  exec(s_sc, {(p_in1, d_in1), (p_in2, d_in2)} -> {(p_id, id_ID), (p_group, group_ID)}, {l0})
   .
   (
     !(
-      move(file_ID -> p_file, l0, {l1, l2, l3})
-    )
-    +
-    (
-      send(eof -> p_file, l0, l1) |
-      send(eof -> p_file, l0, l2) |
-      send(eof -> p_file, l0, l3)
+      (
+        move(id_ID -> p_id, l0, {l1, l2, l3}) .
+        move(group_ID -> p_group, l0, {l1, l2, l3})
+      )
+      +
+      (
+        send(eof -> p_id, l0, l1) |
+        send(eof -> p_id, l0, l2) |
+        send(eof -> p_id, l0, l3)
+      )
     )
   )
 > |
 
-
-
 // ------------------------------------------------------------------------------
-// Worker Location l1: Step 2 (Scatter Worker 1 - Calculate File Size)
+// Worker Location l1
 // ------------------------------------------------------------------------------
 <l1, {},
   !(
-    recv(file_ID -> p_file, l0, l1) .
-    exec(s2, {(p_file, file_ID)} -> {(p_size, size_ID)}, {l1}) .
-    send(size_ID -> p_size, l1, lG)
-  )
-  +
-  (
-    recv(eof -> p_file, l0, l1) .
-    send(eof -> p_size, l1, lG)
+    (
+      recv(id_ID -> p_id, l0, l1) .
+      recv(group_ID -> p_group, l0, l1) .
+      exec(s_op, {(p_group, group_ID)} -> {(p_a, a_ID), (p_b, b_ID)}, {l1}) .
+      exec(s_work, {(p_id, id_ID), (p_a, a_ID), (p_b, b_ID)} -> {(p_res, res_ID)}, {l1}) .
+      send(res_ID -> p_res, l1, lG)
+    )
+    +
+    (
+      recv(eof -> p_id, l0, l1) .
+      send(eof -> p_res, l1, lG)
+    )
   )
 > |
 
 // ------------------------------------------------------------------------------
-// Worker Location l2: Step 2 (Scatter Worker 2 - Calculate File Size)
+// Worker Location l2
 // ------------------------------------------------------------------------------
 <l2, {},
   !(
-    recv(file_ID -> p_file, l0, l2) .
-    exec(s2, {(p_file, file_ID)} -> {(p_size, size_ID)}, {l2}) .
-    send(size_ID -> p_size, l2, lG)
-  )
-  +
-  (
-    recv(eof -> p_file, l0, l2) .
-    send(eof -> p_size, l2, lG)
+    (
+      recv(id_ID -> p_id, l0, l2) .
+      recv(group_ID -> p_group, l0, l2) .
+      exec(s_op, {(p_group, group_ID)} -> {(p_a, a_ID), (p_b, b_ID)}, {l2}) .
+      exec(s_work, {(p_id, id_ID), (p_a, a_ID), (p_b, b_ID)} -> {(p_res, res_ID)}, {l2}) .
+      send(res_ID -> p_res, l2, lG)
+    )
+    +
+    (
+      recv(eof -> p_id, l0, l2) .
+      send(eof -> p_res, l2, lG)
+    )
   )
 > |
 
 // ------------------------------------------------------------------------------
-// Worker Location l3: Step 2 (Scatter Worker 3 - Calculate File Size)
+// Worker Location l3
 // ------------------------------------------------------------------------------
 <l3, {},
   !(
-    recv(file_ID -> p_file, l0, l3) .
-    exec(s2, {(p_file, file_ID)} -> {(p_size, size_ID)}, {l3}) .
-    send(size_ID -> p_size, l3, lG)
-  )
-  +
-  (
-    recv(eof -> p_file, l0, l3) .
-    send(eof -> p_size, l3, lG)
+    (
+      recv(id_ID -> p_id, l0, l3) .
+      recv(group_ID -> p_group, l0, l3) .
+      exec(s_op, {(p_group, group_ID)} -> {(p_a, a_ID), (p_b, b_ID)}, {l3}) .
+      exec(s_work, {(p_id, id_ID), (p_a, a_ID), (p_b, b_ID)} -> {(p_res, res_ID)}, {l3}) .
+      send(res_ID -> p_res, l3, lG)
+    )
+    +
+    (
+      recv(eof -> p_id, l0, l3) .
+      send(eof -> p_res, l3, lG)
+    )
   )
 > |
 
-
 // ------------------------------------------------------------------------------
-// Location lG: Step 3 (Gather & Concatenate File Sizes)
-// - Concurrently collects size_ID items from all scatter workers until EOF.
-// - Executes step s3 (cat) to concatenate the gathered sizes into final output.
+// Location lG: Gather Node
 // ------------------------------------------------------------------------------
 <lG, {},
   (
-    !(recv(size_ID -> p_size, l1, lG)) |
-    !(recv(size_ID -> p_size, l2, lG)) |
-    !(recv(size_ID -> p_size, l3, lG))
+    !(recv(res_ID -> p_res, l1, lG) + recv(eof -> p_res, l1, lG)) |
+    !(recv(res_ID -> p_res, l2, lG) + recv(eof -> p_res, l2, lG)) |
+    !(recv(res_ID -> p_res, l3, lG) + recv(eof -> p_res, l3, lG))
   )
   .
-  exec(s3, {(p_size, size_ID)} -> {(p_out, d_out)}, {lG})
+  exec(s_G, {(p_res, res_ID)} -> {(p_out, d_out)}, {lG})
+  .
+  exec(s_post, {(p_out, d_out)} -> {(p_report, d_report)}, {lG})
 >
+
+
 

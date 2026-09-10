@@ -180,6 +180,15 @@
           "type": "string",
           "description": "User-friendly step name"
         },
+        "type": {
+          "type": "string",
+          "enum": [
+            "scatter_pairer",
+            "scatter_open",
+            "scatter_gather"
+          ],
+          "description": "Built-in special operation type"
+        },
         "command": {
           "type": "string",
           "description": "Application which step executes"
@@ -246,8 +255,22 @@
           "additionalProperties": false
         }
       },
-      "required": [
-        "command"
+      "anyOf": [
+        {
+          "required": [
+            "command"
+          ]
+        },
+        {
+          "required": [
+            "expression"
+          ]
+        },
+        {
+          "required": [
+            "type"
+          ]
+        }
       ],
       "additionalProperties": false
     }

@@ -183,12 +183,15 @@ import hashlib
 import json
 import logging
 import os
+import re
 import shlex
 import socket
 import subprocess
 import sys
+import tempfile
 import time
 import uuid
+import zipfile
 
 from pathlib import Path
 from io import BytesIO
@@ -563,7 +566,8 @@ exec_function = """def _exec(step_name: str, step_display_name: str, input_port_
     for port_name in input_port_names:
         value = ports[port_name]
         # A list input (e.g. list[file]) symlinks each element into the workdir.
-        for idx, elem in enumerate(value if isinstance(value, list) else [value]):
+        is_list = isinstance(value, list)
+        for idx, elem in enumerate(value if is_list else [value]):
             if not elem:
                 continue
             elem_path = os.fspath(elem)
@@ -572,8 +576,9 @@ exec_function = """def _exec(step_name: str, step_display_name: str, input_port_
             target_name = os.path.basename(os.path.normpath(elem_path))
             if not target_name:
                 continue
-            dest_path = os.path.join(workdir, target_name)
-            if os.path.exists(dest_path):
+            dest_name = f"{idx}_{target_name}" if is_list else target_name
+            dest_path = os.path.join(workdir, dest_name)
+            if not is_list and os.path.exists(dest_path):
                 dest_path = os.path.join(workdir, f"{idx}_{target_name}")
             try:
                 os.symlink(os.path.abspath(elem_path), dest_path)
@@ -585,13 +590,16 @@ exec_function = """def _exec(step_name: str, step_display_name: str, input_port_
 
     # A list argument expands to its space-joined elements on the command line.
     cmd = " ".join([cmd, *(
-        (" ".join(_quote_arg(e) for e in ports[elem]) if isinstance(ports[elem], list) else _quote_arg(ports[elem])) if is_data else _quote_arg(elem)
+        (" ".join(_quote_arg(e) for e in ports[elem]) if isinstance(ports[elem], list) else _quote_arg(ports[elem])) if is_data else elem
         for elem, is_data in args
     )])
-    for out_port, d_type, g_regex in output_specs:
-        if g_regex and not any(c in g_regex for c in "*?[]"):
-            if d_type in ("string", "int", "bool", "file"):
-                cmd = f"{cmd} > {shlex.quote(g_regex)}"
+    non_glob_outputs = [
+        g_regex for _, d_type, g_regex in output_specs
+        if g_regex and not any(c in g_regex for c in "*?[]") and d_type in ("string", "int", "bool", "file")
+    ]
+    if len(non_glob_outputs) == 1 and not (">" in cmd or "|" in cmd) and non_glob_outputs[0] not in cmd:
+        cmd = f"{cmd} > {shlex.quote(non_glob_outputs[0])}"
+
 
     if logger.isEnabledFor(logging.INFO):
         logger.info(f"Step {step_display_name}-{step_name} executes command '{cmd}'")
@@ -648,6 +656,179 @@ exec_function = """def _exec(step_name: str, step_display_name: str, input_port_
             logger.info(f"Step {step_display_name}-{step_name} has not an output port. Result: '{result.stdout.decode().strip()}'")
 """
 
+choice_helpers = """def _has_data(port: str) -> bool:
+    if port not in ports:
+        return False
+    val = ports[port]
+    if isinstance(val, (list, tuple)):
+        return len(val) > 0
+    return val is not None and val != ""
+
+
+def _peek_is_eof(src: str, port: str) -> bool:
+    if (src, port) in _eof_ports:
+        return True
+    with condition:
+        while not connections.setdefault(src, {}).get(port):
+            if stopping:
+                return True
+            condition.wait()
+        conn, is_eof = connections[src][port][0]
+        return is_eof
+"""
+
+scatter_special_helpers = """def _scatter_pair(step_name: str, step_display_name: str, input_ports: list[str], output_specs: list[tuple[str, str, str]]):
+    for in_p in input_ports:
+        available_port_data[in_p].wait()
+
+    workdir = tempfile.mkdtemp(prefix=f"scatter_pair_{step_name}_", dir=SCRATCH_DIR)
+    tuple_dir = os.path.join(workdir, "tuples")
+    id_dir = os.path.join(workdir, "ids")
+    os.makedirs(tuple_dir, exist_ok=True)
+    os.makedirs(id_dir, exist_ok=True)
+
+    port_items = []
+    for in_p in input_ports:
+        val = ports[in_p]
+        if isinstance(val, (list, tuple)):
+            items = list(val)
+        elif isinstance(val, str) and (val.endswith(".zip") or zipfile.is_zipfile(val)):
+            with zipfile.ZipFile(val, "r") as z:
+                names = sorted([n for n in z.namelist() if not n.endswith("/")])
+                extracted = []
+                ext_dir = os.path.join(workdir, f"ext_{in_p}")
+                os.makedirs(ext_dir, exist_ok=True)
+                for n in names:
+                    z.extract(n, ext_dir)
+                    extracted.append(os.path.join(ext_dir, n))
+                items = extracted
+        elif isinstance(val, str) and os.path.isdir(val):
+            items = [os.path.join(val, f) for f in sorted(os.listdir(val))]
+        elif isinstance(val, str) and os.path.isfile(val):
+            items = [val]
+        else:
+            items = [val]
+        port_items.append(items)
+
+    count = min(len(it) for it in port_items) if port_items else 0
+    id_list = []
+    tuple_list = []
+
+    for idx in range(count):
+        id_file = os.path.join(id_dir, f"id_{idx:02d}.txt")
+        with open(id_file, "w", encoding="utf-8") as f:
+            f.write(f"{idx}\\n")
+        id_list.append(id_file)
+
+        components = []
+        for p_idx, p_name in enumerate(input_ports):
+            item_path = port_items[p_idx][idx]
+            if isinstance(item_path, str) and os.path.isfile(item_path):
+                with open(item_path, "r", encoding="utf-8", errors="replace") as f:
+                    content = f.read()
+                basename = os.path.basename(item_path)
+            else:
+                content = str(item_path)
+                basename = f"item_{p_name}"
+            components.append({
+                "port": p_name,
+                "name": basename,
+                "content": content,
+                "path": item_path if isinstance(item_path, str) else None,
+            })
+
+        tuple_payload = {
+            "id": idx,
+            "components": components,
+        }
+        for c_idx, c in enumerate(components):
+            tuple_payload[f"content_{chr(ord('a') + c_idx)}"] = c["content"]
+            tuple_payload[f"name_{chr(ord('a') + c_idx)}"] = c["name"]
+
+        tuple_file = os.path.join(tuple_dir, f"tuple_{idx:02d}.json")
+        with open(tuple_file, "w", encoding="utf-8") as f:
+            json.dump(tuple_payload, f, indent=2)
+        tuple_list.append(tuple_file)
+
+    for out_p, d_type, g_regex in output_specs:
+        if "id" in out_p.lower():
+            ports[out_p] = id_list
+        else:
+            ports[out_p] = tuple_list
+        available_port_data[out_p].set()
+        if logger.isEnabledFor(logging.INFO):
+            logger.info(f"Special scatter pairer {step_display_name}-{step_name} produced {len(ports[out_p])} items for {out_p}")
+
+
+def _scatter_open(step_name: str, step_display_name: str, input_ports: list[str], output_specs: list[tuple[str, str, str]]):
+    in_p = input_ports[0]
+    available_port_data[in_p].wait()
+    tuple_file = ports[in_p]
+
+    with open(tuple_file, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    components = data.get("components", [])
+
+    workdir = tempfile.mkdtemp(prefix=f"scatter_open_{step_name}_", dir=SCRATCH_DIR)
+    for idx, (out_p, d_type, g_regex) in enumerate(output_specs):
+        comp = components[idx] if idx < len(components) else {}
+        filename = g_regex or comp.get("name") or f"component_{idx}.txt"
+        out_path = os.path.join(workdir, os.path.basename(filename))
+        if "content" in comp:
+            content = comp["content"]
+        elif f"content_{chr(ord('a') + idx)}" in data:
+            content = data[f"content_{chr(ord('a') + idx)}"]
+        else:
+            content = ""
+        with open(out_path, "w", encoding="utf-8") as f:
+            f.write(content)
+        ports[out_p] = out_path
+        available_port_data[out_p].set()
+        if logger.isEnabledFor(logging.INFO):
+            logger.info(f"Special scatter open {step_display_name}-{step_name} unpacked {out_p} -> {out_path}")
+
+
+def _scatter_gather(step_name: str, step_display_name: str, input_ports: list[str], output_specs: list[tuple[str, str, str]]):
+    in_p = input_ports[0]
+    available_port_data[in_p].wait()
+    results = ports.get(in_p, [])
+    if not isinstance(results, list):
+        results = [results] if results else []
+
+    def _extract_id(item: Any) -> int:
+        s = str(item)
+        m = re.search(r"Item\\s+(\\d+)", s, re.IGNORECASE)
+        if m:
+            return int(m.group(1))
+        m = re.search(r"(\\d+)", os.path.basename(s))
+        if m:
+            return int(m.group(1))
+        if isinstance(item, str) and os.path.isfile(item):
+            try:
+                with open(item, "r", encoding="utf-8") as f:
+                    content = f.read(1024)
+                    m = re.search(r"Item\\s+(\\d+)", content, re.IGNORECASE)
+                    if m:
+                        return int(m.group(1))
+                    m = re.search(r"(\\d+)", content)
+                    if m:
+                        return int(m.group(1))
+            except Exception:
+                pass
+        return 999999
+
+    try:
+        sorted_results = sorted(results, key=_extract_id)
+    except Exception:
+        sorted_results = results
+
+    for out_p, d_type, g_regex in output_specs:
+        ports[out_p] = sorted_results
+        available_port_data[out_p].set()
+        if logger.isEnabledFor(logging.INFO):
+            logger.info(f"Special scatter gather {step_display_name}-{step_name} gathered {len(sorted_results)} elements to port {out_p}: {sorted_results}")
+"""
+
 init_dataset_function = """def _init_dataset(port_name: str, data: Any):
     ports[port_name] = data
     available_port_data[port_name].set()
@@ -674,7 +855,9 @@ send_function = """def _send(data: str, port: str, data_type: str, src: str, dst
     if not is_eof:
         _send_value(sock, data_type, val)
     if logger.isEnabledFor(logging.DEBUG):
-        logger.debug(f"Sent {'EOF' if is_eof else 'data'} for port {port} to location {dst}")
+        logger.debug(
+            f"Sent {'EOF' if is_eof else 'data'} for port {port} to location {dst}"
+        )
     sock.close()
     return True
 """
@@ -701,9 +884,10 @@ recv_function = """def _recv(port: str, data_type: str, src: str, is_gather: boo
     val = _recv_value(conn, data_type)
     conn.close()
     if is_gather:
-        if port not in ports or not isinstance(ports[port], list):
-            ports[port] = []
-        ports[port].append(val)
+        with condition:
+            if port not in ports or not isinstance(ports[port], list):
+                ports[port] = []
+            ports[port].append(val)
     else:
         ports[port] = val
     available_port_data[port].set()
@@ -744,6 +928,8 @@ preamble = "\n".join(
         file_rendezvous_helpers,
         list_helper,
         expression_function,
+        choice_helpers,
+        scatter_special_helpers,
         framing_helpers,
         exec_function,
         init_dataset_function,
@@ -1228,10 +1414,53 @@ if __name__ == '__main__':
         flow: tuple[set[tuple[str, str]], set[tuple[str, str]]],
         mapping: set[str],
     ):
+        i = "    " * indent
+        if getattr(step, "step_type", None) == "scatter_pairer":
+            input_ports = sorted([pn for pn, _ in flow[0]])
+            output_specs = []
+            for pn, _ in sorted(flow[1], key=lambda x: x[0]):
+                self.location_ports.add(pn)
+                glob_val = step.processors[pn].glob if (step.processors and pn in step.processors) else ""
+                type_val = step.processors[pn].type if (step.processors and pn in step.processors) else "file"
+                output_specs.append((pn, type_val, glob_val))
+            for pn, _ in flow[0]:
+                self.location_ports.add(pn)
+            trace.write(
+                f"\n{i}_scatter_pair({step.name!r}, {step.display_name!r}, {input_ports!r}, {output_specs!r})\n"
+            )
+            return
+        elif getattr(step, "step_type", None) == "scatter_open":
+            input_ports = sorted([pn for pn, _ in flow[0]])
+            output_specs = []
+            for pn, _ in sorted(flow[1], key=lambda x: x[0]):
+                self.location_ports.add(pn)
+                glob_val = step.processors[pn].glob if (step.processors and pn in step.processors) else ""
+                type_val = step.processors[pn].type if (step.processors and pn in step.processors) else "file"
+                output_specs.append((pn, type_val, glob_val))
+            for pn, _ in flow[0]:
+                self.location_ports.add(pn)
+            trace.write(
+                f"\n{i}_scatter_open({step.name!r}, {step.display_name!r}, {input_ports!r}, {output_specs!r})\n"
+            )
+            return
+        elif getattr(step, "step_type", None) == "scatter_gather":
+            input_ports = sorted([pn for pn, _ in flow[0]])
+            output_specs = []
+            for pn, _ in sorted(flow[1], key=lambda x: x[0]):
+                self.location_ports.add(pn)
+                glob_val = step.processors[pn].glob if (step.processors and pn in step.processors) else ""
+                type_val = step.processors[pn].type if (step.processors and pn in step.processors) else "file"
+                output_specs.append((pn, type_val, glob_val))
+            for pn, _ in flow[0]:
+                self.location_ports.add(pn)
+            trace.write(
+                f"\n{i}_scatter_gather({step.name!r}, {step.display_name!r}, {input_ports!r}, {output_specs!r})\n"
+            )
+            return
+
         assert step.arguments is not None
         assert step.processors is not None
 
-        i = "    " * indent
         if step.expression is not None:
             assert self.current_workflow is not None
             input_specs = {
@@ -1282,8 +1511,11 @@ if __name__ == '__main__':
         self.location_ports.add(port)
         i = "    " * indent
         in_repl = False
+        in_choice = False
         curr: TraceNode | None = node
         while curr:
+            if getattr(curr, "has_choice", False) or getattr(curr, "is_choice", False):
+                in_choice = True
             if getattr(curr, "is_repl", False):
                 curr.repl_sources.add(src)
                 in_repl = True
@@ -1294,8 +1526,9 @@ if __name__ == '__main__':
         )
         if in_repl:
             trace.write(f"{i}_wait([{node.handle}])\n")
-            trace.write(f"{i}if any(src == '{src}' for src, _ in _eof_ports):\n")
-            trace.write(f"{i}    return\n")
+            if not in_choice and data != "eof":
+                trace.write(f"{i}if any(src == '{src}' for src, _ in _eof_ports):\n")
+                trace.write(f"{i}    return\n")
 
 
 
@@ -1330,14 +1563,24 @@ if __name__ == '__main__':
         self.location_ports.add(port)
         i = "    " * indent
         dst_str = str(dst).strip()
+        in_repl = False
+        curr: TraceNode | None = node
+        while curr:
+            if getattr(curr, "is_choice", False):
+                curr.has_scatter_moves = True
+            if getattr(curr, "is_repl", False):
+                curr.has_scatter_moves = True
+                in_repl = True
+            curr = curr.parent
         if dst_str.startswith("{") and dst_str.endswith("}"):
             workers = [x.strip() for x in dst_str.strip("{}").split(",") if x.strip()]
             trace.write(f"{i}_workers = {workers!r}\n")
             trace.write(
                 f"""{i}{node.handle} = _thread(_send, "{data}", "{port}", "{data_type}", "{src}", _workers[_worker_idx[0] % len(_workers)])\n"""
                 f"""{i}_wait([{node.handle}])\n"""
-                f"""{i}_worker_idx[0] += 1\n"""
             )
+            if not in_repl:
+                trace.write(f"{i}_worker_idx[0] += 1\n")
         else:
             trace.write(
                 f"""{i}{node.handle} = _thread(_send, "{data}", "{port}", "{data_type}", "{src}", "{dst}")\n"""
@@ -1345,20 +1588,36 @@ if __name__ == '__main__':
 
 
 
-    def write_choice_start(self, node: TraceNode, indent: int, trace: TextIO):
+    def _has_choice_descendant(self, node: TraceNode) -> bool:
+        if getattr(node, "is_choice", False):
+            return True
+        return any(self._has_choice_descendant(c) for c in node.children.values())
+
+    def write_choice_start(
+        self, node: TraceNode, indent: int, trace: TextIO, guard: str = "True"
+    ):
         if node.depth == 0:
             return
         i = "    " * indent
-        trace.write(f"\n{i}def {node.id}():\n")
+        trace.write(f"\n{i}if {guard}:\n")
 
     def write_choice_alt(self, node: TraceNode, indent: int, trace: TextIO):
-        pass
+        if node.depth == 0:
+            return
+        i = "    " * indent
+        body_i = "    " * (indent + 1)
+        if getattr(node, "has_scatter_moves", False):
+            trace.write(f"{body_i}_worker_idx[0] += 1\n")
+        if getattr(node, "choice_eof_branch", None) == 0 and node.in_repl:
+            trace.write(f"{body_i}break\n")
+        trace.write(f"{i}else:\n")
 
     def write_choice_end(self, node: TraceNode, indent: int, trace: TextIO):
         if node.depth == 0:
             return
-        i = "    " * indent
-        trace.write(f"{i}{node.handle} = _thread({node.id})\n")
+        body_i = "    " * (indent + 1)
+        if getattr(node, "choice_eof_branch", None) == 1 and node.in_repl:
+            trace.write(f"{body_i}break\n")
 
     def write_repl_start(
         self,
@@ -1380,15 +1639,20 @@ if __name__ == '__main__':
         if node.depth == 0:
             return
         i = "    " * indent
-        if node.repl_sources:
-            sources_check = f"any(src in {list(node.repl_sources)!r} for src, _ in _eof_ports)"
-        else:
-            sources_check = "_eof_ports"
-        trace.write(
-            f"{i}        if {sources_check} or (any(isinstance(ports.get(p), list) for p in ports) and all(len(ports[p]) == 0 for p in ports if isinstance(ports.get(p), list))):\n"
-        )
-        trace.write(f"{i}            break\n")
+        has_choice = getattr(node, "has_choice", False)
+        if getattr(node, "has_scatter_moves", False) and not has_choice:
+            trace.write(f"{i}        _worker_idx[0] += 1\n")
+        if not has_choice:
+            if node.repl_sources:
+                sources_check = f"any(src in {list(node.repl_sources)!r} for src, _ in _eof_ports)"
+            else:
+                sources_check = "_eof_ports"
+            trace.write(
+                f"{i}        if {sources_check} or (any(isinstance(ports.get(p), list) for p in ports) and all(len(ports[p]) == 0 for p in ports if isinstance(ports.get(p), list))):\n"
+            )
+            trace.write(f"{i}            break\n")
         trace.write(f"{i}{node.handle} = _thread({node.id})\n")
+
 
 
 

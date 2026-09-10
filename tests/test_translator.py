@@ -95,4 +95,4 @@ def test_translate():
     ):
         translator.translate(workflow_fd, metadata_fd)
         assert get_sha1(workflow_fd.name) == "da39a3ee5e6b4b0d3255bfef95601890afd80709"
-        assert get_sha1(metadata_fd.name) == "d5ff5195ce296fcd334b6cbb4366b0b2b3e34c88"
+        assert get_sha1(metadata_fd.name) == "18e4ac9fa2ffe1abfc366d368677fee68bd93fe2"

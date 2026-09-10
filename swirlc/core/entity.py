@@ -123,6 +123,7 @@ class Step:
         "expression_inputs",
         "expression_input_types",
         "expression_outputs",
+        "step_type",
     )
 
     def __init__(
@@ -136,6 +137,7 @@ class Step:
         expression_inputs: MutableMapping[str, Port] | None = None,
         expression_input_types: MutableMapping[str, str] | None = None,
         expression_outputs: MutableMapping[str, Port] | None = None,
+        step_type: str | None = None,
     ):
         self.name: str = name
         self.display_name: str = display_name
@@ -146,6 +148,7 @@ class Step:
         self.expression_inputs = expression_inputs
         self.expression_input_types = expression_input_types
         self.expression_outputs = expression_outputs
+        self.step_type = step_type
 
 
 class Workflow:

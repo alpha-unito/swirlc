@@ -17,12 +17,25 @@ class TraceNode:
         self.parent = parent
         self.is_threaded = is_threaded
         self.is_repl = False
+        self.has_scatter_moves = False
         self.repl_sources: set[str] = set()
-
+        self.is_choice = False
+        self.has_choice = False
+        self.choice_guard = "True"
+        self.choice_eof_branch: int | None = None
 
         self.id = f"thread_{TraceNode.counter}"
         self.handle = f"handle_{TraceNode.counter}"
         TraceNode.counter += 1
+
+    @property
+    def in_repl(self) -> bool:
+        curr = self.parent
+        while curr:
+            if getattr(curr, "is_repl", False):
+                return True
+            curr = curr.parent
+        return False
 
     def set_depth(self, depth: int):
         self.depth = depth
@@ -133,7 +146,9 @@ class StandardCompiler(BaseCompiler):
     ):
         pass
 
-    def write_choice_start(self, node: TraceNode, indent: int, trace: TextIO):
+    def write_choice_start(
+        self, node: TraceNode, indent: int, trace: TextIO, guard: str = "True"
+    ):
         pass
 
     def write_choice_alt(self, node: TraceNode, indent: int, trace: TextIO):
@@ -255,14 +270,30 @@ class StandardCompiler(BaseCompiler):
         for port, data in dataset:
             self.write_dataset(node, node.depth + 1, trace, port, data)
 
-    # ======== Thread =======
+    # ======== Thread / Grouping =======
     def begin_paren(self) -> None:
         assert self.current_location is not None
         assert self.current_node is not None
         trace = self._get_location_trace(self.current_location)
 
-        self.current_node = self.current_node.add_child(trace)
-        self.write_thread_start(self.current_node, self.current_node.depth, trace)
+        curr: TraceNode | None = self.current_node
+        in_choice_or_repl = False
+        while curr:
+            if (
+                getattr(curr, "is_choice", False)
+                or getattr(curr, "has_choice", False)
+                or getattr(curr, "is_repl", False)
+            ):
+                in_choice_or_repl = True
+                break
+            curr = curr.parent
+
+        if in_choice_or_repl:
+            self.current_node = self.current_node.add_child(trace, is_threaded=False)
+            self.current_node.depth = self.current_node.parent.depth
+        else:
+            self.current_node = self.current_node.add_child(trace)
+            self.write_thread_start(self.current_node, self.current_node.depth, trace)
 
     def end_paren(self):
         assert self.current_location is not None
@@ -270,7 +301,8 @@ class StandardCompiler(BaseCompiler):
         trace = self._get_location_trace(self.current_location)
 
         self._close_node(self.current_node, trace)
-        self.write_thread_end(self.current_node, self.current_node.depth, trace)
+        if self.current_node.is_threaded:
+            self.write_thread_end(self.current_node, self.current_node.depth, trace)
 
         assert (
             self.current_node.parent is not None
@@ -330,13 +362,22 @@ class StandardCompiler(BaseCompiler):
         self.write_move(node, node.depth, trace, data, port, data_type, src, dst)
 
     # ======== Choice ========
-    def begin_choice(self) -> None:
+    def begin_choice(self, guard: str = "True", eof_branch: int | None = None) -> None:
         assert self.current_location is not None
         assert self.current_node is not None
         trace = self._get_location_trace(self.current_location)
 
-        self.current_node = self.current_node.add_child(trace)
-        self.write_choice_start(self.current_node, self.current_node.depth, trace)
+        new_node = TraceNode(depth=self.current_node.depth + 1, parent=self.current_node, is_threaded=False)
+        self.current_node.children[new_node.id] = new_node
+        self.current_node = new_node
+        self.current_node.is_choice = True
+        self.current_node.choice_guard = guard
+        self.current_node.choice_eof_branch = eof_branch
+        curr: TraceNode | None = self.current_node
+        while curr:
+            curr.has_choice = True
+            curr = curr.parent
+        self.write_choice_start(self.current_node, self.current_node.depth, trace, guard=guard)
 
     def choice(self) -> None:
         assert self.current_location is not None

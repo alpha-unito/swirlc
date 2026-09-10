@@ -84,8 +84,8 @@ class TraceTarget(StandardCompiler):
             f"{'  ' * indent}{node.id} = Move: {data} of type {data_type} from {src} to {dst} on port {port}\n"
         )
 
-    def write_choice_start(self, node: TraceNode, indent: int, trace: TextIO):
-        trace.write(f"{'  ' * indent}{node.id} = Choice {{\n")
+    def write_choice_start(self, node: TraceNode, indent: int, trace: TextIO, guard: str = "True"):
+        trace.write(f"{'  ' * indent}{node.id} = Choice [{guard}] {{\n")
 
     def write_choice_alt(self, node: TraceNode, indent: int, trace: TextIO):
         trace.write(f"{'  ' * indent}}} or {{\n")

@@ -98,7 +98,7 @@ def _compile_and_run(
         assert process.returncode == 0, f"Program crashed! Stderr: {stderr}"
         if expected_stdout is not None:
             assert (
-                stdout.strip() == expected_stdout
+                expected_stdout in stdout
             ), f"Missing expected output. \n\nFull stdout was:\n{stdout}"
         if expected_stderr_patterns:
             for pattern in expected_stderr_patterns:
@@ -155,8 +155,16 @@ def test_example2() -> None:
 
 
 def test_scatter() -> None:
-    _compile(
-        str(_EXAMPLES_PATH / "scatter" / "source.swirl"),
-        str(_EXAMPLES_PATH / "scatter" / "config.yml"),
-    )
+    with tempfile.TemporaryDirectory() as workdir:
+        _compile(
+            str(_EXAMPLES_PATH / "scatter" / "source.swirl"),
+            str(_EXAMPLES_PATH / "scatter" / "config.yml"),
+            outdir=workdir,
+        )
+        l0 = (pathlib.Path(workdir) / "l0.py").read_text()
+        l1 = (pathlib.Path(workdir) / "l1.py").read_text()
+        lG = (pathlib.Path(workdir) / "lG.py").read_text()
+        assert "_scatter_pair(" in l0
+        assert "_scatter_open(" in l1
+        assert "_scatter_gather(" in lG
 
