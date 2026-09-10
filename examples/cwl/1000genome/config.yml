@@ -1,0 +1,77 @@
+columns_file:
+  type: File
+  path: data/20130502/columns.txt
+frequency_script:
+  type: File
+  path: scripts/frequency.py
+individuals_script:
+  type: File
+  path: scripts/individuals
+individuals_merge_script:
+  type: File
+  path: scripts/individuals_merge
+mutation_overlap_script:
+  type: File
+  path: scripts/mutation_overlap.py
+populations:
+  - type: File
+    path: data/populations/AFR
+  - type: File
+    path: data/populations/ALL
+  - type: File
+    path: data/populations/AMR
+  - type: File
+    path: data/populations/EAS
+  - type: File
+    path: data/populations/EUR
+  - type: File
+    path: data/populations/GBR
+  - type: File
+    path: data/populations/SAS
+sift_files:
+  - type: File
+    path: data/20130502/sifting/ALL.chr1.phase3_shapeit2_mvncall_integrated_v5.20130502.sites.annotation.vcf.gz
+  - type: File
+    path: data/20130502/sifting/ALL.chr2.phase3_shapeit2_mvncall_integrated_v5.20130502.sites.annotation.vcf.gz
+  - type: File
+    path: data/20130502/sifting/ALL.chr3.phase3_shapeit2_mvncall_integrated_v5.20130502.sites.annotation.vcf.gz
+  - type: File
+    path: data/20130502/sifting/ALL.chr4.phase3_shapeit2_mvncall_integrated_v5.20130502.sites.annotation.vcf.gz
+  - type: File
+    path: data/20130502/sifting/ALL.chr5.phase3_shapeit2_mvncall_integrated_v5.20130502.sites.annotation.vcf.gz
+  - type: File
+    path: data/20130502/sifting/ALL.chr6.phase3_shapeit2_mvncall_integrated_v5.20130502.sites.annotation.vcf.gz
+  - type: File
+    path: data/20130502/sifting/ALL.chr7.phase3_shapeit2_mvncall_integrated_v5.20130502.sites.annotation.vcf.gz
+  - type: File
+    path: data/20130502/sifting/ALL.chr8.phase3_shapeit2_mvncall_integrated_v5.20130502.sites.annotation.vcf.gz
+  - type: File
+    path: data/20130502/sifting/ALL.chr9.phase3_shapeit2_mvncall_integrated_v5.20130502.sites.annotation.vcf.gz
+  - type: File
+    path: data/20130502/sifting/ALL.chr10.phase3_shapeit2_mvncall_integrated_v5.20130502.sites.annotation.vcf.gz
+sifting_script:
+  type: File
+  path: scripts/sifting
+snp_files:
+  - type: File
+    location: data/20130502/ALL.chr1.250000.vcf.gz
+  - type: File
+    location: data/20130502/ALL.chr2.250000.vcf.gz
+  - type: File
+    location: data/20130502/ALL.chr3.250000.vcf.gz
+  - type: File
+    location: data/20130502/ALL.chr4.250000.vcf.gz
+  - type: File
+    location: data/20130502/ALL.chr5.250000.vcf.gz
+  - type: File
+    location: data/20130502/ALL.chr6.250000.vcf.gz
+  - type: File
+    location: data/20130502/ALL.chr7.250000.vcf.gz
+  - type: File
+    location: data/20130502/ALL.chr8.250000.vcf.gz
+  - type: File
+    location: data/20130502/ALL.chr9.250000.vcf.gz
+  - type: File
+    location: data/20130502/ALL.chr10.250000.vcf.gz
+step: 31250
+total: 250000

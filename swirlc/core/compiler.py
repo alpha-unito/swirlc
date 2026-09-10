@@ -255,6 +255,8 @@ class CompileVisitor(SWIRLVisitor, ABC):
                 },
                 expression=expression_source,
                 step_type=step_type,
+                scatter_method=step_metadata.get("scatterMethod"),
+                scatter=step_metadata.get("scatter") or step_metadata.get("scatterPorts"),
             )
             self.workflow.add_step(step)
             for port_name, _ in inputs:

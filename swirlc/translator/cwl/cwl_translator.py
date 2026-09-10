@@ -6,8 +6,10 @@ import glob
 import json
 import logging
 import os
+import sys
 from collections.abc import MutableMapping, MutableSequence
 from pathlib import Path
+from typing import TextIO
 
 import cwl_utils
 from ruamel.yaml import YAML
@@ -106,15 +108,36 @@ class _EffStep:
     across subworkflow boundaries.
     """
 
-    __slots__ = ("path", "display_name", "tool_obj", "command", "inputs", "outputs")
+    __slots__ = (
+        "path",
+        "display_name",
+        "tool_obj",
+        "command",
+        "inputs",
+        "outputs",
+        "scatter",
+        "scatter_method",
+    )
 
-    def __init__(self, path, display_name, tool_obj, command, inputs, outputs):
+    def __init__(
+        self,
+        path,
+        display_name,
+        tool_obj,
+        command,
+        inputs,
+        outputs,
+        scatter: list[str] | None = None,
+        scatter_method: str | None = None,
+    ):
         self.path = path  # e.g. "chromosome/individuals"
         self.display_name = display_name  # leaf step name
         self.tool_obj = tool_obj  # cwl_utils CommandLineTool / ExpressionTool
         self.command = command
         self.inputs = inputs  # list[(param_name, global_source_key | None)]
         self.outputs = outputs  # list[(port_local, global_key)]
+        self.scatter = scatter
+        self.scatter_method = scatter_method
 
 
 def _local_name(uri: str) -> str:
@@ -440,9 +463,28 @@ class CWLTranslator(AbstractTranslator):
                         gkey = f"{spath}/{pid}"
                         out_map[pid] = gkey
                         outputs.append((pid, gkey))
+                    scatter_raw = getattr(step, "scatter", None)
+                    if scatter_raw:
+                        if isinstance(scatter_raw, str):
+                            scatter_vars = [_local_name(scatter_raw).split("/")[-1]]
+                        else:
+                            scatter_vars = [
+                                _local_name(x).split("/")[-1] for x in scatter_raw
+                            ]
+                    else:
+                        scatter_vars = None
+                    scatter_method = getattr(step, "scatterMethod", None)
+
                     effective.append(
                         _EffStep(
-                            spath, sname, run_obj, command, resolved_inputs, outputs
+                            spath,
+                            sname,
+                            run_obj,
+                            command,
+                            resolved_inputs,
+                            outputs,
+                            scatter=scatter_vars,
+                            scatter_method=scatter_method,
                         )
                     )
                     cache[sname] = out_map
@@ -765,3 +807,1152 @@ class CWLTranslator(AbstractTranslator):
             workflow.map(swirl_step, loc)
 
         return workflow
+
+    def _has_scatter(self) -> bool:
+        for s in self.cwl_obj.steps:
+            if getattr(s, "scatter", None):
+                return True
+        effective_steps = self._flatten_leaf_steps()
+        return any(eff.scatter is not None for eff in effective_steps)
+
+    def translate(
+        self, workflow_output: TextIO = sys.stdout, metadata_output: TextIO = sys.stdout
+    ) -> None:
+        if not self._has_scatter():
+            super().translate(workflow_output, metadata_output)
+            return
+
+        subwf_scatter_step = None
+        for s in self.cwl_obj.steps:
+            if getattr(s, "scatter", None):
+                run_obj = self.cwl_bundle[s.run] if isinstance(s.run, str) else s.run
+                if hasattr(run_obj, "steps") and not hasattr(run_obj, "baseCommand"):
+                    subwf_scatter_step = s
+                    break
+
+        if subwf_scatter_step:
+            self._translate_subworkflow_scatter(
+                subwf_scatter_step, workflow_output, metadata_output
+            )
+            return
+
+        self._translate_scatter(workflow_output, metadata_output)
+
+    def _translate_subworkflow_scatter(
+        self, subwf_step, workflow_output: TextIO, metadata_output: TextIO
+    ) -> None:
+        subwf_name = _local_name(subwf_step.id).split("/")[-1]
+        subwf_run = subwf_step.run
+        subwf_obj = (
+            self.cwl_bundle[subwf_run] if isinstance(subwf_run, str) else subwf_run
+        )
+
+        raw_scatter = getattr(subwf_step, "scatter", [])
+        if isinstance(raw_scatter, str):
+            subwf_scatter_vars = [_local_name(raw_scatter).split("/")[-1]]
+        else:
+            subwf_scatter_vars = [_local_name(x).split("/")[-1] for x in raw_scatter]
+        scatter_method = (
+            getattr(subwf_step, "scatterMethod", "dotproduct") or "dotproduct"
+        )
+
+        first_wf = next(iter(self.streamflow_config.get("workflows", {}).values()))
+        bindings = first_wf.get("bindings", [])
+        sf_deployments = self.streamflow_config.get("deployments", {})
+
+        coord_dep_name = "l0"
+        for b in bindings:
+            if b.get("step") == "/":
+                target = b.get("target") or {}
+                if target.get("deployment"):
+                    coord_dep_name = target["deployment"]
+
+        worker_binding = None
+        for b in bindings:
+            step_p = b.get("step", "").lstrip("/")
+            if step_p in (subwf_name, f"/{subwf_name}"):
+                worker_binding = b
+                break
+
+        worker_targets: list[dict] = []
+        if worker_binding:
+            raw_target = worker_binding.get("target")
+            if isinstance(raw_target, list):
+                worker_targets = raw_target
+            elif isinstance(raw_target, dict):
+                dep_name = raw_target.get("deployment", "workers")
+                loc_cnt = raw_target.get("locations")
+                dep_cfg = sf_deployments.get(dep_name, {})
+                nodes = dep_cfg.get("config", {}).get("nodes", [])
+                if loc_cnt is not None:
+                    count = int(loc_cnt)
+                elif nodes:
+                    count = len(nodes)
+                else:
+                    count = 2
+                for idx in range(count):
+                    worker_targets.append({"deployment": dep_name, "index": idx})
+        if not worker_targets:
+            worker_targets = [
+                {"deployment": "workers", "index": 0},
+                {"deployment": "workers", "index": 1},
+            ]
+
+        def _resolve_hostname(dep_cfg: dict) -> str:
+            nodes = dep_cfg.get("config", {}).get("nodes", [])
+            return nodes[0] if nodes else "127.0.0.1"
+
+        def _resolve_connection_type(dep_cfg: dict) -> str | None:
+            t = dep_cfg.get("type", "local")
+            if t == "ssh":
+                return "ssh"
+            if t == "slurm":
+                return "slurm"
+            return None
+
+        def _resolve_hostname_transitive(dep_cfg: dict) -> str:
+            t = dep_cfg.get("type", "local")
+            if t == "slurm":
+                wraps = dep_cfg.get("wraps")
+                if wraps and wraps in sf_deployments:
+                    return _resolve_hostname_transitive(sf_deployments[wraps])
+            return _resolve_hostname(dep_cfg)
+
+        def _resolve_ssh_config_transitive(dep_cfg: dict) -> dict:
+            t = dep_cfg.get("type", "local")
+            if t == "slurm":
+                wraps = dep_cfg.get("wraps")
+                if wraps and wraps in sf_deployments:
+                    return _resolve_ssh_config_transitive(sf_deployments[wraps])
+                return {}
+            if t != "ssh":
+                return {}
+            config = dep_cfg.get("config", {}) or {}
+            return {
+                k: v
+                for k, v in {
+                    "username": config.get("username"),
+                    "ssh_key": config.get("sshKey"),
+                    "check_host_key": config.get("checkHostKey"),
+                }.items()
+                if v is not None
+            }
+
+        locations: dict[str, dict] = {}
+
+        coord_cfg = sf_deployments.get(coord_dep_name, {})
+        coord_loc: dict = {}
+        coord_dep: dict = {}
+        conn = _resolve_connection_type(coord_cfg)
+        if conn:
+            coord_dep["type"] = conn
+        coord_dep["hostname"] = _resolve_hostname_transitive(coord_cfg)
+        coord_dep["port"] = coord_cfg.get("port", 35050)
+        if coord_cfg.get("workdir"):
+            coord_dep["workdir"] = coord_cfg["workdir"]
+        coord_ssh = _resolve_ssh_config_transitive(coord_cfg)
+        if coord_ssh.get("username"):
+            coord_dep["username"] = coord_ssh["username"]
+        if coord_ssh.get("ssh_key"):
+            coord_dep["sshKey"] = coord_ssh["ssh_key"]
+        if coord_ssh.get("check_host_key") is not None:
+            coord_dep["checkHostKey"] = coord_ssh["check_host_key"]
+        coord_loc["deployment"] = coord_dep
+        locations["l0"] = coord_loc
+
+        worker_names: list[str] = []
+        for i, wt in enumerate(worker_targets):
+            w_name = f"l{i + 1}"
+            worker_names.append(w_name)
+            w_dep_name = wt.get("deployment", "workers")
+            w_cfg = sf_deployments.get(w_dep_name, {})
+            w_loc: dict = {}
+            w_dep: dict = {}
+            w_conn = _resolve_connection_type(w_cfg)
+            if w_conn:
+                w_dep["type"] = w_conn
+            nodes = w_cfg.get("config", {}).get("nodes", [])
+            w_idx = wt.get("index", i)
+            if nodes and w_idx < len(nodes):
+                w_dep["hostname"] = nodes[w_idx]
+            else:
+                w_dep["hostname"] = _resolve_hostname_transitive(w_cfg)
+            base_port = w_cfg.get("port", 35051)
+            w_dep["port"] = base_port + i
+            if w_cfg.get("workdir"):
+                w_dep["workdir"] = w_cfg["workdir"]
+            w_ssh = _resolve_ssh_config_transitive(w_cfg)
+            if w_ssh.get("username"):
+                w_dep["username"] = w_ssh["username"]
+            if w_ssh.get("ssh_key"):
+                w_dep["sshKey"] = w_ssh["ssh_key"]
+            if w_ssh.get("check_host_key") is not None:
+                w_dep["checkHostKey"] = w_ssh["check_host_key"]
+            w_loc["deployment"] = w_dep
+            locations[w_name] = w_loc
+
+        settings_rel = first_wf.get("config", {}).get("settings")
+        settings_values = {}
+        if settings_rel:
+            settings_path = (self.cwl_file.parent / settings_rel).resolve()
+            if settings_path.exists():
+                with open(settings_path) as f:
+                    settings_values = YAML(typ="safe").load(f) or {}
+
+        dependencies: dict[str, dict] = {}
+        dependencies["id_ID"] = {"type": "file"}
+        dependencies["group_ID"] = {"type": "file"}
+        dependencies["eof"] = {"type": "string"}
+
+        def _coerce(v, value_type: str):
+            if isinstance(v, dict) and "path" in v:
+                p = Path(v["path"])
+                if not p.is_absolute():
+                    p = (self.cwl_file.parent / p).resolve()
+                return str(p)
+            inner = _list_inner_type(value_type)
+            if inner is not None:
+                return [_coerce(item, inner) for item in (v or [])]
+            if value_type == "int":
+                return int(v)
+            if value_type == "bool":
+                return v if isinstance(v, bool) else str(v).lower() == "true"
+            return str(v)
+
+        dataset_pairs: list[tuple[str, str]] = []
+        source_to_in_pair: dict[str, tuple[str, str]] = {}
+        in_counter = 1
+        for wf_inp in self.cwl_obj.inputs:
+            inp_name = _local_name(wf_inp.id).split("/")[-1]
+            d_name = f"d_in{in_counter}"
+            p_name = f"p_in{in_counter}"
+            in_counter += 1
+            data_type = _cwl_type_to_swirl(wf_inp.type_)
+            raw_val = settings_values.get(inp_name, [])
+            coerced_val = _coerce(raw_val, data_type)
+            dependencies[d_name] = {
+                "type": data_type,
+                "value": coerced_val,
+            }
+            dataset_pairs.append((p_name, d_name))
+            source_to_in_pair[inp_name] = (p_name, d_name)
+
+        subwf_inputs_info: list[tuple[str, str, str, bool, str]] = []
+        scatter_in_ports: list[str] = []
+        scatter_pair_input_ports: list[tuple[str, str]] = []
+
+        for sin in subwf_step.in_:
+            param_name = _local_name(sin.id).split("/")[-1]
+            src = sin.source
+            if isinstance(src, list):
+                src = src[0] if src else None
+            src_name = _local_name(src).split("/")[-1] if src else None
+            if src_name and src_name in source_to_in_pair:
+                p_name, d_name = source_to_in_pair[src_name]
+                is_sc = param_name in subwf_scatter_vars
+                d_type = dependencies[d_name]["type"]
+                subwf_inputs_info.append((param_name, p_name, d_name, is_sc, d_type))
+                scatter_pair_input_ports.append((p_name, d_name))
+                if is_sc:
+                    scatter_in_ports.append(p_name)
+
+        steps: dict[str, dict] = {}
+
+        steps["s_sc"] = {
+            "displayName": "ScatterPairer",
+            "type": "scatter_pairer",
+            "outputs": {
+                "p_id": {"dataName": "id_ID"},
+                "p_group": {"dataName": "group_ID"},
+            },
+            "scatterPorts": scatter_in_ports,
+            "scatterMethod": scatter_method,
+        }
+
+        op_outputs: dict[str, dict] = {}
+        unpacked_pairs: list[tuple[str, str]] = []
+        env: dict[str, str] = {}
+
+        for param_name, _, _, is_sc, d_type in subwf_inputs_info:
+            p_sub = f"p_sub_{param_name}"
+            d_sub = f"sub_{param_name}_ID"
+            unpacked_pairs.append((p_sub, d_sub))
+            inner_t = _list_inner_type(d_type)
+            elem_type = inner_t if (is_sc and inner_t) else d_type
+            dependencies[d_sub] = {"type": elem_type}
+            op_outputs[p_sub] = {"dataName": d_sub}
+            env[param_name] = p_sub
+
+        steps["s_op"] = {
+            "displayName": "ScatterOpen",
+            "type": "scatter_open",
+            "outputs": op_outputs,
+        }
+
+        def _resolve_token(token: str) -> str:
+            p = Path(token)
+            if not p.is_absolute():
+                cand = (self.cwl_file.parent / p).resolve()
+                if cand.exists():
+                    return str(cand)
+            return token
+
+        def _resolve_glob(tool_obj, glob_pat: str | None) -> str | None:
+            if not glob_pat:
+                return None
+            if "$(" in glob_pat:
+                for inp in getattr(tool_obj, "inputs", []):
+                    pname = _local_name(inp.id).split("/")[-1]
+                    if f"inputs.{pname}" in glob_pat:
+                        dval = getattr(inp, "default", None)
+                        if dval is not None:
+                            return str(dval)
+            return glob_pat
+
+        worker_exec_traces: list[str] = []
+        for cstep in subwf_obj.steps:
+            cname = _local_name(cstep.id).split("/")[-1]
+            s_name = f"s_{cname}"
+            crun = cstep.run
+            c_obj = (
+                self.cwl_bundle[crun] if isinstance(crun, str) else crun
+            )
+
+            child_in_bindings: dict[str, str] = {}
+            for cin in cstep.in_:
+                cin_param = _local_name(cin.id).split("/")[-1]
+                csrc = cin.source
+                if isinstance(csrc, list):
+                    csrc = csrc[0] if csrc else None
+                csrc_str = _local_name(csrc) if csrc else None
+                if csrc_str:
+                    if csrc_str in env:
+                        child_in_bindings[cin_param] = env[csrc_str]
+                    elif "/" in csrc_str:
+                        step_part, _, port_part = csrc_str.rpartition("/")
+                        short_key = f"{step_part.split('/')[-1]}/{port_part}"
+                        if short_key in env:
+                            child_in_bindings[cin_param] = env[short_key]
+                    else:
+                        short_key = csrc_str.split("/")[-1]
+                        if short_key in env:
+                            child_in_bindings[cin_param] = env[short_key]
+
+            expr = getattr(c_obj, "expression", None)
+            if expr:
+                expr_inputs = {}
+                for tin in getattr(c_obj, "inputs", []):
+                    pname = _local_name(tin.id).split("/")[-1]
+                    if pname in child_in_bindings:
+                        expr_inputs[pname] = {
+                            "port": child_in_bindings[pname],
+                            "type": _cwl_type_to_swirl(tin.type_),
+                        }
+                expr_outputs = {}
+                step_outputs = {}
+                flow_outs = []
+                for tout in getattr(c_obj, "outputs", []):
+                    oname = _local_name(tout.id).split("/")[-1]
+                    out_port = f"p_{cname}_{oname}"
+                    out_data = f"{cname}_{oname}_ID"
+                    out_type = _cwl_type_to_swirl(tout.type_)
+                    dependencies[out_data] = {"type": out_type}
+                    expr_outputs[oname] = out_port
+                    step_outputs[out_port] = {"dataName": out_data}
+                    flow_outs.append(f"({out_port}, {out_data})")
+                    env[f"{cname}/{oname}"] = out_port
+                    env[oname] = out_port
+
+                steps[s_name] = {
+                    "displayName": cname,
+                    "expression": {
+                        "source": expr,
+                        "inputs": expr_inputs,
+                        "outputs": expr_outputs,
+                    },
+                    "outputs": step_outputs,
+                }
+                flow_in_tuples = []
+                for p in expr_inputs:
+                    in_port = child_in_bindings[p]
+                    d_found = in_port.replace("p_", "") + "_ID"
+                    for dp, dn in unpacked_pairs:
+                        if dp == in_port:
+                            d_found = dn
+                            break
+                    flow_in_tuples.append(f"({in_port}, {d_found})")
+
+                worker_exec_traces.append(
+                    f"exec({s_name}, {{{', '.join(flow_in_tuples)}}} -> {{{', '.join(flow_outs)}}}, {{{'{w}'}}})"
+                )
+            else:
+                c_scatter = getattr(cstep, "scatter", None)
+                if c_scatter:
+                    c_scatter_vars = [
+                        _local_name(x).split("/")[-1]
+                        for x in (
+                            c_scatter if isinstance(c_scatter, list) else [c_scatter]
+                        )
+                    ]
+                else:
+                    c_scatter_vars = []
+                c_scatter_method = (
+                    getattr(cstep, "scatterMethod", "dotproduct") or "dotproduct"
+                )
+
+                cmd_args: list[dict] = []
+                bc = getattr(c_obj, "baseCommand", None)
+                if isinstance(bc, list) and len(bc) > 1:
+                    for extra in bc[1:]:
+                        cmd_args.append({"value": _resolve_token(str(extra))})
+
+                tool_in_bindings: list[tuple[int, dict]] = []
+                flow_in_tuples = []
+                for tin in getattr(c_obj, "inputs", []):
+                    pname = _local_name(tin.id).split("/")[-1]
+                    b = getattr(tin, "inputBinding", None)
+                    if pname in child_in_bindings:
+                        in_port = child_in_bindings[pname]
+                        d_found = in_port.replace("p_", "") + "_ID"
+                        for dp, dn in unpacked_pairs:
+                            if dp == in_port:
+                                d_found = dn
+                                break
+                        for prev_s in steps.values():
+                            if in_port in prev_s.get("outputs", {}):
+                                d_found = prev_s["outputs"][in_port]["dataName"]
+                                break
+                        flow_in_tuples.append(f"({in_port}, {d_found})")
+                        if b:
+                            pos = b.position if b.position is not None else 999
+                            if b.prefix:
+                                tool_in_bindings.append((pos, {"value": b.prefix}))
+                            tool_in_bindings.append((pos, {"valueFrom": in_port}))
+                    elif getattr(tin, "default", None) is not None and b:
+                        pos = b.position if b.position is not None else 999
+                        if b.prefix:
+                            tool_in_bindings.append((pos, {"value": b.prefix}))
+                        tool_in_bindings.append((pos, {"value": str(tin.default)}))
+
+                tool_in_bindings.sort(key=lambda item: item[0])
+                cmd_args.extend([item[1] for item in tool_in_bindings])
+
+                step_outputs = {}
+                flow_outs = []
+                for tout in getattr(c_obj, "outputs", []):
+                    oname = _local_name(tout.id).split("/")[-1]
+                    out_port = f"p_{cname}_{oname}"
+                    out_data = f"{cname}_{oname}_ID"
+                    out_type = _cwl_type_to_swirl(tout.type_)
+                    if c_scatter_vars:
+                        out_type = f"list[{out_type}]"
+                    ob = getattr(tout, "outputBinding", None)
+                    glob_v = _resolve_glob(c_obj, ob.glob if ob else None)
+                    dependencies[out_data] = {"type": out_type}
+                    step_outputs[out_port] = {"dataName": out_data, "glob": glob_v}
+                    flow_outs.append(f"({out_port}, {out_data})")
+                    env[f"{cname}/{oname}"] = out_port
+                    env[oname] = out_port
+
+                base_cmd_0 = bc[0] if isinstance(bc, list) and bc else (bc or "")
+                step_entry = {
+                    "displayName": cname,
+                    "command": base_cmd_0,
+                    "arguments": cmd_args,
+                    "outputs": step_outputs,
+                }
+                if c_scatter_vars:
+                    step_entry["scatter"] = [
+                        child_in_bindings[v]
+                        for v in c_scatter_vars
+                        if v in child_in_bindings
+                    ]
+                    step_entry["scatterMethod"] = c_scatter_method
+
+                steps[s_name] = step_entry
+                worker_exec_traces.append(
+                    f"exec({s_name}, {{{', '.join(flow_in_tuples)}}} -> {{{', '.join(flow_outs)}}}, {{{'{w}'}}})"
+                )
+
+        subwf_output_ports = []
+        subwf_output_data_names = []
+        gather_output_specs = {}
+        gather_in_flow = []
+        gather_out_flow = []
+
+        for sout in subwf_obj.outputs:
+            out_id = _local_name(sout.id).split("/")[-1]
+            osrc = sout.outputSource
+            if isinstance(osrc, list):
+                osrc = osrc[0] if osrc else None
+            osrc_str = _local_name(osrc) if osrc else ""
+            step_part, _, port_part = osrc_str.rpartition("/")
+            src_key = f"{step_part.split('/')[-1]}/{port_part}"
+            res_port = env.get(src_key) or env.get(port_part)
+            res_data = None
+            for s in steps.values():
+                if res_port in s.get("outputs", {}):
+                    res_data = s["outputs"][res_port]["dataName"]
+                    break
+            if not res_data:
+                res_data = f"{out_id}_ID"
+
+            subwf_output_ports.append(res_port)
+            subwf_output_data_names.append(res_data)
+
+            gathered_port = f"p_out_{out_id}"
+            gathered_data = f"d_out_{out_id}"
+            elem_type = dependencies.get(res_data, {}).get("type", "file")
+            gathered_type = f"list[{elem_type}]"
+            dependencies[gathered_data] = {"type": gathered_type}
+
+            gather_output_specs[gathered_port] = {"dataName": gathered_data}
+            gather_in_flow.append(f"({res_port}, {res_data})")
+            gather_out_flow.append(f"({gathered_port}, {gathered_data})")
+            env[f"{subwf_name}/{out_id}"] = gathered_port
+            env[out_id] = gathered_port
+
+        steps["s_G"] = {
+            "displayName": "ScatterGather",
+            "type": "scatter_gather",
+            "outputs": gather_output_specs,
+        }
+
+        post_exec_traces = []
+        for step in self.cwl_obj.steps:
+            if step == subwf_step:
+                continue
+            pname = _local_name(step.id).split("/")[-1]
+            s_name = f"s_{pname}"
+            prun = step.run
+            ptool = (
+                self.cwl_bundle[prun] if isinstance(prun, str) else prun
+            )
+
+            p_in_bindings: list[tuple[int, dict]] = []
+            flow_in_tuples = []
+            for tin in getattr(ptool, "inputs", []):
+                param_n = _local_name(tin.id).split("/")[-1]
+                b = getattr(tin, "inputBinding", None)
+                matching_sin = next(
+                    (
+                        si
+                        for si in step.in_
+                        if _local_name(si.id).split("/")[-1] == param_n
+                    ),
+                    None,
+                )
+                if matching_sin:
+                    src = matching_sin.source
+                    if isinstance(src, list):
+                        src = src[0] if src else None
+                    src_str = _local_name(src) if src else ""
+                    step_p, _, port_p = src_str.rpartition("/")
+                    key1 = f"{step_p.split('/')[-1]}/{port_p}"
+                    in_port = env.get(key1) or env.get(port_p)
+                    if in_port:
+                        d_name = steps["s_G"]["outputs"][in_port]["dataName"]
+                        flow_in_tuples.append(f"({in_port}, {d_name})")
+                        if b:
+                            pos = b.position if b.position is not None else 999
+                            if b.prefix:
+                                p_in_bindings.append((pos, {"value": b.prefix}))
+                            p_in_bindings.append((pos, {"valueFrom": in_port}))
+
+            tool_args: list[dict] = []
+            p_bc = getattr(ptool, "baseCommand", None)
+            if isinstance(p_bc, list) and len(p_bc) > 1:
+                for extra in p_bc[1:]:
+                    tool_args.append({"value": _resolve_token(str(extra))})
+            p_in_bindings.sort(key=lambda item: item[0])
+            tool_args.extend([item[1] for item in p_in_bindings])
+
+            step_outputs = {}
+            flow_outs = []
+            for tout in getattr(ptool, "outputs", []):
+                oname = _local_name(tout.id).split("/")[-1]
+                out_port = f"p_{pname}_{oname}"
+                out_data = f"d_{pname}_{oname}"
+                out_type = _cwl_type_to_swirl(tout.type_)
+                ob = getattr(tout, "outputBinding", None)
+                glob_v = _resolve_glob(ptool, ob.glob if ob else None)
+                dependencies[out_data] = {"type": out_type}
+                step_outputs[out_port] = {"dataName": out_data, "glob": glob_v}
+                flow_outs.append(f"({out_port}, {out_data})")
+
+            base_cmd = p_bc[0] if isinstance(p_bc, list) and p_bc else (p_bc or "")
+            steps[s_name] = {
+                "displayName": pname,
+                "command": base_cmd,
+                "arguments": tool_args,
+                "outputs": step_outputs,
+            }
+            post_exec_traces.append(
+                f"exec({s_name}, {{{', '.join(flow_in_tuples)}}} -> {{{', '.join(flow_outs)}}}, {{l0}})"
+            )
+
+        worker_set_str = "{" + ", ".join(worker_names) + "}"
+        send_eof_workers = " |\n        ".join(
+            [f"send(eof -> p_id, l0, {w})" for w in worker_names]
+        )
+
+        dataset_str = ", ".join([f"({p}, {d})" for p, d in dataset_pairs])
+        scatter_in_str = ", ".join(
+            [f"({p}, {d})" for p, d in scatter_pair_input_ports]
+        )
+
+        recv_workers_branches = []
+        for w in worker_names:
+            recv_res = " . ".join(
+                [
+                    f"recv({d} -> {p}, {w}, l0)"
+                    for p, d in zip(subwf_output_ports, subwf_output_data_names)
+                ]
+            )
+            recv_eof = " . ".join(
+                [f"recv(eof -> {p}, {w}, l0)" for p in subwf_output_ports]
+            )
+            recv_workers_branches.append(
+                f"!(\n      ({recv_res})\n      +\n      ({recv_eof})\n    )"
+            )
+        recv_workers_str = " |\n    ".join(recv_workers_branches)
+
+        post_trace_str = ""
+        if post_exec_traces:
+            post_trace_str = " .\n  " + " .\n  ".join(post_exec_traces)
+
+        l0_trace = f"""<l0, {{{dataset_str}}},
+  exec(s_sc, {{{scatter_in_str}}} -> {{(p_id, id_ID), (p_group, group_ID)}}, {{l0}})
+  .
+  (
+    !(
+      (
+        move(id_ID -> p_id, l0, {worker_set_str}) .
+        move(group_ID -> p_group, l0, {worker_set_str})
+      )
+      +
+      (
+        {send_eof_workers}
+      )
+    )
+  )
+  .
+  (
+    {recv_workers_str}
+  )
+  .
+  exec(s_G, {{{', '.join(gather_in_flow)}}} -> {{{', '.join(gather_out_flow)}}}, {{l0}}){post_trace_str}
+>"""
+
+        unpacked_out_str = ", ".join([f"({p}, {d})" for p, d in unpacked_pairs])
+        inner_worker_trace_body = " .\n      ".join(worker_exec_traces)
+
+        worker_traces: list[str] = []
+        for w in worker_names:
+            send_outs = " .\n      ".join(
+                [
+                    f"send({d} -> {p}, {w}, l0)"
+                    for p, d in zip(subwf_output_ports, subwf_output_data_names)
+                ]
+            )
+            send_eofs = " .\n      ".join(
+                [f"send(eof -> {p}, {w}, l0)" for p in subwf_output_ports]
+            )
+            w_trace_formatted = inner_worker_trace_body.replace("{w}", w)
+            w_trace = f"""<{w}, {{}},
+  !(
+    (
+      recv(id_ID -> p_id, l0, {w}) .
+      recv(group_ID -> p_group, l0, {w}) .
+      exec(s_op, {{(p_group, group_ID)}} -> {{{unpacked_out_str}}}, {{{w}}}) .
+      {w_trace_formatted} .
+      {send_outs}
+    )
+    +
+    (
+      recv(eof -> p_id, l0, {w}) .
+      {send_eofs}
+    )
+  )
+>"""
+            worker_traces.append(w_trace)
+
+        full_swirl_trace = l0_trace + " |\n\n" + " |\n\n".join(worker_traces) + "\n"
+        workflow_output.write(full_swirl_trace)
+
+        YAML().dump(
+            {
+                "version": "v1.0",
+                "steps": steps,
+                "locations": locations,
+                "dependencies": dependencies,
+            },
+            metadata_output,
+        )
+
+    def _translate_scatter(
+        self, workflow_output: TextIO, metadata_output: TextIO
+    ) -> None:
+        effective_steps = self._flatten_leaf_steps()
+        scatter_eff = next((s for s in effective_steps if s.scatter), None)
+        if not scatter_eff:
+            super().translate(workflow_output, metadata_output)
+            return
+
+        post_effs = [s for s in effective_steps if s != scatter_eff]
+
+        # 1. Parse deployments & worker count
+        first_wf = next(iter(self.streamflow_config.get("workflows", {}).values()))
+        bindings = first_wf.get("bindings", [])
+        sf_deployments = self.streamflow_config.get("deployments", {})
+
+        coord_dep_name = "l0"
+        for b in bindings:
+            if b.get("step") == "/":
+                target = b.get("target") or {}
+                if target.get("deployment"):
+                    coord_dep_name = target["deployment"]
+
+        worker_binding = None
+        for b in bindings:
+            step_p = b.get("step", "").lstrip("/")
+            if step_p == scatter_eff.path or step_p == scatter_eff.display_name:
+                worker_binding = b
+                break
+
+        worker_targets: list[dict] = []
+        if worker_binding:
+            raw_target = worker_binding.get("target")
+            if isinstance(raw_target, list):
+                worker_targets = raw_target
+            elif isinstance(raw_target, dict):
+                dep_name = raw_target.get("deployment", "workers")
+                loc_cnt = raw_target.get("locations")
+                dep_cfg = sf_deployments.get(dep_name, {})
+                nodes = dep_cfg.get("config", {}).get("nodes", [])
+                if loc_cnt is not None:
+                    count = int(loc_cnt)
+                elif nodes:
+                    count = len(nodes)
+                else:
+                    count = 3
+                for idx in range(count):
+                    worker_targets.append({"deployment": dep_name, "index": idx})
+        if not worker_targets:
+            worker_targets = [
+                {"deployment": "workers", "index": 0},
+                {"deployment": "workers", "index": 1},
+                {"deployment": "workers", "index": 2},
+            ]
+
+        def _resolve_hostname(dep_cfg: dict) -> str:
+            nodes = dep_cfg.get("config", {}).get("nodes", [])
+            return nodes[0] if nodes else "127.0.0.1"
+
+        def _resolve_connection_type(dep_cfg: dict) -> str | None:
+            t = dep_cfg.get("type", "local")
+            if t == "ssh":
+                return "ssh"
+            if t == "slurm":
+                return "slurm"
+            return None
+
+        def _resolve_hostname_transitive(dep_cfg: dict) -> str:
+            t = dep_cfg.get("type", "local")
+            if t == "slurm":
+                wraps = dep_cfg.get("wraps")
+                if wraps and wraps in sf_deployments:
+                    return _resolve_hostname_transitive(sf_deployments[wraps])
+            return _resolve_hostname(dep_cfg)
+
+        def _resolve_ssh_config_transitive(dep_cfg: dict) -> dict:
+            t = dep_cfg.get("type", "local")
+            if t == "slurm":
+                wraps = dep_cfg.get("wraps")
+                if wraps and wraps in sf_deployments:
+                    return _resolve_ssh_config_transitive(sf_deployments[wraps])
+                return {}
+            if t != "ssh":
+                return {}
+            config = dep_cfg.get("config", {}) or {}
+            return {
+                k: v
+                for k, v in {
+                    "username": config.get("username"),
+                    "ssh_key": config.get("sshKey"),
+                    "check_host_key": config.get("checkHostKey"),
+                }.items()
+                if v is not None
+            }
+
+        locations: dict[str, dict] = {}
+
+        # Coordinator location l0
+        coord_cfg = sf_deployments.get(coord_dep_name, {})
+        coord_loc: dict = {}
+        coord_dep: dict = {}
+        conn = _resolve_connection_type(coord_cfg)
+        if conn:
+            coord_dep["type"] = conn
+        coord_dep["hostname"] = _resolve_hostname_transitive(coord_cfg)
+        coord_dep["port"] = coord_cfg.get("port", 35050)
+        if coord_cfg.get("workdir"):
+            coord_dep["workdir"] = coord_cfg["workdir"]
+        coord_ssh = _resolve_ssh_config_transitive(coord_cfg)
+        if coord_ssh.get("username"):
+            coord_dep["username"] = coord_ssh["username"]
+        if coord_ssh.get("ssh_key"):
+            coord_dep["sshKey"] = coord_ssh["ssh_key"]
+        if coord_ssh.get("check_host_key") is not None:
+            coord_dep["checkHostKey"] = coord_ssh["check_host_key"]
+        coord_loc["deployment"] = coord_dep
+        locations["l0"] = coord_loc
+
+        # Worker locations l1, l2, ...
+        worker_names: list[str] = []
+        for i, wt in enumerate(worker_targets):
+            w_name = f"l{i + 1}"
+            worker_names.append(w_name)
+            w_dep_name = wt.get("deployment", "workers")
+            w_cfg = sf_deployments.get(w_dep_name, {})
+            w_loc: dict = {}
+            w_dep: dict = {}
+            w_conn = _resolve_connection_type(w_cfg)
+            if w_conn:
+                w_dep["type"] = w_conn
+            nodes = w_cfg.get("config", {}).get("nodes", [])
+            w_idx = wt.get("index", i)
+            if nodes and w_idx < len(nodes):
+                w_dep["hostname"] = nodes[w_idx]
+            else:
+                w_dep["hostname"] = _resolve_hostname_transitive(w_cfg)
+            base_port = w_cfg.get("port", 35051)
+            w_dep["port"] = base_port + i
+            if w_cfg.get("workdir"):
+                w_dep["workdir"] = w_cfg["workdir"]
+            w_ssh = _resolve_ssh_config_transitive(w_cfg)
+            if w_ssh.get("username"):
+                w_dep["username"] = w_ssh["username"]
+            if w_ssh.get("ssh_key"):
+                w_dep["sshKey"] = w_ssh["ssh_key"]
+            if w_ssh.get("check_host_key") is not None:
+                w_dep["checkHostKey"] = w_ssh["check_host_key"]
+            w_loc["deployment"] = w_dep
+            locations[w_name] = w_loc
+
+        # 2. Workflow inputs & settings
+        settings_rel = first_wf.get("config", {}).get("settings")
+        settings_values = {}
+        if settings_rel:
+            settings_path = (self.cwl_file.parent / settings_rel).resolve()
+            if settings_path.exists():
+                with open(settings_path) as f:
+                    settings_values = YAML(typ="safe").load(f) or {}
+
+        dependencies: dict[str, dict] = {}
+        dependencies["id_ID"] = {"type": "file"}
+        dependencies["group_ID"] = {"type": "file"}
+        dependencies["res_ID"] = {"type": "file"}
+        dependencies["d_out"] = {"type": "list[file]"}
+        dependencies["eof"] = {"type": "string"}
+
+        def _coerce(v, value_type: str):
+            if isinstance(v, dict) and "path" in v:
+                p = Path(v["path"])
+                if not p.is_absolute():
+                    p = (self.cwl_file.parent / p).resolve()
+                return str(p)
+            inner = _list_inner_type(value_type)
+            if inner is not None:
+                return [_coerce(item, inner) for item in (v or [])]
+            if value_type == "int":
+                return int(v)
+            if value_type == "bool":
+                return v if isinstance(v, bool) else str(v).lower() == "true"
+            return str(v)
+
+        dataset_pairs: list[tuple[str, str]] = []
+        scatter_input_pairs: list[tuple[str, str]] = []
+
+        in_counter = 1
+        source_to_in_pair: dict[str, tuple[str, str]] = {}
+        for wf_inp in self.cwl_obj.inputs:
+            inp_name = _local_name(wf_inp.id)
+            d_name = f"d_in{in_counter}"
+            p_name = f"p_in{in_counter}"
+            in_counter += 1
+            data_type = _cwl_type_to_swirl(wf_inp.type_)
+            raw_val = settings_values.get(inp_name, [])
+            coerced_val = _coerce(raw_val, data_type)
+            dependencies[d_name] = {
+                "type": data_type,
+                "value": coerced_val,
+            }
+            dataset_pairs.append((p_name, d_name))
+            source_to_in_pair[inp_name] = (p_name, d_name)
+
+        for param_name, src_key in scatter_eff.inputs:
+            if src_key and src_key in source_to_in_pair:
+                scatter_input_pairs.append(source_to_in_pair[src_key])
+
+        # 3. Setup steps
+        steps: dict[str, dict] = {}
+
+        # s_sc
+        steps["s_sc"] = {
+            "displayName": "ScatterPairer",
+            "type": "scatter_pairer",
+            "outputs": {
+                "p_id": {"dataName": "id_ID"},
+                "p_group": {"dataName": "group_ID"},
+            },
+        }
+        if scatter_eff.scatter_method:
+            steps["s_sc"]["scatterMethod"] = scatter_eff.scatter_method
+
+        # s_op
+        op_outputs: dict[str, dict] = {}
+        unpacked_ports: list[str] = []
+        unpacked_port_map: dict[str, str] = {}
+        unpacked_pairs: list[tuple[str, str]] = []
+        for k, (param_name, _) in enumerate(scatter_eff.inputs):
+            char_id = chr(ord("a") + k)
+            p_name = f"p_{char_id}"
+            d_name = f"{char_id}_ID"
+            unpacked_ports.append(p_name)
+            unpacked_port_map[param_name] = p_name
+            unpacked_pairs.append((p_name, d_name))
+            dependencies[d_name] = {"type": "file"}
+            op_outputs[p_name] = {"dataName": d_name}
+
+        steps["s_op"] = {
+            "displayName": "ScatterOpen",
+            "type": "scatter_open",
+            "outputs": op_outputs,
+        }
+
+        def _resolve_token(token: str) -> str:
+            p = Path(token)
+            if not p.is_absolute():
+                candidate = (self.cwl_file.parent / p).resolve()
+                if candidate.exists():
+                    return str(candidate)
+            return token
+
+        def _resolve_glob(tool_obj, glob_pat: str | None) -> str | None:
+            if not glob_pat:
+                return None
+            if "$(" in glob_pat:
+                for inp in getattr(tool_obj, "inputs", []):
+                    pname = _local_name(inp.id).split("/")[-1]
+                    if f"inputs.{pname}" in glob_pat:
+                        dval = getattr(inp, "default", None)
+                        if dval is not None:
+                            return str(dval)
+            return glob_pat
+
+        # s_work
+        work_tool = scatter_eff.tool_obj
+        work_args: list[dict] = []
+        bc = getattr(work_tool, "baseCommand", None)
+        if isinstance(bc, list) and len(bc) > 1:
+            for extra in bc[1:]:
+                work_args.append({"value": _resolve_token(str(extra))})
+
+        tool_in_bindings: list[tuple[int, dict]] = []
+        for tin in getattr(work_tool, "inputs", []):
+            pname = _local_name(tin.id).split("/")[-1]
+            b = getattr(tin, "inputBinding", None)
+            if not b:
+                continue
+            pos = b.position if b.position is not None else 999
+            if pname in ("id", "p_id"):
+                if b.prefix:
+                    tool_in_bindings.append((pos, {"value": b.prefix}))
+                tool_in_bindings.append((pos, {"valueFrom": "p_id"}))
+            elif pname in unpacked_port_map:
+                if b.prefix:
+                    tool_in_bindings.append((pos, {"value": b.prefix}))
+                tool_in_bindings.append(
+                    (pos, {"valueFrom": unpacked_port_map[pname]})
+                )
+            elif getattr(tin, "default", None) is not None:
+                if b.prefix:
+                    tool_in_bindings.append((pos, {"value": b.prefix}))
+                tool_in_bindings.append((pos, {"value": str(tin.default)}))
+
+        tool_in_bindings.sort(key=lambda item: item[0])
+        work_args.extend([item[1] for item in tool_in_bindings])
+
+        work_glob = "result.txt"
+        for tout in getattr(work_tool, "outputs", []):
+            ob = getattr(tout, "outputBinding", None)
+            if ob and ob.glob:
+                work_glob = _resolve_glob(work_tool, ob.glob) or "result.txt"
+                break
+
+        steps["s_work"] = {
+            "displayName": scatter_eff.display_name,
+            "command": scatter_eff.command,
+            "arguments": work_args,
+            "outputs": {
+                "p_res": {
+                    "dataName": "res_ID",
+                    "glob": work_glob,
+                }
+            },
+        }
+
+        # s_G
+        steps["s_G"] = {
+            "displayName": "ScatterGather",
+            "type": "scatter_gather",
+            "outputs": {
+                "p_out": {
+                    "dataName": "d_out",
+                }
+            },
+        }
+
+        # Post-scatter steps (e.g. analyze)
+        post_exec_traces: list[str] = []
+        for post_idx, peff in enumerate(post_effs):
+            s_name = f"s_post{post_idx if len(post_effs) > 1 else ''}"
+            ptool = peff.tool_obj
+            p_args: list[dict] = []
+            p_bc = getattr(ptool, "baseCommand", None)
+            if isinstance(p_bc, list) and len(p_bc) > 1:
+                for extra in p_bc[1:]:
+                    p_args.append({"value": _resolve_token(str(extra))})
+
+            p_in_bindings: list[tuple[int, dict]] = []
+            for tin in getattr(ptool, "inputs", []):
+                pname = _local_name(tin.id).split("/")[-1]
+                b = getattr(tin, "inputBinding", None)
+                if not b:
+                    continue
+                pos = b.position if b.position is not None else 999
+                is_scatter_out = any(
+                    src and src.startswith(f"{scatter_eff.path}/")
+                    for pin_name, src in peff.inputs
+                    if pin_name == pname
+                )
+                if is_scatter_out:
+                    if b.prefix:
+                        p_in_bindings.append((pos, {"value": b.prefix}))
+                    p_in_bindings.append((pos, {"valueFrom": "p_out"}))
+                elif getattr(tin, "default", None) is not None:
+                    if b.prefix:
+                        p_in_bindings.append((pos, {"value": b.prefix}))
+                    p_in_bindings.append((pos, {"value": str(tin.default)}))
+
+            p_in_bindings.sort(key=lambda item: item[0])
+            p_args.extend([item[1] for item in p_in_bindings])
+
+            p_glob = "analysis_report.txt"
+            p_out_port = "p_report"
+            p_out_data = "d_report"
+            for tout in getattr(ptool, "outputs", []):
+                ob = getattr(tout, "outputBinding", None)
+                if ob and ob.glob:
+                    p_glob = _resolve_glob(ptool, ob.glob) or "analysis_report.txt"
+                    break
+
+            steps[s_name] = {
+                "displayName": peff.display_name,
+                "command": peff.command,
+                "arguments": p_args,
+                "outputs": {
+                    p_out_port: {
+                        "dataName": p_out_data,
+                        "glob": p_glob,
+                    }
+                },
+            }
+            dependencies[p_out_data] = {"type": "file"}
+            post_exec_traces.append(
+                f"exec({s_name}, {{(p_out, d_out)}} -> {{({p_out_port}, {p_out_data})}}, {{l0}})"
+            )
+
+        # 4. Generate SWIRL trace string
+        worker_set_str = "{" + ", ".join(worker_names) + "}"
+        send_eof_workers = " |\n        ".join(
+            [f"send(eof -> p_id, l0, {w})" for w in worker_names]
+        )
+        recv_workers = " |\n    ".join(
+            [
+                f"!(recv(res_ID -> p_res, {w}, l0) + recv(eof -> p_res, {w}, l0))"
+                for w in worker_names
+            ]
+        )
+
+        dataset_str = ", ".join([f"({p}, {d})" for p, d in dataset_pairs])
+        scatter_in_str = ", ".join([f"({p}, {d})" for p, d in scatter_input_pairs])
+
+        post_trace_str = ""
+        if post_exec_traces:
+            post_trace_str = " .\n  " + " .\n  ".join(post_exec_traces)
+
+        # Controller l0
+        l0_trace = f"""<l0, {{{dataset_str}}},
+  exec(s_sc, {{{scatter_in_str}}} -> {{(p_id, id_ID), (p_group, group_ID)}}, {{l0}})
+  .
+  (
+    !(
+      (
+        move(id_ID -> p_id, l0, {worker_set_str}) .
+        move(group_ID -> p_group, l0, {worker_set_str})
+      )
+      +
+      (
+        {send_eof_workers}
+      )
+    )
+  )
+  .
+  (
+    {recv_workers}
+  )
+  .
+  exec(s_G, {{(p_res, res_ID)}} -> {{(p_out, d_out)}}, {{l0}}){post_trace_str}
+>"""
+
+        # Workers
+        unpacked_out_str = ", ".join([f"({p}, {d})" for p, d in unpacked_pairs])
+        work_in_str = "{(p_id, id_ID), " + ", ".join(
+            [f"({p}, {d})" for p, d in unpacked_pairs]
+        ) + "}"
+
+        worker_traces: list[str] = []
+        for w in worker_names:
+            w_trace = f"""<{w}, {{}},
+  !(
+    (
+      recv(id_ID -> p_id, l0, {w}) .
+      recv(group_ID -> p_group, l0, {w}) .
+      exec(s_op, {{(p_group, group_ID)}} -> {{{unpacked_out_str}}}, {{{w}}}) .
+      exec(s_work, {work_in_str} -> {{(p_res, res_ID)}}, {{{w}}}) .
+      send(res_ID -> p_res, {w}, l0)
+    )
+    +
+    (
+      recv(eof -> p_id, l0, {w}) .
+      send(eof -> p_res, {w}, l0)
+    )
+  )
+>"""
+            worker_traces.append(w_trace)
+
+        full_swirl_trace = l0_trace + " |\n\n" + " |\n\n".join(worker_traces) + "\n"
+        workflow_output.write(full_swirl_trace)
+
+        # 5. Output metadata YAML
+        YAML().dump(
+            {
+                "version": "v1.0",
+                "steps": steps,
+                "locations": locations,
+                "dependencies": dependencies,
+            },
+            metadata_output,
+        )

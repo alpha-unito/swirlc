@@ -557,18 +557,140 @@ def _recv_value(sock: socket.socket, data_type: str) -> Any:
         return payload.decode("utf-8")
 """
 
-exec_function = """def _exec(step_name: str, step_display_name: str, input_port_names: MutableSequence[str], output_specs: MutableSequence[tuple[str, str, str | None]], cmd: str, args: MutableSequence[tuple[str,bool]]):
+exec_function = """def _flatten_args(val: Any) -> list[Any]:
+    if isinstance(val, (list, tuple)):
+        flat = []
+        for item in val:
+            flat.extend(_flatten_args(item))
+        return flat
+    return [val]
+
+
+def _exec(step_name: str, step_display_name: str, input_port_names: MutableSequence[str], output_specs: MutableSequence[tuple[str, str, str | None]], cmd: str, args: MutableSequence[tuple[str,bool]], scatter_info: dict | None = None):
     for port_name in input_port_names:
         available_port_data[port_name].wait()
+
+    def _quote_arg(value: Any) -> str:
+        return shlex.quote(str(value))
+
+    scatter_ports = scatter_info.get("scatter_ports", []) if scatter_info else []
+    if scatter_ports:
+        scatter_in_ports = [
+            p for p in input_port_names
+            if p in scatter_ports or any(p.endswith(f"_{s}") or p == s for s in scatter_ports)
+        ]
+        if not scatter_in_ports:
+            scatter_in_ports = [input_port_names[0]]
+
+        port_items = []
+        for in_p in scatter_in_ports:
+            val = ports[in_p]
+            port_items.append(list(val) if isinstance(val, (list, tuple)) else [val])
+
+        import itertools
+        scatter_method = scatter_info.get("scatter_method", "dotproduct") or "dotproduct"
+        if scatter_method == "flat_crossproduct":
+            combos = list(itertools.product(*port_items)) if port_items else []
+        else:
+            cnt = min(len(it) for it in port_items) if port_items else 0
+            combos = [tuple(port_items[p_idx][idx] for p_idx in range(len(port_items))) for idx in range(cnt)]
+
+        base_workdir = os.path.join(SCRATCH_DIR, f"exec_{step_name}_{uuid.uuid4()}")
+        os.makedirs(base_workdir, exist_ok=True)
+        all_outputs = {op_name: [] for op_name, _, _ in output_specs}
+
+        for combo_idx, combo in enumerate(combos):
+            iter_workdir = os.path.join(base_workdir, f"iter_{combo_idx}")
+            os.makedirs(iter_workdir, exist_ok=True)
+            iter_ports = dict(ports)
+            for sp, sval in zip(scatter_in_ports, combo):
+                iter_ports[sp] = sval
+
+            for port_name in input_port_names:
+                value = iter_ports[port_name]
+                flat_elems = _flatten_args(value)
+                for idx, elem in enumerate(flat_elems):
+                    if not elem or not isinstance(elem, (str, bytes, os.PathLike)):
+                        continue
+                    elem_path = os.fspath(elem)
+                    if not os.path.exists(elem_path):
+                        continue
+                    target_name = os.path.basename(os.path.normpath(elem_path))
+                    if not target_name:
+                        continue
+                    dest_name = f"{idx}_{target_name}" if len(flat_elems) > 1 else target_name
+                    dest_path = os.path.join(iter_workdir, dest_name)
+                    if len(flat_elems) <= 1 and os.path.exists(dest_path):
+                        dest_path = os.path.join(iter_workdir, f"{idx}_{target_name}")
+                    try:
+                        os.symlink(os.path.abspath(elem_path), dest_path)
+                    except FileExistsError:
+                        pass
+
+            cmd_parts = [cmd]
+            for elem, is_data in args:
+                if is_data:
+                    val = iter_ports[elem]
+                    if isinstance(val, (list, tuple)):
+                        cmd_parts.append(" ".join(_quote_arg(v) for v in _flatten_args(val)))
+                    else:
+                        cmd_parts.append(_quote_arg(val))
+                else:
+                    cmd_parts.append(elem)
+            iter_cmd = " ".join(cmd_parts)
+            non_glob_outputs = [
+                g_regex for _, d_type, g_regex in output_specs
+                if g_regex and not any(c in g_regex for c in "*?[]") and d_type in ("string", "int", "bool", "file")
+            ]
+            if len(non_glob_outputs) == 1 and not (">" in iter_cmd or "|" in iter_cmd) and non_glob_outputs[0] not in iter_cmd:
+                iter_cmd = f"{iter_cmd} > {shlex.quote(non_glob_outputs[0])}"
+
+            if logger.isEnabledFor(logging.INFO):
+                logger.info(f"Step {step_display_name}-{step_name}[iter {combo_idx}] executes '{iter_cmd}'")
+            res_proc = subprocess.run(iter_cmd, capture_output=True, shell=True, cwd=iter_workdir)
+            if res_proc.returncode != 0:
+                raise Exception(f"Step {step_display_name}-{step_name}[iter {combo_idx}] failed with exit status {res_proc.returncode}: {res_proc.stderr.decode('utf-8')}")
+
+            for output_port_name, data_type, glob_regex in output_specs:
+                matched = [path for path in glob.glob(os.path.join(iter_workdir, glob_regex or "*"))]
+                if data_type in ("file", "directory"):
+                    if len(matched) == 0:
+                        raise FileNotFoundError(f"Step {step_display_name}-{step_name} produced no file matching: {glob_regex}")
+                    elif len(matched) == 1:
+                        all_outputs[output_port_name].append(os.path.join(iter_workdir, matched[0]))
+                    else:
+                        all_outputs[output_port_name].append([os.path.join(iter_workdir, r) for r in matched])
+                elif data_type in ("string", "int", "bool"):
+                    if glob_regex and matched:
+                        with open(matched[0]) as fd:
+                            val_str = fd.read().strip()
+                    else:
+                        val_str = res_proc.stdout.decode().strip()
+                    if data_type == "int":
+                        val = int(val_str) if val_str else 0
+                    elif data_type == "bool":
+                        val = val_str.lower() in ("1", "true", "yes", "on")
+                    else:
+                        val = val_str
+                    all_outputs[output_port_name].append(val)
+                else:
+                    all_outputs[output_port_name].append(matched[0] if matched else "")
+
+        for output_port_name, _, _ in output_specs:
+            ports[output_port_name] = all_outputs[output_port_name]
+            available_port_data[output_port_name].set()
+            if logger.isEnabledFor(logging.INFO):
+                logger.info(f"Step {step_display_name}-{step_name} scattered outputs ({len(ports[output_port_name])}): {ports[output_port_name]}")
+        return
+
     workdir = os.path.join(SCRATCH_DIR, f"exec_{step_name}_{uuid.uuid4()}")
     os.makedirs(workdir, exist_ok=True)
 
     for port_name in input_port_names:
         value = ports[port_name]
-        # A list input (e.g. list[file]) symlinks each element into the workdir.
-        is_list = isinstance(value, list)
-        for idx, elem in enumerate(value if is_list else [value]):
-            if not elem:
+        flat_elems = _flatten_args(value)
+        for idx, elem in enumerate(flat_elems):
+            if not elem or not isinstance(elem, (str, bytes, os.PathLike)):
                 continue
             elem_path = os.fspath(elem)
             if not os.path.exists(elem_path):
@@ -576,30 +698,32 @@ exec_function = """def _exec(step_name: str, step_display_name: str, input_port_
             target_name = os.path.basename(os.path.normpath(elem_path))
             if not target_name:
                 continue
-            dest_name = f"{idx}_{target_name}" if is_list else target_name
+            dest_name = f"{idx}_{target_name}" if len(flat_elems) > 1 else target_name
             dest_path = os.path.join(workdir, dest_name)
-            if not is_list and os.path.exists(dest_path):
+            if len(flat_elems) <= 1 and os.path.exists(dest_path):
                 dest_path = os.path.join(workdir, f"{idx}_{target_name}")
             try:
                 os.symlink(os.path.abspath(elem_path), dest_path)
             except FileExistsError:
                 pass
 
-    def _quote_arg(value: Any) -> str:
-        return shlex.quote(str(value))
-
-    # A list argument expands to its space-joined elements on the command line.
-    cmd = " ".join([cmd, *(
-        (" ".join(_quote_arg(e) for e in ports[elem]) if isinstance(ports[elem], list) else _quote_arg(ports[elem])) if is_data else elem
-        for elem, is_data in args
-    )])
+    cmd_parts = [cmd]
+    for elem, is_data in args:
+        if is_data:
+            val = ports[elem]
+            if isinstance(val, (list, tuple)):
+                cmd_parts.append(" ".join(_quote_arg(v) for v in _flatten_args(val)))
+            else:
+                cmd_parts.append(_quote_arg(val))
+        else:
+            cmd_parts.append(elem)
+    cmd = " ".join(cmd_parts)
     non_glob_outputs = [
         g_regex for _, d_type, g_regex in output_specs
         if g_regex and not any(c in g_regex for c in "*?[]") and d_type in ("string", "int", "bool", "file")
     ]
     if len(non_glob_outputs) == 1 and not (">" in cmd or "|" in cmd) and non_glob_outputs[0] not in cmd:
         cmd = f"{cmd} > {shlex.quote(non_glob_outputs[0])}"
-
 
     if logger.isEnabledFor(logging.INFO):
         logger.info(f"Step {step_display_name}-{step_name} executes command '{cmd}'")
@@ -677,7 +801,7 @@ def _peek_is_eof(src: str, port: str) -> bool:
         return is_eof
 """
 
-scatter_special_helpers = """def _scatter_pair(step_name: str, step_display_name: str, input_ports: list[str], output_specs: list[tuple[str, str, str]]):
+scatter_special_helpers = """def _scatter_pair(step_name: str, step_display_name: str, input_ports: list[str], output_specs: list[tuple[str, str, str]], scatter_method: str = "dotproduct", scatter_ports: list[str] | None = None):
     for in_p in input_ports:
         available_port_data[in_p].wait()
 
@@ -687,8 +811,13 @@ scatter_special_helpers = """def _scatter_pair(step_name: str, step_display_name
     os.makedirs(tuple_dir, exist_ok=True)
     os.makedirs(id_dir, exist_ok=True)
 
+    if scatter_ports:
+        scatter_in_ports = [p for p in input_ports if p in scatter_ports]
+    else:
+        scatter_in_ports = list(input_ports)
+
     port_items = []
-    for in_p in input_ports:
+    for in_p in scatter_in_ports:
         val = ports[in_p]
         if isinstance(val, (list, tuple)):
             items = list(val)
@@ -710,39 +839,61 @@ scatter_special_helpers = """def _scatter_pair(step_name: str, step_display_name
             items = [val]
         port_items.append(items)
 
-    count = min(len(it) for it in port_items) if port_items else 0
+    import itertools
+    if scatter_method == "flat_crossproduct":
+        combinations = list(itertools.product(*port_items)) if port_items else []
+    else:
+        count = min(len(it) for it in port_items) if port_items else 0
+        combinations = [tuple(port_items[p_idx][idx] for p_idx in range(len(port_items))) for idx in range(count)]
+
     id_list = []
     tuple_list = []
 
-    for idx in range(count):
+    for idx, combo in enumerate(combinations):
         id_file = os.path.join(id_dir, f"id_{idx:02d}.txt")
         with open(id_file, "w", encoding="utf-8") as f:
             f.write(f"{idx}\\n")
         id_list.append(id_file)
 
         components = []
-        for p_idx, p_name in enumerate(input_ports):
-            item_path = port_items[p_idx][idx]
-            if isinstance(item_path, str) and os.path.isfile(item_path):
-                with open(item_path, "r", encoding="utf-8", errors="replace") as f:
-                    content = f.read()
-                basename = os.path.basename(item_path)
+        for p_name in input_ports:
+            if p_name in scatter_in_ports:
+                item_val = combo[scatter_in_ports.index(p_name)]
             else:
-                content = str(item_path)
-                basename = f"item_{p_name}"
-            components.append({
-                "port": p_name,
-                "name": basename,
-                "content": content,
-                "path": item_path if isinstance(item_path, str) else None,
-            })
+                item_val = ports[p_name]
+
+            if isinstance(item_val, str) and os.path.isfile(item_val):
+                with open(item_val, "r", encoding="utf-8", errors="replace") as f:
+                    content = f.read()
+                basename = os.path.basename(item_val)
+                components.append({
+                    "port": p_name,
+                    "name": basename,
+                    "content": content,
+                    "path": item_val,
+                    "value": item_val,
+                })
+            elif isinstance(item_val, (list, tuple)):
+                components.append({
+                    "port": p_name,
+                    "name": p_name,
+                    "value": list(item_val),
+                    "content": json.dumps(item_val),
+                })
+            else:
+                components.append({
+                    "port": p_name,
+                    "name": p_name,
+                    "value": item_val,
+                    "content": str(item_val),
+                })
 
         tuple_payload = {
             "id": idx,
             "components": components,
         }
         for c_idx, c in enumerate(components):
-            tuple_payload[f"content_{chr(ord('a') + c_idx)}"] = c["content"]
+            tuple_payload[f"content_{chr(ord('a') + c_idx)}"] = c.get("content", "")
             tuple_payload[f"name_{chr(ord('a') + c_idx)}"] = c["name"]
 
         tuple_file = os.path.join(tuple_dir, f"tuple_{idx:02d}.json")
@@ -772,40 +923,44 @@ def _scatter_open(step_name: str, step_display_name: str, input_ports: list[str]
     workdir = tempfile.mkdtemp(prefix=f"scatter_open_{step_name}_", dir=SCRATCH_DIR)
     for idx, (out_p, d_type, g_regex) in enumerate(output_specs):
         comp = components[idx] if idx < len(components) else {}
-        filename = g_regex or comp.get("name") or f"component_{idx}.txt"
-        out_path = os.path.join(workdir, os.path.basename(filename))
-        if "content" in comp:
-            content = comp["content"]
-        elif f"content_{chr(ord('a') + idx)}" in data:
-            content = data[f"content_{chr(ord('a') + idx)}"]
+        val = comp.get("value")
+        if d_type == "file" and comp.get("path") and os.path.isfile(comp.get("path")):
+            ports[out_p] = comp["path"]
+        elif d_type.startswith("list[") or isinstance(val, (list, dict, int, bool)):
+            ports[out_p] = val
+        elif "content" in comp and comp["content"]:
+            filename = g_regex or comp.get("name") or f"component_{idx}.txt"
+            out_path = os.path.join(workdir, os.path.basename(filename))
+            with open(out_path, "w", encoding="utf-8") as f:
+                f.write(comp["content"])
+            ports[out_p] = out_path
+        elif val is not None:
+            ports[out_p] = val
         else:
-            content = ""
-        with open(out_path, "w", encoding="utf-8") as f:
-            f.write(content)
-        ports[out_p] = out_path
+            filename = g_regex or comp.get("name") or f"component_{idx}.txt"
+            out_path = os.path.join(workdir, os.path.basename(filename))
+            with open(out_path, "w", encoding="utf-8") as f:
+                f.write("")
+            ports[out_p] = out_path
         available_port_data[out_p].set()
         if logger.isEnabledFor(logging.INFO):
-            logger.info(f"Special scatter open {step_display_name}-{step_name} unpacked {out_p} -> {out_path}")
+            logger.info(f"Special scatter open {step_display_name}-{step_name} unpacked {out_p} -> {ports[out_p]}")
 
 
 def _scatter_gather(step_name: str, step_display_name: str, input_ports: list[str], output_specs: list[tuple[str, str, str]]):
-    in_p = input_ports[0]
-    available_port_data[in_p].wait()
-    results = ports.get(in_p, [])
-    if not isinstance(results, list):
-        results = [results] if results else []
-
     def _extract_id(item: Any) -> int:
+        if isinstance(item, (list, tuple)) and item:
+            return _extract_id(item[0])
         s = str(item)
         m = re.search(r"Item\\s+(\\d+)", s, re.IGNORECASE)
         if m:
             return int(m.group(1))
-        m = re.search(r"(\\d+)", os.path.basename(s))
+        m = re.search(r"(\\d+)", os.path.basename(s) if "/" in s else s)
         if m:
             return int(m.group(1))
         if isinstance(item, str) and os.path.isfile(item):
             try:
-                with open(item, "r", encoding="utf-8") as f:
+                with open(item, "r", encoding="utf-8", errors="replace") as f:
                     content = f.read(1024)
                     m = re.search(r"Item\\s+(\\d+)", content, re.IGNORECASE)
                     if m:
@@ -817,12 +972,18 @@ def _scatter_gather(step_name: str, step_display_name: str, input_ports: list[st
                 pass
         return 999999
 
-    try:
-        sorted_results = sorted(results, key=_extract_id)
-    except Exception:
-        sorted_results = results
+    for idx, (out_p, d_type, g_regex) in enumerate(output_specs):
+        in_p = input_ports[idx] if idx < len(input_ports) else input_ports[0]
+        available_port_data[in_p].wait()
+        results = ports.get(in_p, [])
+        if not isinstance(results, list):
+            results = [results] if results else []
 
-    for out_p, d_type, g_regex in output_specs:
+        try:
+            sorted_results = sorted(results, key=_extract_id)
+        except Exception:
+            sorted_results = results
+
         ports[out_p] = sorted_results
         available_port_data[out_p].set()
         if logger.isEnabledFor(logging.INFO):
@@ -1425,14 +1586,26 @@ if __name__ == '__main__':
                 output_specs.append((pn, type_val, glob_val))
             for pn, _ in flow[0]:
                 self.location_ports.add(pn)
-            trace.write(
-                f"\n{i}_scatter_pair({step.name!r}, {step.display_name!r}, {input_ports!r}, {output_specs!r})\n"
-            )
+            scatter_method = getattr(step, "scatter_method", "dotproduct") or "dotproduct"
+            scatter_ports = getattr(step, "scatter", None)
+            if scatter_ports:
+                trace.write(
+                    f"\n{i}_scatter_pair({step.name!r}, {step.display_name!r}, {input_ports!r}, {output_specs!r}, {scatter_method!r}, {scatter_ports!r})\n"
+                )
+            else:
+                trace.write(
+                    f"\n{i}_scatter_pair({step.name!r}, {step.display_name!r}, {input_ports!r}, {output_specs!r}, {scatter_method!r})\n"
+                )
             return
         elif getattr(step, "step_type", None) == "scatter_open":
             input_ports = sorted([pn for pn, _ in flow[0]])
             output_specs = []
-            for pn, _ in sorted(flow[1], key=lambda x: x[0]):
+            if step.processors:
+                port_order = {p: i for i, p in enumerate(step.processors.keys())}
+                ordered_flow1 = sorted(flow[1], key=lambda x: port_order.get(x[0], 999))
+            else:
+                ordered_flow1 = sorted(flow[1], key=lambda x: x[0])
+            for pn, _ in ordered_flow1:
                 self.location_ports.add(pn)
                 glob_val = step.processors[pn].glob if (step.processors and pn in step.processors) else ""
                 type_val = step.processors[pn].type if (step.processors and pn in step.processors) else "file"
@@ -1493,9 +1666,19 @@ if __name__ == '__main__':
         for pn, _ in flow[0]:
             self.location_ports.add(pn)
 
-        trace.write(
-            f"""\n{i}_exec({step.name!r}, {step.display_name!r}, {[pn for pn, _ in flow[0]]!r}, {output_specs!r}, {step.command!r}, {arguments!r})\n"""
-        )
+        scatter_info = None
+        if getattr(step, "scatter", None):
+            scatter_info = {
+                "scatter_ports": getattr(step, "scatter", []),
+                "scatter_method": getattr(step, "scatter_method", "dotproduct") or "dotproduct",
+            }
+            trace.write(
+                f"""\n{i}_exec({step.name!r}, {step.display_name!r}, {[pn for pn, _ in flow[0]]!r}, {output_specs!r}, {step.command!r}, {arguments!r}, {scatter_info!r})\n"""
+            )
+        else:
+            trace.write(
+                f"""\n{i}_exec({step.name!r}, {step.display_name!r}, {[pn for pn, _ in flow[0]]!r}, {output_specs!r}, {step.command!r}, {arguments!r})\n"""
+            )
 
     def write_recv(
         self,

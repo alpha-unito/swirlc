@@ -124,6 +124,8 @@ class Step:
         "expression_input_types",
         "expression_outputs",
         "step_type",
+        "scatter_method",
+        "scatter",
     )
 
     def __init__(
@@ -138,6 +140,8 @@ class Step:
         expression_input_types: MutableMapping[str, str] | None = None,
         expression_outputs: MutableMapping[str, Port] | None = None,
         step_type: str | None = None,
+        scatter_method: str | None = None,
+        scatter: MutableSequence[str] | None = None,
     ):
         self.name: str = name
         self.display_name: str = display_name
@@ -149,6 +153,8 @@ class Step:
         self.expression_input_types = expression_input_types
         self.expression_outputs = expression_outputs
         self.step_type = step_type
+        self.scatter_method = scatter_method
+        self.scatter = scatter
 
 
 class Workflow:

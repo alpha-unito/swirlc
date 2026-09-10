@@ -189,6 +189,29 @@
           ],
           "description": "Built-in special operation type"
         },
+        "scatterMethod": {
+          "type": "string",
+          "enum": [
+            "dotproduct",
+            "flat_crossproduct",
+            "nested_crossproduct"
+          ],
+          "description": "Scatter pairing method for scatter_pairer"
+        },
+        "scatter": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Port names or parameter names to scatter over"
+        },
+        "scatterPorts": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Input port names to scatter over in scatter_pairer"
+        },
         "command": {
           "type": "string",
           "description": "Application which step executes"

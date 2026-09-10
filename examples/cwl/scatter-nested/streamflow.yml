@@ -1,0 +1,28 @@
+version: v1.0
+workflows:
+  master:
+    type: cwl
+    config:
+      file: main.cwl
+      settings: inputs.yml
+    bindings:
+      - step: /
+        target:
+          deployment: coordinator
+      - step: /process_group
+        target:
+          deployment: workers
+          locations: 2
+      - step: /final_report
+        target:
+          deployment: coordinator
+
+deployments:
+  coordinator:
+    type: local
+    config: {}
+    port: 35100
+  workers:
+    type: local
+    config: {}
+    port: 35110

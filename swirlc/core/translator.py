@@ -39,16 +39,21 @@ def _add_location(location, locations):
 def _add_step(step, steps, workflow, dependencies):
     steps[step.name] = {
         "displayName": step.display_name,
-        "command": step.command,
     }
-    steps[step.name]["arguments"] = [
-        {
-            "valueFrom" if isinstance(arg, Port) else "value": (
-                arg.name if isinstance(arg, Port) else arg
-            )
-        }
-        for arg in (step.arguments or [])
-    ]
+    if step.step_type:
+        steps[step.name]["type"] = step.step_type
+        if step.scatter_method:
+            steps[step.name]["scatterMethod"] = step.scatter_method
+    else:
+        steps[step.name]["command"] = step.command
+        steps[step.name]["arguments"] = [
+            {
+                "valueFrom" if isinstance(arg, Port) else "value": (
+                    arg.name if isinstance(arg, Port) else arg
+                )
+            }
+            for arg in (step.arguments or [])
+        ]
     if step.expression is not None:
         steps[step.name]["expression"] = {
             "source": LiteralScalarString(step.expression),

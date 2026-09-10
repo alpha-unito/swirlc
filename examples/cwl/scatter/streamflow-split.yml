@@ -1,0 +1,33 @@
+version: v1.0
+workflows:
+  master:
+    type: cwl
+    config:
+      file: main.cwl
+      settings: inputs.yml
+    bindings:
+      - step: /
+        target:
+          deployment: l0
+      - step: /compute
+        target:
+          deployment: workers
+      - step: /analyze
+        target:
+          deployment: l0
+
+deployments:
+  l0:
+    type: local
+    config: {}
+    port: 35080
+  workers:
+    type: ssh
+    config:
+      nodes:
+        - worker1.local
+        - worker2.local
+        - worker3.local
+      username: user
+      sshKey: ~/.ssh/id_rsa
+    workdir: /tmp/streamflow/workers

@@ -1,0 +1,91 @@
+#!/bin/bash
+
+# Derived from https://github.com/pegasus-isi/1000genome-workflow/blob/ee083a8a55436d437e3cf9f542f12d491b739c21/bin/individuals.
+#
+# Copyright 2007-2012 University Of Southern California
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+inputfile=$1
+c=$2
+counter=$3
+stop=$4
+total=$5
+
+echo 'now processing chromosome '$c
+
+### step 0
+nfile='ALL.chr'$c'.individuals.vcf.gz'
+unzipped=${nfile%.*z}
+
+gunzip -c $1 > $unzipped
+
+### step 2
+pdir='chr'$c'p/'
+ndir='chr'$c'n/'
+
+mkdir -p $pdir
+mkdir -p $ndir
+
+columfile='columns.txt'
+
+### step 3
+start=$(date +'%s')
+echo "total number of lines "$total
+
+echo "  processing from $counter to $stop"
+firststep=$(date +'%s')
+
+sed -n "$counter"','"$stop"'p;'"$total"'q' $unzipped | grep -ve "#" | awk -v c=$c '{for(i=10;i<=2513;i++) {name="chr"c"p/chr"c".p"i-9;print $i"   "$2"    "$3"    "$4"    "$5"    "$8 >> name}}'
+
+endfirst=$(date +'%s')
+
+echo "First step done in $((endfirst-firststep)) seconds."
+
+for i in {1..2504}
+do
+  startloop=$(date +'%s')
+  col=$(($i + 9))
+  name=$(cut -f $col $columfile)
+  oldfile=$pdir'chr'$c'.p'$i
+  newfile=$ndir'chr'$c'.'$name
+  #echo 'moving '$oldfile' to '$newfile
+  cat $oldfile| awk '{print $6}' | awk -F ";" '{print $9}'| awk -F"=" '{print $2}' > AF_value.$c
+  paste $oldfile AF_value.$c | awk '{$6=""; print}'> tmp.file.$c
+  cat tmp.file.$c | awk ' $6 >= 0.5 {print $0}'| awk -F "|" '$1==0 || $2==0 {print $2}' > tmp.select.$c
+  cat tmp.file.$c | awk ' $6 < 0.5 {print $0}'| awk -F "|" '$1==1 || $2==1 {print $2}' >> tmp.select.$c
+  cat tmp.select.$c | awk '{print $2"        "$3"    "$4"    "$5"    "$6}' >> $newfile
+  rm $oldfile
+  endloop=$(date +'%s')
+  echo "Wrote $newfile in $((endloop-startloop)) seconds."
+done
+
+rm tmp.file.$c
+rm tmp.select.$c
+rm AF_value.$c
+
+### step 5
+rm $unzipped
+
+prev_dir=$(pwd)
+cd $ndir
+
+outputfile='chr'$c'n-'$counter'-'$stop'.tar.gz'
+tar -zcf ../$outputfile .
+end=$(date +'%s')
+echo "Done in $((end-start)) seconds."
+
+cd $prev_dir
+
+rm -rf $ndir
+rm -rf $pdir
