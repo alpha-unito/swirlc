@@ -840,16 +840,23 @@ scatter_special_helpers = """def _scatter_pair(step_name: str, step_display_name
         port_items.append(items)
 
     import itertools
-    if scatter_method == "flat_crossproduct":
-        combinations = list(itertools.product(*port_items)) if port_items else []
+    if scatter_method in ("flat_crossproduct", "nested_crossproduct"):
+        coordinates = list(itertools.product(*(range(len(items)) for items in port_items))) if port_items else []
     else:
-        count = min(len(it) for it in port_items) if port_items else 0
-        combinations = [tuple(port_items[p_idx][idx] for p_idx in range(len(port_items))) for idx in range(count)]
+        if port_items and len({len(items) for items in port_items}) != 1:
+            raise ValueError("dotproduct scatter inputs must have equal lengths")
+        count = len(port_items[0]) if port_items else 0
+        coordinates = [(idx,) * len(port_items) for idx in range(count)]
+
+    combinations = [
+        tuple(port_items[p_idx][coordinate] for p_idx, coordinate in enumerate(task_coordinates))
+        for task_coordinates in coordinates
+    ]
 
     id_list = []
     tuple_list = []
 
-    for idx, combo in enumerate(combinations):
+    for idx, (combo, task_coordinates) in enumerate(zip(combinations, coordinates)):
         id_file = os.path.join(id_dir, f"id_{idx:02d}.txt")
         with open(id_file, "w", encoding="utf-8") as f:
             f.write(f"{idx}\\n")
@@ -890,6 +897,7 @@ scatter_special_helpers = """def _scatter_pair(step_name: str, step_display_name
 
         tuple_payload = {
             "id": idx,
+            "coordinates": list(task_coordinates),
             "components": components,
         }
         for c_idx, c in enumerate(components):
@@ -1863,4 +1871,3 @@ if __name__ == '__main__':
         i = "    " * indent
         # repr() so both scalar strings and list values emit as valid Python literals.
         trace.write(f"""{i}_init_dataset("{port}", {data.value!r})\n""")
-

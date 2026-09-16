@@ -1066,6 +1066,25 @@ class CWLTranslator(AbstractTranslator):
     def translate(
         self, workflow_output: TextIO = sys.stdout, metadata_output: TextIO = sys.stdout
     ) -> None:
+        # Validate the one method whose cardinality can be known before the
+        # trace is emitted.  The runtime must never silently truncate it.
+        for region in self._scatter_regions():
+            if region.scatter.method != "dotproduct" or len(region.scatter.inputs) < 2:
+                continue
+            lengths = []
+            for input_name in region.scatter.inputs:
+                sources = region.input_bindings[input_name]
+                if len(sources) != 1 or sources[0].count("/") != 1:
+                    break
+                value = self.workflow_inputs.get(sources[0].lstrip("/"))
+                if not isinstance(value, list):
+                    break
+                lengths.append(len(value))
+            else:
+                if len(set(lengths)) > 1:
+                    raise ValueError(
+                        f"dotproduct scatter inputs must have equal lengths at {region.path}"
+                    )
         if not self._has_scatter():
             super().translate(workflow_output, metadata_output)
             return
@@ -1085,6 +1104,42 @@ class CWLTranslator(AbstractTranslator):
             return
 
         self._translate_scatter(workflow_output, metadata_output)
+
+    def _scatter_regions(self) -> list[Invocation]:
+        """Return scattered invocations in stable, full-path order."""
+        result = []
+
+        def visit(region: WorkflowRegion) -> None:
+            for invocation in region.invocations:
+                if invocation.scatter:
+                    result.append(invocation)
+                if isinstance(invocation.process, WorkflowRegion):
+                    visit(invocation.process)
+
+        visit(self.build_region_tree())
+        return result
+
+    def _scatter_hint(self, region_id: str, phase: str, start: bool) -> str:
+        """Emit one hint boundary around the trace fragment it describes."""
+        invocation = next(
+            invocation
+            for invocation in self._scatter_regions()
+            if invocation.scatter.region_id == region_id
+        )
+        if start:
+            payload = {
+                "kind": "scatter",
+                "method": invocation.scatter.method,
+                "parentRegion": invocation.scatter.parent_region_id,
+                "phase": phase,
+                "region": region_id,
+                "version": 1,
+            }
+            directive = "start"
+        else:
+            payload = {"phase": phase, "region": region_id}
+            directive = "end"
+        return f"// @compiler_hint_{directive} {json.dumps(payload, sort_keys=True, separators=(',', ':'))}"
 
     def _translate_subworkflow_scatter(
         self, subwf_step, workflow_output: TextIO, metadata_output: TextIO
@@ -1209,6 +1264,7 @@ class CWLTranslator(AbstractTranslator):
         locations["l0"] = coord_loc
 
         worker_names: list[str] = []
+        worker_locations_by_deployment: dict[str, list[str]] = {}
         for i, wt in enumerate(worker_targets):
             w_name = f"l{i + 1}"
             worker_names.append(w_name)
@@ -1238,6 +1294,29 @@ class CWLTranslator(AbstractTranslator):
                 w_dep["checkHostKey"] = w_ssh["check_host_key"]
             w_loc["deployment"] = w_dep
             locations[w_name] = w_loc
+            worker_locations_by_deployment.setdefault(w_dep_name, []).append(w_name)
+
+        # Preserve nested pools in phase-3 metadata.  Runtime replication and
+        # keyed dispatch remain the explicit phase-6 boundary.
+        outer_deployment = (
+            worker_targets[0].get("deployment") if worker_targets else None
+        )
+        for invocation in self._scatter_regions():
+            target = invocation.deployment
+            if not target or target.deployment in {outer_deployment, coord_dep_name}:
+                continue
+            cfg = sf_deployments.get(target.deployment, {})
+            for index in range(target.locations or 1):
+                name = f"l{len(locations)}"
+                locations[name] = {
+                    "deployment": {
+                        "hostname": _resolve_hostname_transitive(cfg),
+                        "port": cfg.get("port", 35050) + index,
+                    }
+                }
+                worker_locations_by_deployment.setdefault(target.deployment, []).append(
+                    name
+                )
 
         settings_values = self.workflow_inputs
 
@@ -1337,6 +1416,7 @@ class CWLTranslator(AbstractTranslator):
             return glob_pat
 
         worker_exec_traces: list[str] = []
+        nested_scatter_traces: list[dict[str, object]] = []
         for cstep in subwf_obj.steps:
             cname = _local_name(cstep.id).split("/")[-1]
             s_name = f"s_{cname}"
@@ -1424,6 +1504,15 @@ class CWLTranslator(AbstractTranslator):
                 c_scatter_method = (
                     getattr(cstep, "scatterMethod", "dotproduct") or "dotproduct"
                 )
+                child_target = self.bindings.target_for(f"/{subwf_name}/{cname}")
+                child_workers = (
+                    worker_locations_by_deployment.get(child_target.deployment, [])
+                    if child_target and child_target.deployment
+                    else []
+                )
+                distributed_child_scatter = bool(
+                    c_scatter_vars and child_workers and child_workers != worker_names
+                )
 
                 cmd_args: list[dict] = []
                 bc = getattr(c_obj, "baseCommand", None)
@@ -1469,7 +1558,7 @@ class CWLTranslator(AbstractTranslator):
                     out_port = f"p_{cname}_{oname}"
                     out_data = f"{cname}_{oname}_ID"
                     out_type = _cwl_type_to_swirl(tout.type_)
-                    if c_scatter_vars:
+                    if c_scatter_vars and not distributed_child_scatter:
                         out_type = f"list[{out_type}]"
                     ob = getattr(tout, "outputBinding", None)
                     glob_v = _resolve_glob(c_obj, ob.glob if ob else None)
@@ -1486,7 +1575,7 @@ class CWLTranslator(AbstractTranslator):
                     "arguments": cmd_args,
                     "outputs": step_outputs,
                 }
-                if c_scatter_vars:
+                if c_scatter_vars and not distributed_child_scatter:
                     step_entry["scatter"] = [
                         child_in_bindings[v]
                         for v in c_scatter_vars
@@ -1498,6 +1587,80 @@ class CWLTranslator(AbstractTranslator):
                 worker_exec_traces.append(
                     f"exec({s_name}, {{{', '.join(flow_in_tuples)}}} -> {{{', '.join(flow_outs)}}}, {{{'{w}'}}})"
                 )
+                if distributed_child_scatter:
+                    source_port = child_in_bindings[c_scatter_vars[0]]
+                    source_data = flow_in_tuples[0].strip("()").split(", ")[1]
+                    pair_name = f"s_{cname}_pair"
+                    open_name = f"s_{cname}_open"
+                    gather_name = f"s_{cname}_gather"
+                    id_data = f"{cname}_id_ID"
+                    group_data = f"{cname}_group_ID"
+                    id_port = f"p_{cname}_id"
+                    group_port = f"p_{cname}_group"
+                    item_port = f"p_{cname}_{c_scatter_vars[0]}"
+                    item_data = f"{cname}_{c_scatter_vars[0]}_ID"
+                    dependencies[id_data] = {"type": "file"}
+                    dependencies[group_data] = {"type": "file"}
+                    dependencies[item_data] = {
+                        "type": _list_inner_type(dependencies[source_data]["type"])
+                        or DATA_TYPE
+                    }
+                    steps[pair_name] = {
+                        "displayName": f"{cname} ScatterPairer",
+                        "type": "scatter_pairer",
+                        "scatterPorts": [source_port],
+                        "scatterMethod": c_scatter_method,
+                        "outputs": {
+                            id_port: {"dataName": id_data},
+                            group_port: {"dataName": group_data},
+                        },
+                    }
+                    steps[open_name] = {
+                        "displayName": f"{cname} ScatterOpen",
+                        "type": "scatter_open",
+                        "outputs": {item_port: {"dataName": item_data}},
+                    }
+                    steps[gather_name] = {
+                        "displayName": f"{cname} ScatterGather",
+                        "type": "scatter_gather",
+                        "outputs": {
+                            flow_outs[0]
+                            .split(", ")[0]
+                            .lstrip("("): {
+                                "dataName": flow_outs[0].rstrip(")").split(", ")[1]
+                            }
+                        },
+                    }
+                    step_entry["arguments"] = [
+                        (
+                            {
+                                **arg,
+                                "valueFrom": item_port,
+                            }
+                            if arg.get("valueFrom") == source_port
+                            else arg
+                        )
+                        for arg in step_entry["arguments"]
+                    ]
+                    nested_scatter_traces.append(
+                        {
+                            "workers": child_workers,
+                            "outer_inputs": flow_in_tuples,
+                            "pair": pair_name,
+                            "open": open_name,
+                            "gather": gather_name,
+                            "id_data": id_data,
+                            "group_data": group_data,
+                            "id_port": id_port,
+                            "group_port": group_port,
+                            "item_port": item_port,
+                            "item_data": item_data,
+                            "step": s_name,
+                            "output": flow_outs[0],
+                            "region": f"scatter:/{subwf_name}/{cname}",
+                        }
+                    )
+                    worker_exec_traces[-1] = f"{{nested:{cname}:{'{w}'}}}"
 
         subwf_output_ports = []
         subwf_output_data_names = []
@@ -1642,7 +1805,14 @@ class CWLTranslator(AbstractTranslator):
         if post_exec_traces:
             post_trace_str = " .\n  " + " .\n  ".join(post_exec_traces)
 
+        outer_region = f"scatter:/{subwf_name}"
+        outer_dispatch_start = self._scatter_hint(outer_region, "dispatch", True)
+        outer_dispatch_end = self._scatter_hint(outer_region, "dispatch", False)
+        outer_gather_start = self._scatter_hint(outer_region, "gather", True)
+        outer_gather_end = self._scatter_hint(outer_region, "gather", False)
+
         l0_trace = f"""<l0, {{{dataset_str}}},
+{outer_dispatch_start}
   exec(s_sc, {{{scatter_in_str}}} -> {{(p_id, id_ID), (p_group, group_ID)}}, {{l0}})
   .
   (
@@ -1657,16 +1827,60 @@ class CWLTranslator(AbstractTranslator):
       )
     )
   )
+{outer_dispatch_end}
   .
+{outer_gather_start}
   (
     {recv_workers_str}
   )
   .
-  exec(s_G, {{{', '.join(gather_in_flow)}}} -> {{{', '.join(gather_out_flow)}}}, {{l0}}){post_trace_str}
+  exec(s_G, {{{', '.join(gather_in_flow)}}} -> {{{', '.join(gather_out_flow)}}}, {{l0}})
+{outer_gather_end}
+  {post_trace_str}
 >"""
 
         unpacked_out_str = ", ".join([f"({p}, {d})" for p, d in unpacked_pairs])
         inner_worker_trace_body = " .\n      ".join(worker_exec_traces)
+
+        def nested_controller(trace: dict[str, object], controller: str) -> str:
+            output_port, output_data = str(trace["output"]).strip("()").split(", ")
+            workers = list(trace["workers"])
+            worker_set = "{" + ", ".join(workers) + "}"
+            dispatch_eof = "\n          | ".join(
+                f"send(eof -> {trace['id_port']}, {controller}, {worker})"
+                for worker in workers
+            )
+            receives = "\n        | ".join(
+                f"!(recv({output_data} -> {output_port}, {worker}, {controller}) + "
+                f"recv(eof -> {output_port}, {worker}, {controller}))"
+                for worker in workers
+            )
+            return f"""
+      {self._scatter_hint(str(trace['region']), 'dispatch', True)}
+      exec({trace['pair']}, {{{trace['outer_inputs'][0]}}} -> {{({trace['id_port']}, {trace['id_data']}), ({trace['group_port']}, {trace['group_data']})}}, {{{controller}}})
+      .
+      !(
+        (
+          move({trace['id_data']} -> {trace['id_port']}, {controller}, {worker_set}) .
+          move({trace['group_data']} -> {trace['group_port']}, {controller}, {worker_set})
+        )
+        +
+        ({dispatch_eof})
+      )
+      {self._scatter_hint(str(trace['region']), 'dispatch', False)}
+      .
+      {self._scatter_hint(str(trace['region']), 'gather', True)}
+      ({receives})
+      .
+      exec({trace['gather']}, {{({output_port}, {output_data})}} -> {{({output_port}, {output_data})}}, {{{controller}}})
+      {self._scatter_hint(str(trace['region']), 'gather', False)}
+      """
+
+        for trace in nested_scatter_traces:
+            inner_worker_trace_body = inner_worker_trace_body.replace(
+                f"{{nested:{str(trace['step']).removeprefix('s_')}:{'{w}'}}}",
+                nested_controller(trace, "{w}"),
+            )
 
         worker_traces: list[str] = []
         for w in worker_names:
@@ -1698,15 +1912,51 @@ class CWLTranslator(AbstractTranslator):
 >"""
             worker_traces.append(w_trace)
 
-        full_swirl_trace = l0_trace + " |\n\n" + " |\n\n".join(worker_traces) + "\n"
+        nested_worker_traces: list[str] = []
+        for trace in nested_scatter_traces:
+            output_port, output_data = str(trace["output"]).strip("()").split(", ")
+            for worker in trace["workers"]:
+                branches = []
+                for controller in worker_names:
+                    branches.append(f"""(
+      recv({trace['id_data']} -> {trace['id_port']}, {controller}, {worker}) .
+      recv({trace['group_data']} -> {trace['group_port']}, {controller}, {worker}) .
+      exec({trace['open']}, {{({trace['group_port']}, {trace['group_data']})}} -> {{({trace['item_port']}, {trace['item_data']})}}, {{{worker}}}) .
+      exec({trace['step']}, {{({trace['item_port']}, {trace['item_data']})}} -> {{({output_port}, {output_data})}}, {{{worker}}}) .
+      send({output_data} -> {output_port}, {worker}, {controller})
+    )""")
+                    branches.append(f"""(
+      recv(eof -> {trace['id_port']}, {controller}, {worker}) .
+      send(eof -> {output_port}, {worker}, {controller})
+    )""")
+                nested_worker_traces.append(
+                    f"<{worker}, {{}},\n  !(\n    "
+                    + "\n    + ".join(branches)
+                    + "\n  )\n>"
+                )
+
+        full_swirl_trace = (
+            l0_trace
+            + " |\n\n"
+            + " |\n\n".join(worker_traces + nested_worker_traces)
+            + "\n"
+        )
         workflow_output.write(full_swirl_trace)
 
         YAML().dump(
             {
-                "version": "v1.0",
+                "version": "v1.1",
                 "steps": steps,
                 "locations": locations,
                 "dependencies": dependencies,
+                "scatterRegions": {
+                    invocation.scatter.region_id: {
+                        "parentRegion": invocation.scatter.parent_region_id,
+                        "method": invocation.scatter.method,
+                        "scatterPorts": list(invocation.scatter.inputs),
+                    }
+                    for invocation in self._scatter_regions()
+                },
             },
             metadata_output,
         )

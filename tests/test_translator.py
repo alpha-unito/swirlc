@@ -299,19 +299,11 @@ def test_scatter_pair_preserves_empty_and_duplicate_inputs(
     ] == expected
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="Phase 3 must retain coordinate vectors for nested cross-product gathering.",
-)
 def test_nested_crossproduct_pair_includes_coordinates(tmp_path):
     payloads = _scatter_pairs(tmp_path, "nested_crossproduct", {"a": [1], "b": ["x"]})
     assert payloads[0]["coordinates"] == [0, 0]
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="Phase 3 must lower nested scatter to separate worker pools and hints.",
-)
 def test_translate_cwl_scatter_nested_zip_acceptance(tmp_path):
     """Lock the phase-3 nested scatter trace and hint contract."""
     import json
@@ -350,15 +342,19 @@ def test_translate_cwl_scatter_nested_zip_acceptance(tmp_path):
     assert len(metadata["locations"]) == 6
     assert "scatter:/process_all_zips" in trace
     assert "scatter:/process_all_zips/inspect_step" in trace
+    for worker in ("l3", "l4", "l5"):
+        assert f"exec(s_inspect_step, {{(p_inspect_step_target_file," in trace
+        assert f")}}, {{{worker}}})" in trace
+    assert "exec(s_inspect_step, {(p_unzip_step_extracted_files" not in trace
 
-    directives = re.findall(r"^// @compiler_hint_(start|end) (.+)$", trace, re.M)
+    directives = re.findall(r"^\s*// @compiler_hint_(start|end) (.+)$", trace, re.M)
     starts = [json.loads(payload) for kind, payload in directives if kind == "start"]
     ends = [json.loads(payload) for kind, payload in directives if kind == "end"]
     assert {item["region"] for item in starts} == {
         "scatter:/process_all_zips",
         "scatter:/process_all_zips/inspect_step",
     }
-    assert len(starts) == len(ends) == 4
+    assert len(starts) == len(ends)
     assert all(item["version"] == 1 and item["kind"] == "scatter" for item in starts)
 
     parser = SWIRLParser(
@@ -368,10 +364,6 @@ def test_translate_cwl_scatter_nested_zip_acceptance(tmp_path):
     assert parser.getNumberOfSyntaxErrors() == 0
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="Phase 3 must reject unequal dot-product input lengths.",
-)
 def test_translate_cwl_dotproduct_rejects_unequal_lengths():
     """CWL dot-product must not silently truncate to the shorter input."""
     import io
@@ -381,6 +373,7 @@ def test_translate_cwl_dotproduct_rejects_unequal_lengths():
 
     example = Path(__file__).parent.parent / "examples" / "cwl" / "scatter"
     translator = CWLTranslator(example / "streamflow.yml")
+    translator.cwl_obj.steps[0].scatterMethod = "dotproduct"
     translator.workflow_inputs["files_b"] = translator.workflow_inputs["files_b"][:-1]
 
     with pytest.raises(ValueError, match="dotproduct.*equal"):

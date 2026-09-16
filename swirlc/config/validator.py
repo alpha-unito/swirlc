@@ -24,7 +24,10 @@ def handle_errors(errors):
     )
 
 
-_CONFIGS = {"v1.0": "schemas/config/v1.0/config_schema.json"}
+_CONFIGS = {
+    "v1.0": "schemas/config/v1.0/config_schema.json",
+    "v1.1": "schemas/config/v1.1/config_schema.json",
+}
 
 
 class SwirlSchema:
@@ -48,7 +51,7 @@ class SwirlSchema:
     def get_config(self, version: str) -> Resource:
         if version not in _CONFIGS:
             raise Exception(
-                f"Version {version} is unsupported. The `version` clause should be equal to `v1.0`."
+                f"Version {version} is unsupported."
             )
         return self.registry.get(_CONFIGS[version])
 
@@ -67,7 +70,7 @@ class SwirlValidator:
     def validate(self, swirl_file: MutableMapping[str, Any]):
         if "version" not in swirl_file:
             raise Exception(
-                "The `version` clause is mandatory and should be equal to `v1.0`."
+                "The `version` clause is mandatory."
             )
         config = self.schema.get_config(swirl_file["version"]).contents
         cls = validator_for(config)

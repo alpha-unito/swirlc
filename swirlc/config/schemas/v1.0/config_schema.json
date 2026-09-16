@@ -334,6 +334,19 @@
     },
     "workdir": {
       "type": "string"
+    },
+    "scatterRegions": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "properties": {
+          "parentRegion": {"type": ["string", "null"]},
+          "method": {"type": "string"},
+          "scatterPorts": {"type": "array", "items": {"type": "string"}}
+        },
+        "required": ["method", "scatterPorts"],
+        "additionalProperties": false
+      }
     }
   },
 
