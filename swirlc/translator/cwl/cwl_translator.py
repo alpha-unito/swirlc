@@ -8,6 +8,7 @@ import logging
 import os
 import sys
 from collections.abc import MutableMapping, MutableSequence
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TextIO
 
@@ -39,6 +40,128 @@ _CWL_SCALAR_TO_SWIRL = {
     "long": "int",
     "boolean": "bool",
 }
+_SCATTER_METHODS = {"dotproduct", "flat_crossproduct", "nested_crossproduct"}
+
+
+@dataclass(frozen=True)
+class DeploymentTarget:
+    """A normalized StreamFlow execution target."""
+
+    deployment: str | None
+    service: str | None = None
+    locations: int | None = None
+
+
+@dataclass(frozen=True)
+class StreamFlowBindings:
+    """Normalized bindings, matched against absolute CWL step paths."""
+
+    default: DeploymentTarget | None
+    by_path: dict[str, DeploymentTarget]
+
+    def target_for(self, path: str) -> DeploymentTarget | None:
+        path = _absolute_cwl_path(path)
+        for candidate in sorted(self.by_path, key=len, reverse=True):
+            if path == candidate or path.startswith(candidate + "/"):
+                return self.by_path[candidate]
+        return self.default
+
+
+@dataclass(frozen=True)
+class ScatterSpec:
+    inputs: tuple[str, ...]
+    method: str
+    region_id: str
+    parent_region_id: str | None
+
+
+@dataclass
+class Invocation:
+    """One CWL workflow step, before SWIRL lowering."""
+
+    path: str
+    process: object
+    input_bindings: dict[str, tuple[str, ...]]
+    outputs: dict[str, str]
+    deployment: DeploymentTarget | None
+    scatter: ScatterSpec | None = None
+
+
+@dataclass
+class WorkflowRegion:
+    """A CWL workflow boundary preserved for recursive lowering."""
+
+    path: str
+    inputs: dict[str, str | None]
+    outputs: dict[str, tuple[str, ...]]
+    invocations: list[Invocation] = field(default_factory=list)
+    deployment: DeploymentTarget | None = None
+    parent: "WorkflowRegion | None" = None
+
+
+def _absolute_cwl_path(path: str) -> str:
+    """Normalize a StreamFlow/CWL path without losing nested components."""
+    stripped = path.strip("/")
+    return f"/{stripped}" if stripped else "/"
+
+
+def _normalize_bindings(streamflow_config: MutableMapping) -> StreamFlowBindings:
+    """Normalize StreamFlow bindings once, including shorthand target lists."""
+    workflows = streamflow_config.get("workflows", {})
+    first_workflow = next(iter(workflows.values()), {})
+    default = None
+    by_path = {}
+    for binding in first_workflow.get("bindings", []):
+        step = binding.get("step")
+        if step is None:
+            continue
+        target = binding.get("target") or {}
+        # A list describes expanded workers.  The first target remains the
+        # effective deployment; expansion is deferred to lowering.
+        if isinstance(target, list):
+            target = target[0] if target else {}
+        if not isinstance(target, dict) or not target.get("deployment"):
+            continue
+        normalized = DeploymentTarget(
+            target["deployment"], target.get("service"), target.get("locations")
+        )
+        path = _absolute_cwl_path(str(step))
+        if path == "/":
+            default = normalized
+        else:
+            by_path[path] = normalized
+    return StreamFlowBindings(default, by_path)
+
+
+def _load_workflow_inputs(cwl_file: Path, streamflow_config: MutableMapping) -> dict:
+    """Load the configured CWL job object, if present."""
+    workflows = streamflow_config.get("workflows", {})
+    first_workflow = next(iter(workflows.values()), {})
+    settings = first_workflow.get("config", {}).get("settings")
+    if not settings:
+        return {}
+    path = cwl_file.parent / settings
+    if not path.exists():
+        return {}
+    with open(path) as input_file:
+        return YAML(typ="safe").load(input_file) or {}
+
+
+def _coerce_cwl_value(value, value_type: str, base_dir: Path | None = None):
+    """Coerce a CWL job value into the scalar/list form used by SWIRL."""
+    if isinstance(value, dict) and "path" in value:
+        path = Path(value["path"])
+        if base_dir is not None and not path.is_absolute():
+            path = (base_dir / path).resolve()
+        return str(path)
+    inner_type = _list_inner_type(value_type)
+    if inner_type is not None:
+        return [_coerce_cwl_value(item, inner_type, base_dir) for item in (value or [])]
+    if value_type == "int":
+        return int(value)
+    if value_type == "bool":
+        return value if isinstance(value, bool) else str(value).lower() == "true"
+    return str(value)
 
 
 def _list_inner_type(data_type: str) -> str | None:
@@ -379,11 +502,156 @@ class CWLTranslator(AbstractTranslator):
         self.cwl_file = (streamflow_path.parent / cwl_file_rel).resolve()
 
         self.streamflow_config = sf_config
+        self.bindings = _normalize_bindings(sf_config)
+        self.workflow_inputs = _load_workflow_inputs(self.cwl_file, sf_config)
         root_uri = self.cwl_file.as_uri()
         self.cwl_bundle = load_cwl_workflow_recursive_uri(root_uri)
         self.cwl_obj = self.cwl_bundle[root_uri]
 
         display_cwl_workflow(self.cwl_obj, bundle=self.cwl_bundle)
+
+    def build_region_tree(self) -> WorkflowRegion:
+        """Build the recursive CWL IR without generating SWIRL text.
+
+        Source references are normalized to full CWL paths here.  This keeps
+        later lowering independent of CWL's locally-scoped step identifiers.
+        """
+
+        active_workflows: set[str] = set()
+
+        def sources(value) -> tuple[str, ...]:
+            if value is None:
+                return ()
+            if not isinstance(value, list):
+                value = [value]
+            return tuple(_local_name(source) for source in value)
+
+        def build(wf, path: str, inputs: dict[str, str | None], parent, parent_scatter):
+            path = _absolute_cwl_path(path)
+            workflow_id = str(getattr(wf, "id", id(wf)))
+            if workflow_id in active_workflows:
+                raise ValueError(f"Cyclic subworkflow reference at {path}")
+            active_workflows.add(workflow_id)
+            try:
+                region = WorkflowRegion(
+                    path=path,
+                    inputs=inputs,
+                    outputs={},
+                    deployment=self.bindings.target_for(path),
+                    parent=parent,
+                )
+                steps = {_local_name(step.id).split("/")[-1]: step for step in wf.steps}
+                output_paths = {
+                    name: {
+                        _local_name(output).split("/")[
+                            -1
+                        ]: f"{path.rstrip('/')}/{name}/{_local_name(output).split('/')[-1]}"
+                        for output in step.out
+                    }
+                    for name, step in steps.items()
+                }
+
+                def resolve(source: str) -> str:
+                    if source in inputs:
+                        return f"{path.rstrip('/')}/{source}" or f"/{source}"
+                    step_name, separator, output_name = source.rpartition("/")
+                    if not separator or step_name.split("/")[-1] not in output_paths:
+                        raise ValueError(f"Unresolved source {source!r} at {path}")
+                    producer = output_paths[step_name.split("/")[-1]]
+                    if output_name not in producer:
+                        raise ValueError(f"Unresolved source {source!r} at {path}")
+                    return producer[output_name]
+
+                for name, step in steps.items():
+                    invocation_path = f"{path.rstrip('/')}/{name}" or f"/{name}"
+                    bindings = {
+                        _local_name(step_input.id).split("/")[-1]: tuple(
+                            resolve(source) for source in sources(step_input.source)
+                        )
+                        for step_input in step.in_
+                    }
+                    raw_scatter = getattr(step, "scatter", None)
+                    scatter_inputs = ()
+                    if raw_scatter:
+                        raw_scatter = (
+                            [raw_scatter]
+                            if isinstance(raw_scatter, str)
+                            else raw_scatter
+                        )
+                        scatter_inputs = tuple(
+                            _local_name(item).split("/")[-1] for item in raw_scatter
+                        )
+                        missing = set(scatter_inputs).difference(bindings)
+                        if missing:
+                            raise ValueError(
+                                f"Scatter input(s) {sorted(missing)} missing at {invocation_path}"
+                            )
+                    method = getattr(step, "scatterMethod", None) or "dotproduct"
+                    if scatter_inputs and method not in _SCATTER_METHODS:
+                        raise ValueError(
+                            f"Unsupported scatter method {method!r} at {invocation_path}"
+                        )
+                    scatter = (
+                        ScatterSpec(
+                            scatter_inputs,
+                            method,
+                            f"scatter:{invocation_path}",
+                            parent_scatter,
+                        )
+                        if scatter_inputs
+                        else None
+                    )
+                    run = step.run
+                    process = self.cwl_bundle[run] if isinstance(run, str) else run
+                    invocation_inputs = {
+                        _local_name(child_input.id).split("/")[-1]: next(
+                            iter(
+                                bindings.get(
+                                    _local_name(child_input.id).split("/")[-1], ()
+                                )
+                            ),
+                            None,
+                        )
+                        for child_input in getattr(process, "inputs", [])
+                    }
+                    if hasattr(process, "steps") and not hasattr(
+                        process, "baseCommand"
+                    ):
+                        process = build(
+                            process,
+                            invocation_path,
+                            invocation_inputs,
+                            region,
+                            scatter.region_id if scatter else parent_scatter,
+                        )
+                    region.invocations.append(
+                        Invocation(
+                            invocation_path,
+                            process,
+                            bindings,
+                            output_paths[name],
+                            self.bindings.target_for(invocation_path),
+                            scatter,
+                        )
+                    )
+
+                region.outputs = {
+                    _local_name(output.id).split("/")[-1]: tuple(
+                        resolve(source) for source in sources(output.outputSource)
+                    )
+                    for output in wf.outputs
+                }
+                return region
+            finally:
+                active_workflows.remove(workflow_id)
+
+        root_inputs = {
+            _local_name(workflow_input.id).split("/")[
+                -1
+            ]: f"/{_local_name(workflow_input.id).split('/')[-1]}"
+            for workflow_input in self.cwl_obj.inputs
+        }
+        return build(self.cwl_obj, "/", root_inputs, None, None)
 
     def _flatten_leaf_steps(self) -> list[_EffStep]:
         """Recursively inline nested subworkflows into a flat list of leaf steps.
@@ -513,25 +781,24 @@ class CWLTranslator(AbstractTranslator):
         # 1. Parse step→deployment bindings. StreamFlow container wrappers are
         # handled by StreamFlow itself, so only execution deployments become
         # SWIRL locations.
-        first_wf = next(iter(self.streamflow_config.get("workflows", {}).values()))
         default_target: tuple[str | None, str | None] = (None, None)
         step_to_target: dict[str, tuple[str, str | None]] = {}
         deployment_services: dict[str, set[str | None]] = {}
 
-        for binding in first_wf.get("bindings", []):
-            if "step" not in binding:
+        binding_targets = list(self.bindings.by_path.items())
+        if self.bindings.default is not None:
+            binding_targets.append(("/", self.bindings.default))
+        for step_path, target in binding_targets:
+            if target.deployment is None:
                 continue
-            target = binding.get("target") or {}
-            dep_name = target.get("deployment")
-            if not dep_name:
-                continue
-            service = target.get("service")
-            deployment_services.setdefault(dep_name, set()).add(service)
-            step_path: str = binding["step"]
+            deployment_services.setdefault(target.deployment, set()).add(target.service)
             if step_path == "/":
-                default_target = (dep_name, service)
+                default_target = (target.deployment, target.service)
             else:
-                step_to_target[step_path.lstrip("/")] = (dep_name, service)
+                step_to_target[step_path.lstrip("/")] = (
+                    target.deployment,
+                    target.service,
+                )
 
         # 2. Locations from streamflow deployments
         sf_deployments = self.streamflow_config.get("deployments", {})
@@ -644,13 +911,7 @@ class CWLTranslator(AbstractTranslator):
             deployment_to_loc[("local", None)] = loc
 
         # 3a. Load job settings for workflow input values
-        settings_rel = first_wf.get("config", {}).get("settings")
-        settings_values: dict = {}
-        if settings_rel:
-            settings_path = self.cwl_file.parent / settings_rel
-            if settings_path.exists():
-                with open(settings_path) as f:
-                    settings_values = YAML(typ="safe").load(f) or {}
+        settings_values = self.workflow_inputs
 
         if default_target[0] is None:
             default_target = next(iter(deployment_to_loc), (None, None))
@@ -679,24 +940,11 @@ class CWLTranslator(AbstractTranslator):
             source_to_port[inp_name] = port
             data_type = _cwl_type_to_swirl(wf_inp.type_)
 
-            def _coerce(v, value_type: str):
-                # A CWL File/Directory value is a {"path": ...} object.
-                if isinstance(v, dict) and "path" in v:
-                    return v["path"]
-                inner_type = _list_inner_type(value_type)
-                if inner_type is not None:
-                    return [_coerce(item, inner_type) for item in (v or [])]
-                if value_type == "int":
-                    return int(v)
-                if value_type == "bool":
-                    return v if isinstance(v, bool) else str(v).lower() == "true"
-                return str(v)
-
             raw_val = settings_values.get(inp_name)
             if raw_val is None and _is_optional_cwl_type(wf_inp.type_):
                 unset_optional_sources.add(inp_name)
             if raw_val is not None:
-                val = _coerce(raw_val, data_type)
+                val = _coerce_cwl_value(raw_val, data_type)
             else:
                 val = ""
             default_loc.data[data_name] = Data(
@@ -991,33 +1239,12 @@ class CWLTranslator(AbstractTranslator):
             w_loc["deployment"] = w_dep
             locations[w_name] = w_loc
 
-        settings_rel = first_wf.get("config", {}).get("settings")
-        settings_values = {}
-        if settings_rel:
-            settings_path = (self.cwl_file.parent / settings_rel).resolve()
-            if settings_path.exists():
-                with open(settings_path) as f:
-                    settings_values = YAML(typ="safe").load(f) or {}
+        settings_values = self.workflow_inputs
 
         dependencies: dict[str, dict] = {}
         dependencies["id_ID"] = {"type": "file"}
         dependencies["group_ID"] = {"type": "file"}
         dependencies["eof"] = {"type": "string"}
-
-        def _coerce(v, value_type: str):
-            if isinstance(v, dict) and "path" in v:
-                p = Path(v["path"])
-                if not p.is_absolute():
-                    p = (self.cwl_file.parent / p).resolve()
-                return str(p)
-            inner = _list_inner_type(value_type)
-            if inner is not None:
-                return [_coerce(item, inner) for item in (v or [])]
-            if value_type == "int":
-                return int(v)
-            if value_type == "bool":
-                return v if isinstance(v, bool) else str(v).lower() == "true"
-            return str(v)
 
         dataset_pairs: list[tuple[str, str]] = []
         source_to_in_pair: dict[str, tuple[str, str]] = {}
@@ -1029,7 +1256,7 @@ class CWLTranslator(AbstractTranslator):
             in_counter += 1
             data_type = _cwl_type_to_swirl(wf_inp.type_)
             raw_val = settings_values.get(inp_name, [])
-            coerced_val = _coerce(raw_val, data_type)
+            coerced_val = _coerce_cwl_value(raw_val, data_type, self.cwl_file.parent)
             dependencies[d_name] = {
                 "type": data_type,
                 "value": coerced_val,
@@ -1114,9 +1341,7 @@ class CWLTranslator(AbstractTranslator):
             cname = _local_name(cstep.id).split("/")[-1]
             s_name = f"s_{cname}"
             crun = cstep.run
-            c_obj = (
-                self.cwl_bundle[crun] if isinstance(crun, str) else crun
-            )
+            c_obj = self.cwl_bundle[crun] if isinstance(crun, str) else crun
 
             child_in_bindings: dict[str, str] = {}
             for cin in cstep.in_:
@@ -1325,9 +1550,7 @@ class CWLTranslator(AbstractTranslator):
             pname = _local_name(step.id).split("/")[-1]
             s_name = f"s_{pname}"
             prun = step.run
-            ptool = (
-                self.cwl_bundle[prun] if isinstance(prun, str) else prun
-            )
+            ptool = self.cwl_bundle[prun] if isinstance(prun, str) else prun
 
             p_in_bindings: list[tuple[int, dict]] = []
             flow_in_tuples = []
@@ -1397,9 +1620,7 @@ class CWLTranslator(AbstractTranslator):
         )
 
         dataset_str = ", ".join([f"({p}, {d})" for p, d in dataset_pairs])
-        scatter_in_str = ", ".join(
-            [f"({p}, {d})" for p, d in scatter_pair_input_ports]
-        )
+        scatter_in_str = ", ".join([f"({p}, {d})" for p, d in scatter_pair_input_ports])
 
         recv_workers_branches = []
         for w in worker_names:
@@ -1641,13 +1862,7 @@ class CWLTranslator(AbstractTranslator):
             locations[w_name] = w_loc
 
         # 2. Workflow inputs & settings
-        settings_rel = first_wf.get("config", {}).get("settings")
-        settings_values = {}
-        if settings_rel:
-            settings_path = (self.cwl_file.parent / settings_rel).resolve()
-            if settings_path.exists():
-                with open(settings_path) as f:
-                    settings_values = YAML(typ="safe").load(f) or {}
+        settings_values = self.workflow_inputs
 
         dependencies: dict[str, dict] = {}
         dependencies["id_ID"] = {"type": "file"}
@@ -1655,21 +1870,6 @@ class CWLTranslator(AbstractTranslator):
         dependencies["res_ID"] = {"type": "file"}
         dependencies["d_out"] = {"type": "list[file]"}
         dependencies["eof"] = {"type": "string"}
-
-        def _coerce(v, value_type: str):
-            if isinstance(v, dict) and "path" in v:
-                p = Path(v["path"])
-                if not p.is_absolute():
-                    p = (self.cwl_file.parent / p).resolve()
-                return str(p)
-            inner = _list_inner_type(value_type)
-            if inner is not None:
-                return [_coerce(item, inner) for item in (v or [])]
-            if value_type == "int":
-                return int(v)
-            if value_type == "bool":
-                return v if isinstance(v, bool) else str(v).lower() == "true"
-            return str(v)
 
         dataset_pairs: list[tuple[str, str]] = []
         scatter_input_pairs: list[tuple[str, str]] = []
@@ -1683,7 +1883,7 @@ class CWLTranslator(AbstractTranslator):
             in_counter += 1
             data_type = _cwl_type_to_swirl(wf_inp.type_)
             raw_val = settings_values.get(inp_name, [])
-            coerced_val = _coerce(raw_val, data_type)
+            coerced_val = _coerce_cwl_value(raw_val, data_type, self.cwl_file.parent)
             dependencies[d_name] = {
                 "type": data_type,
                 "value": coerced_val,
@@ -1773,9 +1973,7 @@ class CWLTranslator(AbstractTranslator):
             elif pname in unpacked_port_map:
                 if b.prefix:
                     tool_in_bindings.append((pos, {"value": b.prefix}))
-                tool_in_bindings.append(
-                    (pos, {"valueFrom": unpacked_port_map[pname]})
-                )
+                tool_in_bindings.append((pos, {"valueFrom": unpacked_port_map[pname]}))
             elif getattr(tin, "default", None) is not None:
                 if b.prefix:
                     tool_in_bindings.append((pos, {"value": b.prefix}))
@@ -1919,9 +2117,11 @@ class CWLTranslator(AbstractTranslator):
 
         # Workers
         unpacked_out_str = ", ".join([f"({p}, {d})" for p, d in unpacked_pairs])
-        work_in_str = "{(p_id, id_ID), " + ", ".join(
-            [f"({p}, {d})" for p, d in unpacked_pairs]
-        ) + "}"
+        work_in_str = (
+            "{(p_id, id_ID), "
+            + ", ".join([f"({p}, {d})" for p, d in unpacked_pairs])
+            + "}"
+        )
 
         worker_traces: list[str] = []
         for w in worker_names:

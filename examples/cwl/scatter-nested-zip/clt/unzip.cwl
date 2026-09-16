@@ -2,7 +2,6 @@ cwlVersion: v1.2
 class: CommandLineTool
 
 requirements:
-  InlineJavascriptRequirement: {}
   InitialWorkDirRequirement:
     listing:
       - entryname: scripts/unzip_archive.py
@@ -22,10 +21,4 @@ outputs:
   extracted_files:
     type: File[]
     outputBinding:
-      glob: "*"
-      outputEval: |
-        ${
-          return self.filter(function(f) {
-            return f.basename !== "scripts";
-          });
-        }
+      glob: "*.txt"

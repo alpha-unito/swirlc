@@ -1,6 +1,9 @@
 import os
+import pathlib
 import tempfile
 from tempfile import NamedTemporaryFile
+
+import pytest
 
 from swirlc.core.entity import (
     Data,
@@ -101,7 +104,9 @@ def test_translate():
 def test_translate_cwl_scatter(tmp_path):
     """Test translating a CWL workflow with scatter to SWIRL and compiling it."""
     from pathlib import Path
+
     from ruamel.yaml import YAML
+
     from swirlc.main import main
 
     example = Path(__file__).parent.parent / "examples" / "cwl" / "scatter"
@@ -144,7 +149,10 @@ def test_translate_cwl_scatter(tmp_path):
         metadata = YAML(typ="safe").load(f)
 
     assert metadata["steps"]["s_sc"]["type"] == "scatter_pairer"
-    assert metadata["steps"]["s_sc"]["scatterMethod"] in ("dotproduct", "flat_crossproduct")
+    assert metadata["steps"]["s_sc"]["scatterMethod"] in (
+        "dotproduct",
+        "flat_crossproduct",
+    )
     assert metadata["steps"]["s_op"]["type"] == "scatter_open"
     assert metadata["steps"]["s_G"]["type"] == "scatter_gather"
     assert metadata["steps"]["s_work"]["command"] == "python3"
@@ -175,11 +183,217 @@ def test_translate_cwl_scatter(tmp_path):
     assert (compiled_dir / "run.sh").exists()
 
 
+def test_cwl_region_tree_preserves_nested_scatter_paths():
+    """The recursive IR keeps subworkflow boundaries and worker bindings."""
+    from pathlib import Path
+
+    from swirlc.translator.cwl.cwl_translator import CWLTranslator, WorkflowRegion
+
+    example = Path(__file__).parent.parent / "examples" / "cwl" / "scatter-nested-zip"
+    root = CWLTranslator(example / "streamflow.yml").build_region_tree()
+
+    process = next(
+        invocation
+        for invocation in root.invocations
+        if invocation.path == "/process_all_zips"
+    )
+    assert process.scatter.region_id == "scatter:/process_all_zips"
+    assert process.scatter.inputs == ("zip_file",)
+    assert process.deployment.deployment == "zip_workers"
+    assert isinstance(process.process, WorkflowRegion)
+    assert process.process.inputs == {"zip_file": "/zip_files"}
+
+    inspect = next(
+        invocation
+        for invocation in process.process.invocations
+        if invocation.path == "/process_all_zips/inspect_step"
+    )
+    assert inspect.scatter.region_id == "scatter:/process_all_zips/inspect_step"
+    assert inspect.scatter.parent_region_id == "scatter:/process_all_zips"
+    assert inspect.scatter.inputs == ("target_file",)
+    assert inspect.deployment.deployment == "file_workers"
+    assert inspect.input_bindings == {
+        "target_file": ("/process_all_zips/unzip_step/extracted_files",)
+    }
+
+
+@pytest.mark.parametrize(
+    "method", ["dotproduct", "flat_crossproduct", "nested_crossproduct"]
+)
+def test_cwl_region_tree_preserves_scatter_method(method):
+    """All declared CWL scatter methods survive analysis unchanged."""
+    from pathlib import Path
+
+    from swirlc.translator.cwl.cwl_translator import CWLTranslator
+
+    example = Path(__file__).parent.parent / "examples" / "cwl" / "scatter"
+    translator = CWLTranslator(example / "streamflow.yml")
+    translator.cwl_obj.steps[0].scatterMethod = method
+
+    scatter = translator.build_region_tree().invocations[0].scatter
+    assert scatter.method == method
+
+
+def _scatter_pairs(tmp_path, method, inputs):
+    """Run the generated pair helper in isolation for phase-0 input cases."""
+    import json
+    import logging
+    import zipfile
+    from collections import defaultdict
+    from threading import Event
+
+    from swirlc.compiler.default.compiler import scatter_special_helpers
+
+    available = defaultdict(Event)
+    for port in inputs:
+        available[port].set()
+    namespace = {
+        "SCRATCH_DIR": str(tmp_path),
+        "available_port_data": available,
+        "json": json,
+        "logger": logging.getLogger(__name__),
+        "logging": logging,
+        "os": os,
+        "ports": dict(inputs),
+        "tempfile": tempfile,
+        "zipfile": zipfile,
+    }
+    exec(scatter_special_helpers, namespace)
+    namespace["_scatter_pair"](
+        "pair",
+        "Pair",
+        list(inputs),
+        [("p_group", "file", "")],
+        method,
+    )
+    return [
+        json.loads(pathlib.Path(path).read_text())
+        for path in namespace["ports"]["p_group"]
+    ]
+
+
+@pytest.mark.parametrize(
+    ("method", "inputs", "expected"),
+    [
+        (
+            "dotproduct",
+            {"a": ["same", "same"], "b": [1, 2]},
+            [["same", 1], ["same", 2]],
+        ),
+        (
+            "flat_crossproduct",
+            {"a": [1, 2], "b": ["x", "y"]},
+            [[1, "x"], [1, "y"], [2, "x"], [2, "y"]],
+        ),
+        ("nested_crossproduct", {"a": [], "b": ["x"]}, []),
+    ],
+)
+def test_scatter_pair_preserves_empty_and_duplicate_inputs(
+    tmp_path, method, inputs, expected
+):
+    """Empty inputs stay empty and equal values remain distinct iterations."""
+    payloads = _scatter_pairs(tmp_path, method, inputs)
+    assert [
+        [component["value"] for component in payload["components"]]
+        for payload in payloads
+    ] == expected
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="Phase 3 must retain coordinate vectors for nested cross-product gathering.",
+)
+def test_nested_crossproduct_pair_includes_coordinates(tmp_path):
+    payloads = _scatter_pairs(tmp_path, "nested_crossproduct", {"a": [1], "b": ["x"]})
+    assert payloads[0]["coordinates"] == [0, 0]
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="Phase 3 must lower nested scatter to separate worker pools and hints.",
+)
+def test_translate_cwl_scatter_nested_zip_acceptance(tmp_path):
+    """Lock the phase-3 nested scatter trace and hint contract."""
+    import json
+    import re
+    from pathlib import Path
+
+    import antlr4
+    from ruamel.yaml import YAML
+
+    from swirlc.antlr.SWIRLLexer import SWIRLLexer
+    from swirlc.antlr.SWIRLParser import SWIRLParser
+    from swirlc.main import main
+
+    example = Path(__file__).parent.parent / "examples" / "cwl" / "scatter-nested-zip"
+    outdir = tmp_path / "translated"
+    outdir.mkdir()
+    assert (
+        main(
+            [
+                "translate",
+                "--language",
+                "cwl",
+                str(example / "streamflow.yml"),
+                "--outdir",
+                str(outdir),
+            ]
+        )
+        == 0
+    )
+
+    trace = (outdir / "workflow.swirl").read_text()
+    with open(outdir / "metadata.yml") as metadata_file:
+        metadata = YAML(typ="safe").load(metadata_file)
+
+    # l0 is the coordinator; the two pools must not be collapsed together.
+    assert len(metadata["locations"]) == 6
+    assert "scatter:/process_all_zips" in trace
+    assert "scatter:/process_all_zips/inspect_step" in trace
+
+    directives = re.findall(r"^// @compiler_hint_(start|end) (.+)$", trace, re.M)
+    starts = [json.loads(payload) for kind, payload in directives if kind == "start"]
+    ends = [json.loads(payload) for kind, payload in directives if kind == "end"]
+    assert {item["region"] for item in starts} == {
+        "scatter:/process_all_zips",
+        "scatter:/process_all_zips/inspect_step",
+    }
+    assert len(starts) == len(ends) == 4
+    assert all(item["version"] == 1 and item["kind"] == "scatter" for item in starts)
+
+    parser = SWIRLParser(
+        antlr4.CommonTokenStream(SWIRLLexer(antlr4.InputStream(trace)))
+    )
+    parser.workflow()
+    assert parser.getNumberOfSyntaxErrors() == 0
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="Phase 3 must reject unequal dot-product input lengths.",
+)
+def test_translate_cwl_dotproduct_rejects_unequal_lengths():
+    """CWL dot-product must not silently truncate to the shorter input."""
+    import io
+    from pathlib import Path
+
+    from swirlc.translator.cwl.cwl_translator import CWLTranslator
+
+    example = Path(__file__).parent.parent / "examples" / "cwl" / "scatter"
+    translator = CWLTranslator(example / "streamflow.yml")
+    translator.workflow_inputs["files_b"] = translator.workflow_inputs["files_b"][:-1]
+
+    with pytest.raises(ValueError, match="dotproduct.*equal"):
+        translator.translate(io.StringIO(), io.StringIO())
+
+
 def test_translate_cwl_scatter_nested(tmp_path):
     """Test translating, compiling, and running a CWL workflow with subworkflow scatter and dynamic scatter."""
     import subprocess
     from pathlib import Path
+
     from ruamel.yaml import YAML
+
     from swirlc.main import main
 
     example = Path(__file__).parent.parent / "examples" / "cwl" / "scatter-nested"
@@ -260,7 +474,9 @@ def test_translate_cwl_scatter_nested(tmp_path):
     assert (compiled_dir / "run.sh").exists()
 
     # 3. Execute compiled workflow
-    proc = subprocess.run(["bash", "run.sh"], cwd=compiled_dir, capture_output=True, text=True)
+    proc = subprocess.run(
+        ["bash", "run.sh"], cwd=compiled_dir, capture_output=True, text=True
+    )
     assert proc.returncode == 0, f"run.sh failed: {proc.stderr}"
 
     # Verify final report
@@ -274,4 +490,3 @@ def test_translate_cwl_scatter_nested(tmp_path):
     assert "[BETA] total=23" in report_content
     assert "[ALPHA] total=43" in report_content
     assert "[BETA] total=43" in report_content
-
