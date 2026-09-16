@@ -1,0 +1,33 @@
+version: v1.0
+workflows:
+  master:
+    type: cwl
+    config:
+      file: main.cwl
+      settings: inputs.yml
+    bindings:
+      - step: /
+        target:
+          deployment: coordinator
+      - step: /process_batch
+        target:
+          deployment: batch_workers
+          locations: 1
+      - step: /process_batch/echo_item
+        target:
+          deployment: item_workers
+          locations: 1
+
+deployments:
+  coordinator:
+    type: local
+    config: {}
+    port: 35300
+  batch_workers:
+    type: local
+    config: {}
+    port: 35310
+  item_workers:
+    type: local
+    config: {}
+    port: 35320
