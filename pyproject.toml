@@ -82,7 +82,7 @@ packages = [
 zip-safe = true
 
 [tool.setuptools.package-data]
-"swirlc.config" = ["schemas/v1.0/*.json"]
+"swirlc.config" = ["schemas/v1.0/*.json", "schemas/v1.1/*.json"]
 
 [tool.coverage.run]
 branch = true

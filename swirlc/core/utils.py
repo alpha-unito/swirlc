@@ -28,6 +28,11 @@ def get_pair(ctx: SWIRLParser.DataPairContext) -> tuple[str, str]:
     return (get_name(ctx.port()), get_name(ctx.data()))
 
 
+def get_location_set(ctx: SWIRLParser.LocationSetContext) -> set[str]:
+    """Return either spelling of a destination set as location names."""
+    return {get_name(name) for name in ctx.name()}
+
+
 def get_name(el: antlr4.ParserRuleContext) -> str:
     if isinstance(el, SWIRLParser.DataContext):
         return el.getText()

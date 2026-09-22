@@ -162,8 +162,6 @@ class StandardCompiler(BaseCompiler):
         node: TraceNode,
         indent: int,
         trace: TextIO,
-        param: str | None = None,
-        domain: str | None = None,
     ):
         pass
 
@@ -221,6 +219,7 @@ class StandardCompiler(BaseCompiler):
     def begin_workflow(self, workflow: Workflow) -> None:
         if not isinstance(workflow, DistributedWorkflow):
             raise ValueError("Workflow must be a DistributedWorkflow")
+        TraceNode.counter = 0
         self.current_workflow = workflow
 
     def end_workflow(self) -> None:
@@ -401,14 +400,14 @@ class StandardCompiler(BaseCompiler):
         self.current_node = self.current_node.parent
 
     # ======== Replication ========
-    def begin_repl(self, param: str | None = None, domain: str | None = None) -> None:
+    def begin_repl(self) -> None:
         assert self.current_location is not None
         assert self.current_node is not None
         trace = self._get_location_trace(self.current_location)
 
         self.current_node = self.current_node.add_child(trace)
         self.current_node.is_repl = True
-        self.write_repl_start(self.current_node, self.current_node.depth, trace, param=param, domain=domain)
+        self.write_repl_start(self.current_node, self.current_node.depth, trace)
         self.current_node.depth += 1
 
 
@@ -435,4 +434,3 @@ class StandardCompiler(BaseCompiler):
         trace = self._get_location_trace(self.current_location)
         node = self.current_node.add_child(trace, is_threaded=False)
         self.write_zero(node, node.depth, trace)
-

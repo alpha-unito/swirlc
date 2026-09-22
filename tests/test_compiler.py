@@ -167,3 +167,25 @@ def test_scatter() -> None:
         assert "_scatter_open(" in l1
         assert "_scatter_gather(" in l0
 
+
+def test_nested_scatter_trace_target() -> None:
+    example = pathlib.Path(__file__).parent.parent / "examples" / "cwl" / "scatter-nested-zip"
+    with tempfile.TemporaryDirectory() as workdir:
+        translated = pathlib.Path(workdir) / "translated"
+        translated.mkdir()
+        assert main(["translate", "--language", "cwl", str(example / "streamflow.yml"), "--outdir", str(translated)]) == 0
+        metadata = translated / "metadata.yml"
+        source = translated / "workflow.swirl"
+        traced = pathlib.Path(workdir) / "traced"
+        traced.mkdir()
+        assert main(["compile", str(source), str(metadata), "--outdir", str(traced), "--target", "trace"]) == 0
+        trace = "\n".join(path.read_text() for path in sorted(traced.glob("*.md")))
+        for expected in ("Replicate", "Choice", "Move: (", "Recv: (", "eof", "_s_scatter_", "_s_open_", "_s_gather_"):
+            assert expected in trace
+
+        stripped = pathlib.Path(workdir) / "without-hints.swirl"
+        stripped.write_text("\n".join(line for line in source.read_text().splitlines() if "@compiler" not in line))
+        without_hints = pathlib.Path(workdir) / "without-hints"
+        without_hints.mkdir()
+        assert main(["compile", str(stripped), str(metadata), "--outdir", str(without_hints), "--target", "trace"]) == 0
+        assert {p.name: p.read_text() for p in traced.glob("*.md")} == {p.name: p.read_text() for p in without_hints.glob("*.md")}

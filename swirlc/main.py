@@ -3,14 +3,12 @@ from __future__ import annotations
 import os
 import sys
 
-import antlr4
-
 import swirlc.compiler
 import swirlc.translator
-from swirlc.antlr.SWIRLLexer import SWIRLLexer
-from swirlc.antlr.SWIRLParser import SWIRLParser
+from swirlc.compiler.hints import scan_hints
 from swirlc.config.validator import SwirlValidator
 from swirlc.core.compiler import CompileVisitor
+from swirlc.core.parsing import parse_workflow
 from swirlc.log_handler import logger
 from swirlc.parser import parser
 
@@ -46,10 +44,10 @@ def main(args):
                     else target_class(args.outdir, tmpdir=args.tmpdir)
                 )
 
-                lexer = SWIRLLexer(antlr4.InputStream(code))
-                tokens = antlr4.CommonTokenStream(lexer)
-                tree = SWIRLParser(tokens).workflow()
-                visitor = CompileVisitor(compiler=target, metadata=config)
+                tree = parse_workflow(code)
+                visitor = CompileVisitor(
+                    compiler=target, metadata=config, hints=scan_hints(code, config)
+                )
                 visitor.visit(tree)
             else:
                 raise Exception(f"Target `{args.target}` not supported")

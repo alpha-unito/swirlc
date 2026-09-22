@@ -1828,8 +1828,6 @@ if __name__ == '__main__':
         node: TraceNode,
         indent: int,
         trace: TextIO,
-        param: str | None = None,
-        domain: str | None = None,
     ):
         if node.depth == 0:
             return

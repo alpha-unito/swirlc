@@ -111,7 +111,7 @@ class BaseCompiler:
         """After processing both operands of a choice operator."""
         pass
 
-    def begin_repl(self, param: str | None = None, domain: str | None = None) -> None:
+    def begin_repl(self) -> None:
         """Before processing the body of a replication operator."""
         pass
 
@@ -143,10 +143,12 @@ class CompileVisitor(SWIRLVisitor, ABC):
         self,
         compiler: BaseCompiler,
         metadata: MutableMapping[str, Any],
+        hints: list[Any] | None = None,
     ) -> None:
         super().__init__()
         self.compiler: BaseCompiler = compiler
         self.metadata: MutableMapping[str, Any] = metadata
+        self.hints = hints or []
         self.workflow: DistributedWorkflow = DistributedWorkflow()
         for name, settings in self.metadata["locations"].items():
             deployment = settings.get("deployment", {})
@@ -222,7 +224,7 @@ class CompileVisitor(SWIRLVisitor, ABC):
     def _register_step(self, ctx: SWIRLParser.ExecContext):
         flow = utils.get_flow(ctx)
         inputs, outputs = flow
-        mapping = {utils.get_name(el) for el in ctx.mapping().name()}
+        mapping = utils.get_location_set(ctx.mapping().locationSet())
         name = utils.get_name(ctx.step())
         if name not in self.workflow.steps:
             step_metadata = self.metadata["steps"][name]
@@ -232,15 +234,6 @@ class CompileVisitor(SWIRLVisitor, ABC):
             expression = step_metadata.get("expression", {})
             expression_source = expression.get("source")
             step_type = step_metadata.get("type")
-            if not step_type:
-                d_name = step_metadata.get("displayName", "").lower().replace(" ", "_")
-                cmd = str(step_metadata.get("command", "")).lower()
-                if "pair" in d_name or "pair" in cmd:
-                    step_type = "scatter_pairer"
-                elif "unpack" in d_name or "open" in d_name or "scatter_open" in d_name:
-                    step_type = "scatter_open"
-                elif "gather" in d_name or "scatter_gather" in d_name:
-                    step_type = "scatter_gather"
 
             step = Step(
                 name,
@@ -323,7 +316,7 @@ class CompileVisitor(SWIRLVisitor, ABC):
 
     def visitExec(self, ctx: SWIRLParser.ExecContext):
         flow = utils.get_flow(ctx)
-        mapping = {utils.get_name(el) for el in ctx.mapping().name()}
+        mapping = utils.get_location_set(ctx.mapping().locationSet())
         name = utils.get_name(ctx.step())
         if name not in self.workflow.steps:
             self._register_step(ctx)
@@ -377,69 +370,6 @@ class CompileVisitor(SWIRLVisitor, ABC):
             data, port, data_type, src, dst
         )
 
-    def _get_first_leaf_pred(self, ctx: SWIRLParser.TraceContext) -> SWIRLParser.PredContext | None:
-        while ctx is not None:
-            if isinstance(ctx, SWIRLParser.TraceParenContext):
-                ctx = ctx.trace()
-            elif isinstance(ctx, SWIRLParser.TraceReplContext):
-                ctx = ctx.trace()
-            elif isinstance(ctx, SWIRLParser.TraceOpContext):
-                ctx = ctx.trace(0)
-            elif isinstance(ctx, SWIRLParser.TracePredContext):
-                return ctx.pred()
-            else:
-                break
-        return None
-
-    def _has_eof_op(self, ctx: SWIRLParser.TraceContext) -> bool:
-        if ctx is None:
-            return False
-        if isinstance(ctx, (SWIRLParser.TraceParenContext, SWIRLParser.TraceReplContext)):
-            return self._has_eof_op(ctx.trace())
-        elif isinstance(ctx, SWIRLParser.TraceOpContext):
-            return self._has_eof_op(ctx.trace(0)) or self._has_eof_op(ctx.trace(1))
-        elif isinstance(ctx, SWIRLParser.TracePredContext):
-            pred = ctx.pred()
-            for op in (pred.send(), pred.recv(), pred.move()):
-                if op is not None:
-                    d_text = utils.get_name(op.data())
-                    p_text = utils.get_name(op.port())
-                    data, port = self._extract_data_and_port(d_text, p_text)
-                    if data == "eof" or port == "eof":
-                        return True
-        return False
-
-    def _extract_choice_info(
-        self, trace0: SWIRLParser.TraceContext, trace1: SWIRLParser.TraceContext
-    ) -> tuple[str, int | None]:
-        pred = self._get_first_leaf_pred(trace0)
-        guard = "True"
-        if pred is not None:
-            if pred.move() is not None:
-                d_text = utils.get_name(pred.move().data())
-                p_text = utils.get_name(pred.move().port())
-                data, port = self._extract_data_and_port(d_text, p_text)
-                guard = f"not _has_data({port!r})" if data == "eof" else f"_has_data({port!r})"
-            elif pred.send() is not None:
-                d_text = utils.get_name(pred.send().data())
-                p_text = utils.get_name(pred.send().port())
-                data, port = self._extract_data_and_port(d_text, p_text)
-                guard = f"not _has_data({port!r})" if data == "eof" else f"_has_data({port!r})"
-            elif pred.recv() is not None:
-                d_text = utils.get_name(pred.recv().data())
-                p_text = utils.get_name(pred.recv().port())
-                data, port = self._extract_data_and_port(d_text, p_text)
-                src = utils.get_name(pred.recv().src())
-                guard = f"_peek_is_eof({src!r}, {port!r})" if data == "eof" else f"not _peek_is_eof({src!r}, {port!r})"
-
-        eof_branch = None
-        if self._has_eof_op(trace1):
-            eof_branch = 1
-        elif self._has_eof_op(trace0):
-            eof_branch = 0
-
-        return guard, eof_branch
-
     def visitTraceOp(self, ctx: SWIRLParser.TraceOpContext):
         if ctx.op.type == SWIRLParser.PAR:
             self.compiler.begin_par()
@@ -454,8 +384,7 @@ class CompileVisitor(SWIRLVisitor, ABC):
             self.visit(ctx.trace(1))
             self.compiler.end_seq()
         elif ctx.op.type == SWIRLParser.CHOICE:
-            guard, eof_branch = self._extract_choice_info(ctx.trace(0), ctx.trace(1))
-            self.compiler.begin_choice(guard=guard, eof_branch=eof_branch)
+            self.compiler.begin_choice()
             self.visit(ctx.trace(0))
             self.compiler.choice()
             self.visit(ctx.trace(1))
@@ -464,13 +393,7 @@ class CompileVisitor(SWIRLVisitor, ABC):
             raise Exception(f"Unsupported operator {ctx.op.text}")
 
     def visitTraceRepl(self, ctx: SWIRLParser.TraceReplContext):
-        param = None
-        domain = None
-        if ctx.ID(0) is not None:
-            param = ctx.ID(0).getText()
-        if ctx.ID(1) is not None:
-            domain = ctx.ID(1).getText()
-        self.compiler.begin_repl(param=param, domain=domain)
+        self.compiler.begin_repl()
         val = self.visit(ctx.trace())
         self.compiler.end_repl()
         return val
@@ -498,4 +421,3 @@ class CompileVisitor(SWIRLVisitor, ABC):
         val = self.visitChildren(ctx)
         self.compiler.end_workflow()
         return val
-

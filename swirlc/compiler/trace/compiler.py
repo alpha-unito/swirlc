@@ -98,11 +98,8 @@ class TraceTarget(StandardCompiler):
         node: TraceNode,
         indent: int,
         trace: TextIO,
-        param: str | None = None,
-        domain: str | None = None,
     ):
-        param_str = f"[{param} in {domain}] " if param else ""
-        trace.write(f"{'  ' * indent}{node.id} = Replicate {param_str}{{\n")
+        trace.write(f"{'  ' * indent}{node.id} = Replicate {{\n")
 
 
     def write_repl_end(self, node: TraceNode, indent: int, trace: TextIO):
@@ -124,4 +121,3 @@ class TraceTarget(StandardCompiler):
 
     def write_location_end(self, location: Location, trace: TextIO):
         trace.write("```\n")
-

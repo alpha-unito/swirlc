@@ -1,18 +1,15 @@
 #!/bin/bash
 
-ANTLR4_VERSION="4.13.1"
+ANTLR4_VERSION="4.13.2"
 
 SCRIPT_DIRECTORY=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &> /dev/null && pwd)
 SOURCE_DIRECTORY=$(dirname "${SCRIPT_DIRECTORY}")
-TMP_DIRECTORY="/tmp/antlr4/parsers"
+TMP_DIRECTORY=$(mktemp -d)
+trap 'rm -rf "${TMP_DIRECTORY}" Dockerfile' EXIT
 
 # Build ANTLR4 Docker
-curl -fsSLO "https://raw.githubusercontent.com/antlr/antlr4/${ANTLR4_VERSION}/docker/Dockerfile"
+curl -fsSLo Dockerfile "https://raw.githubusercontent.com/antlr/antlr4/${ANTLR4_VERSION}/docker/Dockerfile"
 docker build -t antlr4 .
-rm -f Dockerfile
-
-# Make tmp destination directory
-mkdir -p "${TMP_DIRECTORY}"
 
 # Generate Python parser
 docker run                                                \
@@ -24,7 +21,7 @@ docker run                                                \
   -o /swirl/parsers/python                                \
   -visitor                                                \
   /swirl/grammar/SWIRL.g4
-mv ${TMP_DIRECTORY}/python/*.py "${SOURCE_DIRECTORY}/swirlc/antlr/"
-
-# Remove tmp destination directory
-rm -rf "${TMP_DIRECTORY}"
+for generated in "${TMP_DIRECTORY}"/python/*.py; do
+  cmp -s "${generated}" "${SOURCE_DIRECTORY}/swirlc/antlr/$(basename "${generated}")" || \
+    mv "${generated}" "${SOURCE_DIRECTORY}/swirlc/antlr/"
+done
