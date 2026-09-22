@@ -1,0 +1,66 @@
+version: v1.0
+
+workflows:
+  1000genome:
+    type: cwl
+    config:
+      file: main.cwl
+      settings: config.yml
+    bindings:
+      - step: /
+        target:
+          deployment: coordinator
+
+      - step: /chromosome
+        target:
+          - deployment: chromosome_worker1
+          - deployment: chromosome_worker2
+
+      - step: /chromosome/individuals
+        target:
+          - deployment: inner_worker1
+          - deployment: inner_worker2
+          - deployment: inner_worker3
+
+      - step: /chromosome/mutation_overlap
+        target:
+          - deployment: inner_worker1
+          - deployment: inner_worker2
+          - deployment: inner_worker3
+
+      - step: /chromosome/frequency
+        target:
+          - deployment: inner_worker1
+          - deployment: inner_worker2
+          - deployment: inner_worker3
+
+deployments:
+  coordinator:
+    type: local
+    config: {}
+    port: 35400
+
+  chromosome_worker1:
+    type: local
+    config: {}
+    port: 35410
+
+  chromosome_worker2:
+    type: local
+    config: {}
+    port: 35411
+
+  inner_worker1:
+    type: local
+    config: {}
+    port: 35420
+
+  inner_worker2:
+    type: local
+    config: {}
+    port: 35421
+
+  inner_worker3:
+    type: local
+    config: {}
+    port: 35422

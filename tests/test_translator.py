@@ -623,3 +623,69 @@ def test_translate_cwl_scatter_nested(tmp_path):
     assert "[BETA] total=23" in report_content
     assert "[ALPHA] total=43" in report_content
     assert "[BETA] total=43" in report_content
+
+
+def test_cwl_file_location_is_coerced_to_an_absolute_path(tmp_path):
+    from swirlc.translator.cwl.cwl_translator import _coerce_cwl_value
+
+    assert _coerce_cwl_value(
+        {"class": "File", "location": "data/input.vcf.gz"}, "file", tmp_path
+    ) == str(tmp_path / "data" / "input.vcf.gz")
+    assert _coerce_cwl_value(
+        {"class": "File", "location": "file:///data/input.vcf.gz"}, "file", tmp_path
+    ) == "/data/input.vcf.gz"
+    with pytest.raises(ValueError, match="Unsupported CWL file URI"):
+        _coerce_cwl_value(
+            {"class": "File", "location": "https://example.test/input.vcf.gz"},
+            "file",
+            tmp_path,
+        )
+
+
+def test_translate_1000genome_nested_scatters(tmp_path):
+    import antlr4
+    from ruamel.yaml import YAML
+
+    from swirlc.antlr.SWIRLLexer import SWIRLLexer
+    from swirlc.antlr.SWIRLParser import SWIRLParser
+    from swirlc.main import main
+
+    example = pathlib.Path(__file__).parent.parent / "examples" / "cwl" / "1000genome"
+    outdir = tmp_path / "1000genome"
+    outdir.mkdir()
+    assert main(
+        [
+            "translate",
+            "--language",
+            "cwl",
+            str(example / "streamflow.yml"),
+            "--outdir",
+            str(outdir),
+        ]
+    ) == 0
+
+    trace = (outdir / "workflow.swirl").read_text()
+    metadata_path = outdir / "metadata.yml"
+    metadata = YAML(typ="safe").load(metadata_path)
+    assert [region["name"] for region in metadata["scatterRegions"].values()] == [
+        "/chromosome",
+        "/chromosome/individuals",
+        "/chromosome/mutation_overlap",
+        "/chromosome/frequency",
+    ]
+    assert metadata["steps"]["_s_scatter_1"]["scatterPorts"] == [
+        "p_get_intervals_counters",
+        "p_get_intervals_stops",
+    ]
+    assert metadata["dependencies"]["individuals_counter"]["type"] == "int"
+    assert metadata["dependencies"]["individuals_stop"]["type"] == "int"
+    assert metadata["dependencies"]["d_overlap_files"]["type"] == "list[list[file]]"
+    assert metadata["dependencies"]["d_freq_files"]["type"] == "list[list[file]]"
+    assert "{'type': 'File', 'location':" not in metadata_path.read_text()
+    assert "(p_individuals_output_file, individuals_output_file[task_id_0])" in trace
+
+    parser = SWIRLParser(
+        antlr4.CommonTokenStream(SWIRLLexer(antlr4.InputStream(trace)))
+    )
+    parser.workflow()
+    assert parser.getNumberOfSyntaxErrors() == 0
