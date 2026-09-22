@@ -150,7 +150,8 @@ The unresolved theoretical issues are:
 - EOF is not scoped to a region or parent iteration;
 - a set of data values cannot represent order or multiplicity by itself;
 - statically known `Out^D(s)` does not describe data-dependent fan-out;
-- the draft choice rule does not clearly discard the unselected alternative;
+- choice selects an executable alternative, but its interaction with consuming
+  moves still needs a confluence argument;
 - the original confluence argument does not automatically hold with consuming
   moves and exclusive choices; and
 - optimizations that deduplicate communication are unsafe unless iteration
@@ -158,39 +159,66 @@ The unresolved theoretical issues are:
 
 ### Operational supplement
 
-Use one opaque hierarchical task key:
+Use one runtime identity containing only the numeric region ID and an opaque,
+hierarchical iteration ID:
 
 ```text
-TaskKey = (region ID, parent task key, coordinate vector)
+TaskKey = (region ID, iteration ID)
 ```
 
 Examples:
 
 ```text
-scatter:/process_all_zips (1)
-scatter:/process_all_zips/inspect_step parent=(1) coordinate=(2)
+TaskKey(0, [1])
+TaskKey(1, [1, 2])
 ```
 
 The serialized representation is an implementation detail. Do not add one
 grammar bracket per nesting level. A single opaque key must work at any depth.
 
+Each scatter region uses a stable numeric suffix assigned during lowering. Its
+task identity and payload are named `task_id_N` and `task_payload_N`, where `N`
+is the scatter region ID. `task_id_N` contains the opaque serialized `TaskKey`;
+scatter dispatch creates it and nested dispatch extends it.
+
+Transport identity and payload atomically as one tuple:
+
+```swirl
+(task_id_N, task_payload_N)
+```
+
+Write dynamically scoped data as `name[task_id_N]`, for example
+`result_0[task_id_0]`. Do not use a `_ID` suffix, the old `taskID` placeholder,
+or separate messages for task identity and payload.
+
+Tuple data is recursive SWIRL data syntax:
+
+```antlr
+data : ID ('[' ID ']')? | ZERO | EOF_VAL | '(' data ',' data ')' ;
+```
+
+Tuple transport is atomic. `move` consumes one tuple instance, and `recv`
+destructures that instance into its component names. Equal payloads remain
+distinct because each tuple contains its own task identity.
+
 Each scatter region produces:
 
-- keyed task payloads;
+- atomic task tuples containing identity and payload;
 - a manifest containing expected count and output shape;
 - keyed task results; and
-- a completion event scoped to the region and parent key.
+- a completion event scoped to the region and enclosing iteration prefix.
 
 Use two different completion concepts:
 
-- **region completion**: all children of one parent task are known and may be
+- **region completion**: all children of one enclosing iteration are known and may be
   gathered; and
 - **worker-stream EOF**: no more tasks will ever be sent to a worker for that
   region, so its replicated handler may stop.
 
 A global EOF cannot safely represent both.
 
-`send` copies a value. `move` consumes one keyed value from its source queue.
+`send` copies a value. `move` consumes one value, including one complete tuple,
+from its source queue.
 
 ## General workflow-region model
 
@@ -206,7 +234,7 @@ WorkflowRegion
   outputs
   child invocations
   inherited requirements
-  inherited/default deployment
+  inherited/default deployments
   parent region
 
 Invocation
@@ -214,14 +242,13 @@ Invocation
   process: Tool | WorkflowRegion
   input bindings
   output declarations
-  effective deployment
+  effective deployments
   scatter: ScatterSpec | None
 
 ScatterSpec
   ordered input names
   method
-  region ID
-  parent region ID | None
+  region path
 ```
 
 Prefer small dataclasses or existing entity classes. Do not create abstract
@@ -233,8 +260,8 @@ Important properties:
 - A normal subworkflow invokes its region once.
 - A scattered subworkflow invokes the same region once per task.
 - A scattered tool is a scattered invocation whose process is a tool.
-- A nested scatter appends coordinates to its parent task key.
-- A region supplies an inherited deployment default, but descendants may
+- A nested scatter appends coordinates to its enclosing iteration ID.
+- A region supplies inherited deployment defaults, but descendants may
   override it with longer StreamFlow bindings.
 - Ordinary regions may be flattened during final lowering when their boundary
   has no runtime meaning.
@@ -249,34 +276,33 @@ execution policy on an invocation.
 Hints are comments, not SWIRL syntax. Use `//`, because the existing lexer
 already recognizes it as a comment. Do not use `#`.
 
-Use one-line, versioned JSON so a future raw-source pre-pass can parse hints
-without changing the grammar:
+Use named, single-line directives so a future raw-source pre-pass can parse
+hints without changing the grammar:
 
 ```swirl
-// @compiler_hint_start {"version":1,"kind":"scatter","phase":"dispatch","region":"scatter:/compute"}
+// @compiler begin scatter.dispatch 0
 ...
-// @compiler_hint_end {"region":"scatter:/compute","phase":"dispatch"}
+// @compiler end scatter.dispatch 0
 ```
-
-Use deterministic JSON serialization:
-
-- sorted keys;
-- compact separators;
-- no multiline payloads; and
-- JSON arrays retain semantically significant order.
 
 ### Region identity
 
-`region` must be derived from the full CWL path, for example:
+Assign each scatter region a zero-based integer ID in stable traversal order.
+The ID only needs to remain consistent within one generated SWIRL and metadata
+pair. It is not a persistent ID across translations.
 
-```text
-scatter:/compute
-scatter:/process_all_zips
-scatter:/process_all_zips/inspect_step
+Keep the full CWL path in metadata for diagnostics:
+
+```yaml
+scatterRegions:
+  "0":
+    name: /process_all_zips
+  "1":
+    name: /process_all_zips/inspect_step
 ```
 
-Do not use generated numeric step counters as region identity. Nested regions
-also include `parentRegion` in their start configuration.
+At runtime, identify work with only the region ID and hierarchical iteration
+ID. Do not repeat paths, methods, controllers, or worker lists in every hint.
 
 ### Phases
 
@@ -286,33 +312,52 @@ A distributed scatter region can have three phases:
 2. `worker`: receive/open one task, execute its body, and return results; and
 3. `gather`: receive keyed results and reconstruct output arrays.
 
-The first translator milestone may emit `dispatch` and `gather` only, matching
-the currently generated controller trace. Add `worker` when the recursive
-lowering can identify the complete replaceable worker fragment reliably.
+Emit all three phases. A worker hint encloses the complete replicated work/EOF
+choice at each worker location. Nested dispatch and gather spans may therefore
+appear inside an outer worker span.
 
 ### Suggested dispatch hint
 
 ```swirl
-// @compiler_hint_start {"controller":"l0","idPort":"p_id","kind":"scatter","method":"flat_crossproduct","payloadPort":"p_group","phase":"dispatch","region":"scatter:/compute","scatterPorts":["p_in1","p_in2"],"step":"s_sc","version":1,"workers":["l1","l2","l3"]}
+// @compiler begin scatter.dispatch 0
 (
-  exec(s_sc, {(p_in1, d_in1), (p_in2, d_in2)} -> {(p_id, id_ID), (p_group, group_ID)}, {l0})
+  exec(_s_scatter_0, {(p_in1, d_in1), (p_in2, d_in2)} -> {(p_task_0, (task_id_0, task_payload_0))}, {l0})
   .
   (
     !(
       (
-        move(id_ID -> p_id, l0, {l1, l2, l3}) .
-        move(group_ID -> p_group, l0, {l1, l2, l3})
+        move((task_id_0, task_payload_0) -> p_task_0, l0, {l1, l2, l3})
       )
       +
       (
-        send(eof -> p_id, l0, l1) |
-        send(eof -> p_id, l0, l2) |
-        send(eof -> p_id, l0, l3)
+        send(eof -> p_task_0, l0, l1) |
+        send(eof -> p_task_0, l0, l2) |
+        send(eof -> p_task_0, l0, l3)
       )
     )
   )
 )
-// @compiler_hint_end {"phase":"dispatch","region":"scatter:/compute"}
+// @compiler end scatter.dispatch 0
+```
+
+### Suggested worker hint
+
+```swirl
+// @compiler begin scatter.worker 0
+!(
+  (
+    recv((task_id_0, task_payload_0) -> p_task_0, l0, l1) .
+    exec(_s_open_0, {(p_task_0, task_payload_0)} -> {(p_a, a[task_id_0]), (p_b, b[task_id_0])}, {l1}) .
+    exec(s_work, {(p_a, a[task_id_0]), (p_b, b[task_id_0])} -> {(p_result_0, result_0[task_id_0])}, {l1}) .
+    send(result_0[task_id_0] -> p_result_0, l1, l0)
+  )
+  +
+  (
+    recv(eof -> p_task_0, l0, l1) .
+    send(eof -> p_result_0, l1, l0)
+  )
+)
+// @compiler end scatter.worker 0
 ```
 
 ### Suggested gather hint
@@ -321,17 +366,17 @@ Include the gather step as well as its receives. Together they form the
 semantic operation that a future optimizer may replace.
 
 ```swirl
-// @compiler_hint_start {"controller":"l0","inputPorts":["p_res"],"kind":"scatter","outputPorts":["p_out"],"phase":"gather","region":"scatter:/compute","step":"s_G","version":1,"workers":["l1","l2","l3"]}
+// @compiler begin scatter.gather 0
 (
   (
-    !(recv(res_ID -> p_res, l1, l0) + recv(eof -> p_res, l1, l0)) |
-    !(recv(res_ID -> p_res, l2, l0) + recv(eof -> p_res, l2, l0)) |
-    !(recv(res_ID -> p_res, l3, l0) + recv(eof -> p_res, l3, l0))
+    !(recv(result_0[task_id_0] -> p_result_0, l1, l0) + recv(eof -> p_result_0, l1, l0)) |
+    !(recv(result_0[task_id_0] -> p_result_0, l2, l0) + recv(eof -> p_result_0, l2, l0)) |
+    !(recv(result_0[task_id_0] -> p_result_0, l3, l0) + recv(eof -> p_result_0, l3, l0))
   )
   .
-  exec(s_G, {(p_res, res_ID)} -> {(p_out, d_out)}, {l0})
+  exec(_s_gather_0, {(p_result_0, result_0[task_id_0])} -> {(p_out, d_out)}, {l0})
 )
-// @compiler_hint_end {"phase":"gather","region":"scatter:/compute"}
+// @compiler end scatter.gather 0
 ```
 
 Keep the sequential `.` connecting dispatch, gather, and subsequent workflow
@@ -344,17 +389,17 @@ not see hints. When compiler support begins, first implement a small raw-source
 pre-pass that:
 
 1. scans only directive lines;
-2. parses the JSON payload;
-3. pairs start/end directives by `region` and `phase`;
+2. parses the phase and numeric region ID;
+3. pairs begin/end directives by `region` and phase using a stack;
 4. records source spans;
-5. rejects overlapping malformed spans conservatively; and
+5. permits properly nested spans and rejects crossing or unmatched spans; and
 6. passes validated hint information to the optimizer.
 
 Do not change the grammar merely to expose comments. Moving comments to an
 ANTLR hidden channel is an alternative only if source offsets from the
 pre-pass prove insufficient.
 
-Unknown versions, kinds, phases, or malformed payloads must be ignored with a
+Unknown kinds, phases, or malformed directives must be ignored with a
 warning. The compiler must fall back to compiling the ordinary trace.
 
 ## Implementation phases
@@ -371,8 +416,9 @@ Do this before restructuring production code.
   - two distinct zip-worker locations; and
   - three distinct file-worker locations.
 - Assert that the inner scatter references the file-worker pool.
-- Assert that outer and inner regions have different full-path IDs.
-- Add hint assertions for start/end balance and JSON contents.
+- Assert that outer and inner regions have different numeric IDs and retain
+  their full paths in metadata.
+- Add hint assertions for begin/end balance, region IDs, and worker spans.
 - Parse the emitted trace with the existing ANTLR parser to prove comments do
   not change syntax.
 - Add fixtures or focused unit tests for all three scatter methods.
@@ -394,9 +440,13 @@ pieces needed by both normal and scatter translation.
 
 ### Tasks
 
-- Centralize StreamFlow binding normalization.
-- Centralize deployment-to-location expansion, including `locations`, SSH,
-  Slurm wrapping, services, ports, and work directories.
+- Centralize StreamFlow binding normalization as ordered deployment targets.
+- Map each deployment to exactly one SWIRL location. Scatter bindings may list
+  multiple deployments; ordinary bindings retain one target.
+- Reject `locations`; represent each worker location as its own deployment.
+- Reuse the coordinator location when a scatter selects its deployment, and
+  combine its controller and worker trace fragments in one location trace.
+- Preserve SSH, Slurm wrapping, services, ports, and work directories.
 - Centralize workflow input loading and CWL-to-SWIRL type coercion.
 - Centralize command arguments and output processor construction.
 - Preserve full CWL paths throughout; do not match nested steps by basename.
@@ -418,9 +468,10 @@ pieces needed by both normal and scatter translation.
 - Preserve input and output boundary mappings.
 - Preserve ordered scatter input declarations exactly as CWL declares them.
 - Store the scatter method and validate it early.
-- Resolve each invocation's effective deployment using longest-path matching.
+- Resolve each invocation's effective deployments using longest-path matching.
 - Detect cyclic or unresolved source references and report the full CWL path.
-- Generate stable region IDs from full paths.
+- Preserve full region paths for metadata and diagnostics. Numeric compile-time
+  IDs are assigned later during stable lowering traversal.
 
 Do not lower to SWIRL strings during this phase.
 
@@ -462,11 +513,29 @@ lower_scattered_invocation(invocation, context):
     create gather operation at the enclosing controller
 ```
 
+Use one generated naming scheme throughout:
+
+```text
+steps:   _s_scatter_N, _s_open_N, _s_gather_N
+data:    task_id_N, task_payload_N, result_N
+ports:   p_task_N, p_result_N
+```
+
+The leading underscore distinguishes translator-generated steps from CWL
+steps. After `_s_open_N`, keep domain names such as `batch`, `file`, and
+`report` instead of repeating workflow provenance in generated names.
+
 ### Tasks
 
 - Retain existing pair/open/gather special step types initially.
-- Replace hard-coded names with names derived from full paths.
-- Carry parent task-key information through nested lowering.
+- Replace hard-coded names with the generated region naming scheme above.
+- Carry the hierarchical iteration ID through nested lowering.
+- Emit each dispatch output, `move`, and `recv` as one atomic
+  `(task_id_N, task_payload_N)` tuple.
+- Destructure the tuple at `recv`; `_s_open_N` consumes `task_payload_N` while
+  `task_id_N` keys opened data and results.
+- When an inner gather completes, rekey its gathered result with the enclosing
+  task ID before returning it to the outer gather.
 - Emit one scatter region per scattered invocation.
 - Permit the inner region's worker pool to differ from its parent pool.
 - Ensure ordinary descendant invocations inherit their region's effective
@@ -509,7 +578,7 @@ without dispatching tasks.
 - No code branches on scatter nesting depth.
 - Translator tests cover multiple sibling and nested scatter regions.
 - The emitted trace parses successfully.
-- Hints are balanced and contain stable region IDs.
+- Hints are balanced and contain deterministic compile-time region IDs.
 
 ## Phase 4: Metadata evolution
 
@@ -521,12 +590,11 @@ Suggested region metadata:
 ```yaml
 version: v1.1
 scatterRegions:
-  scatter:/process_all_zips/inspect_step:
-    parentRegion: scatter:/process_all_zips
+  "1":
+    name: /process_all_zips/inspect_step
     method: dotproduct
     scatterPorts: [p_extracted_files]
-    idPort: p_inspect_id
-    payloadPort: p_inspect_group
+    taskPort: p_task_1
     controllerLocations: [l1, l2]
     workerLocations: [l3, l4, l5]
     inputPorts: [p_extracted_files]
@@ -547,27 +615,188 @@ metadata rather than being duplicated in every comment.
 
 ## Phase 5: Compiler/parser preparation
 
-This phase begins only after translator output is stable.
+This phase makes the current translator output a reliable input to the trace
+compiler. It does not implement keyed execution or hint-driven optimization.
 
-### Tasks
+### Readiness snapshot after Phases 1-4
 
-- Reconcile `grammar/SWIRL.g4` with the checked-in generated ANTLR parser.
-- Decide and document parameterized replication syntax.
-- Regenerate lexer, parser, listener, and visitor from the grammar.
-- Add parser tests for replication, choice, EOF, `move`, indexed/keyed data,
-  and compiler comments.
-- Remove compiler inference based on display-name substrings such as `pair`,
-  `open`, and `gather`; use explicit metadata.
-- Add a raw-source compiler-hint scanner without changing trace semantics.
-- Validate hint spans against parsed trace operations before optimizing.
+The translator already emits the Phase 5 language features:
+
+- unparameterized replication (`!trace`);
+- unlabelled choice (`left + right`);
+- `move`;
+- `eof`;
+- recursive tuple data such as `(task_id_0, task_payload_0)`;
+- keyed data such as `result_0[task_id_0]`; and
+- balanced `// @compiler begin|end scatter.<phase> <region>` directives.
+
+Metadata v1.1 and explicit `steps[*].type` values for `_s_scatter_N`,
+`_s_open_N`, and `_s_gather_N` also exist. Do not redesign these contracts in
+this phase.
+
+The parser/compiler boundary is not ready yet. Regenerating the parser exposed
+stale visitor assumptions: mapping now goes through `locationSet`, while
+`CompileVisitor` still calls `mapping().name()`; `visitTraceRepl()` still asks
+for removed replication parameters. The current test baseline is 24 passed,
+5 failed, and 1 xfailed, with all five failures entering the compiler through
+the stale mapping access. Treat restoring this baseline as the first Phase 5
+gate, not as a Phase 6 runtime problem.
+
+### Fixed syntax decisions
+
+- Keep replication unparameterized: `!trace`. Remove the unused
+  `param`/`domain` plumbing from compiler callbacks and trace output; do not add
+  syntax that the translator does not emit.
+- Keep choice unlabelled. Phase 5 preserves both alternatives structurally; it
+  must not derive a semantic guard from the first predicate.
+- Keep comments skipped by the lexer. The hint scanner operates on raw source;
+  do not move comments onto an ANTLR channel unless source offsets prove
+  insufficient.
+- Keep tuple and keyed data in the existing `data` rule. Use a small recursive
+  parser helper where structure is required; do not introduce a second SWIRL
+  AST in this phase.
+- Keep destination sets in `locationSet`. Add one compiler helper for reading
+  either a singleton or braced set and use it for mappings and `move`
+  destinations.
+
+### 5.1 Restore the generated-parser contract
+
+Files:
+
+- `grammar/SWIRL.g4`
+- `scripts/generate-antlr4-parsers.sh`
+- `swirlc/antlr/SWIRL*.py`
+- `swirlc/core/compiler.py`
+- `swirlc/core/utils.py`
+
+Tasks:
+
+1. Pin parser generation to the same ANTLR release as
+   `antlr4-python3-runtime` and make regeneration write to a temporary
+   directory before replacing the four generated files.
+2. Regenerate lexer, parser, listener, and visitor only from `SWIRL.g4`.
+3. Update `CompileVisitor` for the generated API:
+   - read mappings through `mapping().locationSet()`;
+   - read singleton and set destinations through the same helper;
+   - visit replication without `ID` parameters; and
+   - preserve tuple/keyed data text losslessly for existing compiler targets.
+4. Install an ANTLR error listener used by the CLI and tests. Any lexer or
+   parser error must make `compile` fail before metadata registration or target
+   output begins.
+5. Run generation a second time and require an empty diff in generated files.
+
+### 5.2 Lock the language surface with parser tests
+
+Add one focused parser test module rather than spreading syntax assertions
+through translator tests. Cover:
+
+- plain and parenthesized replication;
+- nested replication;
+- unlabelled choice and operator nesting;
+- `send`, `recv`, and `move` with singleton and set destinations;
+- `eof` and `0`;
+- nested tuples;
+- keyed tuple members and keyed results;
+- line and block comments, including compiler directives; and
+- malformed tuples, unmatched delimiters, old labelled choice, and old
+  parameterized replication as explicit failures.
+
+Also parse every checked-in `examples/swirl/**/*.swirl` file and the translated
+output of each scatter fixture. Parser tests assert zero syntax errors through
+the shared strict parser entry point, not by inspecting ANTLR stderr.
+
+### 5.3 Make compilation metadata-driven
+
+Files:
+
+- `swirlc/core/compiler.py`
+- `swirlc/config/schemas/v1.0/config_schema.json`
+- `swirlc/config/schemas/v1.1/config_schema.json`
+- affected example metadata
+
+Tasks:
+
+1. Delete display-name and command substring inference for `scatter_pairer`,
+   `scatter_open`, and `scatter_gather`.
+2. Read helper behavior only from explicit `steps[*].type`. Ordinary steps may
+   continue to omit `type`.
+3. Require the three generated scatter helper types in v1.1 metadata and keep
+   v1.0 readable for non-scatter examples. If a legacy scatter example needs
+   compatibility, add its explicit types to metadata rather than restoring
+   inference.
+4. Add a regression case whose ordinary step name contains `pair`, `open`, or
+   `gather` and prove it remains an ordinary step.
+
+### 5.4 Scan and validate compiler hints
+
+Add one small raw-source scanner, for example
+`swirlc/compiler/hints.py`. It returns validated spans with only:
+
+```text
+phase
+region ID
+start/end source offsets
+```
+
+The scanner must:
+
+1. recognize only complete directive lines;
+2. pair begin/end markers with one stack;
+3. allow proper nesting and repeated worker spans for one region;
+4. reject crossing or unmatched spans;
+5. warn and ignore unknown phases, malformed directives, and invalid region
+   IDs; and
+6. validate each accepted span against the parsed trace: it must contain the
+   expected generated helper operation for `dispatch`, `worker`, or `gather`,
+   and its region must exist in `metadata.scatterRegions`.
+
+Pass the validated spans into `CompileVisitor`, but do not expose them through
+every compiler callback. Phase 5 records them on the compilation context and
+all targets ignore them. A trace with no hints, malformed hints, or stripped
+hints must compile identically apart from warnings.
+
+### 5.5 Use the trace target as the Phase 5 oracle
+
+The existing `--target trace` compiler is the narrowest way to test the
+translator/compiler boundary without invoking the distributed runtime. Adapt
+it to the fixed syntax instead of creating another test compiler.
+
+Add an integration test that translates `scatter-nested-zip`, compiles the
+result with `--target trace`, and asserts that the per-location trace contains:
+
+- outer and inner replication;
+- both alternatives of each choice;
+- tuple-valued `move`/`recv` operations without lost key text;
+- explicit EOF operations;
+- `_s_scatter_N`, `_s_open_N`, and `_s_gather_N` from metadata; and
+- file-worker operations only at the three file-worker locations.
+
+Compile a copy with all compiler directives removed and compare normalized
+trace-target output. They must match exactly. Do not execute generated default
+runtime code here; keyed execution remains Phase 6.
+
+### Verification order
+
+1. Parser unit tests.
+2. Hint-scanner unit tests.
+3. Existing compiler tests.
+4. Translator-to-trace-target integration test.
+5. Full `uv run pytest -q`.
+6. Parser regeneration followed by a clean generated-file diff.
 
 ### Exit criteria
 
-- The grammar is the source of truth.
-- Regeneration produces no unexplained diff.
-- Existing SWIRL examples still parse and compile.
-- The compiler can read and validate hints but still ignores them for code
-  generation.
+- `SWIRL.g4` is the only handwritten syntax source and regeneration is
+  reproducible with the pinned tool/runtime version.
+- Invalid SWIRL fails compilation deterministically; no partial target output
+  is treated as success.
+- Every checked-in example and every Phase 1-4 translator output parses and
+  compiles with `--target trace`.
+- Compiler behavior for scatter helpers comes only from explicit metadata.
+- Valid hint spans are available to future optimization, but hinted,
+  hint-free, and malformed-hint traces retain identical compilation semantics.
+- The full pre-Phase-6 suite passes. No keyed queues, message envelopes,
+  scheduling, or runtime scatter execution are added in this phase.
 
 ## Phase 6: Keyed compiler runtime
 
@@ -582,8 +811,7 @@ Every runtime communication involved in scatter should carry:
 ```text
 kind
 region ID
-parent task key
-task key
+iteration ID
 port
 data type
 payload
@@ -609,8 +837,10 @@ Do not infer completion from an empty Python list or a filename.
 ### Operations
 
 - `send`: copy the selected keyed value.
-- `move`: remove and transmit exactly one selected keyed value.
-- `recv`: enqueue the received envelope under its key.
+- `move`: remove and transmit exactly one selected value; task tuples remain
+  atomic.
+- `recv`: enqueue the received envelope under its key and destructure tuple
+  names for the following trace.
 - `exec`: consume inputs for one key and publish outputs under that key.
 - pair: create child task keys and a manifest.
 - open: unpack one keyed payload.
@@ -621,14 +851,15 @@ Do not infer completion from an empty Python list or a filename.
 
 - Compile replicated worker handlers as loops over region messages.
 - Select DATA versus completion based on the received message kind.
-- Do not derive choice guards from the first textual predicate.
+- An unlabelled `+` selects whichever branch can execute; it carries no ID or
+  textual guard.
 - Stop a worker handler only on its scoped `WORKER_EOF`.
 - Complete one nested gather on `REGION_COMPLETE` or its manifest count without
   stopping the worker pool.
 
 ### Exit criteria
 
-- Two parent tasks may run inner scatters concurrently without overwriting
+- Two outer iterations may run inner scatters concurrently without overwriting
   ports or mixing outputs.
 - Duplicate values remain separate tasks.
 - Out-of-order completion yields deterministic CWL order.
@@ -704,7 +935,8 @@ Acceptance requirements:
 
 1. Translation emits all six physical locations: coordinator, two zip workers,
    and three file workers.
-2. Outer and inner scatter use distinct full-path region IDs.
+2. Outer and inner scatter use distinct numeric region IDs, with their full
+   paths retained in metadata.
 3. Inspection commands execute in file-worker traces, not zip-worker traces.
 4. Each zip summary contains only reports belonging to that zip.
 5. Reports appear in deterministic CWL order.

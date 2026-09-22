@@ -11,12 +11,13 @@ workflows:
           deployment: coordinator
       - step: /process_all_zips
         target:
-          deployment: zip_workers
-          locations: 2
+          - deployment: zip_worker1
+          - deployment: zip_worker2
       - step: /process_all_zips/inspect_step
         target:
-          deployment: file_workers
-          locations: 3
+          - deployment: file_worker1
+          - deployment: file_worker2
+          - deployment: file_worker3
       - step: /final_summary
         target:
           deployment: coordinator
@@ -26,11 +27,23 @@ deployments:
     type: local
     config: {}
     port: 35200
-  zip_workers:
+  zip_worker1:
     type: local
     config: {}
     port: 35210
-  file_workers:
+  zip_worker2:
+    type: local
+    config: {}
+    port: 35211
+  file_worker1:
     type: local
     config: {}
     port: 35220
+  file_worker2:
+    type: local
+    config: {}
+    port: 35221
+  file_worker3:
+    type: local
+    config: {}
+    port: 35222

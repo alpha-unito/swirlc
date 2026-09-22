@@ -11,23 +11,23 @@ workflows:
           deployment: coordinator
       - step: /process_batch
         target:
-          deployment: batch_workers
-          locations: 1
+          - deployment: coordinator
+          - deployment: worker1
+          - deployment: worker2
       - step: /process_batch/echo_item
         target:
-          deployment: item_workers
-          locations: 1
+          - deployment: worker1
 
 deployments:
   coordinator:
     type: local
     config: {}
     port: 35300
-  batch_workers:
+  worker1:
     type: local
     config: {}
-    port: 35310
-  item_workers:
+    port: 35320
+  worker2:
     type: local
     config: {}
     port: 35320

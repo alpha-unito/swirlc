@@ -340,6 +340,7 @@
       "additionalProperties": {
         "type": "object",
         "properties": {
+          "name": {"type": "string"},
           "parentRegion": {"type": ["string", "null"]},
           "method": {"type": "string"},
           "scatterPorts": {"type": "array", "items": {"type": "string"}}

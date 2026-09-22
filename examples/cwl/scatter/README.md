@@ -8,12 +8,12 @@ This example demonstrates a distributed scatter-gather pipeline implemented in s
 
 | SWIRL Concept (`examples/swirl/scatter`) | CWL + Streamflow Representation (`examples/cwl/scatter`) | Role |
 | :--- | :--- | :--- |
-| **Location `l0`** | Deployment `l0` (Controller) | Stages input datasets `files_a` and `files_b` |
+| **Location `l0`** | Deployment `coordinator` | Stages inputs and also executes scattered work |
 | **Step `s_sc`** (`ScatterPairer`) | `scatter: [file_a, file_b]` with `scatterMethod: dotproduct` | Pairs items `(files_a[i], files_b[i])` |
-| **Workers `l1, l2, l3`** | Deployment `workers` (multi-node / worker pool) | Executes `compute.cwl` in parallel for each paired item |
+| **Workers `l0, l1, l2`** | Deployments `coordinator`, `worker1`, and `worker2` | Execute `compute.cwl` in parallel for each paired item |
 | **Step `s_op`** + **`s_work`** | `compute.cwl` (`scripts/compute.py`) | Processes each item pair and produces a result file |
 | **Step `s_G`** (`ScatterGather`) | CWL automatic gather (`compute/result` -> `File[]`) | Gathers all worker results into an array of files |
-| **Location `lG`** | Deployment `lG` (Gather node) | Hosts the gathered result array and final step |
+| **Location `l0`** | Deployment `coordinator` | Hosts the gathered result array and final step |
 | **Step `s_post`** (`AnalyzeReport`) | `analyze.cwl` (`scripts/analyze.py`) | Consumes `File[]` to generate `analysis_report.txt` |
 
 ---
@@ -88,11 +88,16 @@ workflows:
     bindings:
       - step: /
         target:
-          deployment: l0
+          deployment: coordinator
       - step: /compute
         target:
-          deployment: workers
+          - deployment: coordinator
+          - deployment: worker1
+          - deployment: worker2
       - step: /analyze
         target:
-          deployment: lG
+          deployment: coordinator
 ```
+
+Each deployment maps to one SWIRL location. A scatter target list selects the
+locations that receive worker traces.

@@ -8,21 +8,26 @@ workflows:
     bindings:
       - step: /
         target:
-          deployment: l0
+          deployment: coordinator
       - step: /compute
         target:
-          deployment: workers
-          locations: 3
+          - deployment: coordinator
+          - deployment: worker1
+          - deployment: worker2
       - step: /analyze
         target:
-          deployment: l0
+          deployment: coordinator
 
 deployments:
-  l0:
+  coordinator:
     type: local
     config: {}
     port: 35080
-  workers:
+  worker1:
     type: local
     config: {}
     port: 35081
+  worker2:
+    type: local
+    config: {}
+    port: 35082

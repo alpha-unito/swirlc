@@ -11,8 +11,8 @@ workflows:
           deployment: coordinator
       - step: /process_group
         target:
-          deployment: workers
-          locations: 2
+          - deployment: worker1
+          - deployment: worker2
       - step: /final_report
         target:
           deployment: coordinator
@@ -22,7 +22,11 @@ deployments:
     type: local
     config: {}
     port: 35100
-  workers:
+  worker1:
     type: local
     config: {}
     port: 35110
+  worker2:
+    type: local
+    config: {}
+    port: 35111

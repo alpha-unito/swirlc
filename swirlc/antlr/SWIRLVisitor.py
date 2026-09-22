@@ -84,6 +84,11 @@ class SWIRLVisitor(ParseTreeVisitor):
         return self.visitChildren(ctx)
 
 
+    # Visit a parse tree produced by SWIRLParser#locationSet.
+    def visitLocationSet(self, ctx:SWIRLParser.LocationSetContext):
+        return self.visitChildren(ctx)
+
+
     # Visit a parse tree produced by SWIRLParser#mapping.
     def visitMapping(self, ctx:SWIRLParser.MappingContext):
         return self.visitChildren(ctx)

@@ -8,26 +8,34 @@ workflows:
     bindings:
       - step: /
         target:
-          deployment: l0
+          deployment: coordinator
       - step: /compute
         target:
-          deployment: workers
+          - deployment: coordinator
+          - deployment: worker1
+          - deployment: worker2
       - step: /analyze
         target:
-          deployment: l0
+          deployment: coordinator
 
 deployments:
-  l0:
+  coordinator:
     type: local
     config: {}
     port: 35080
-  workers:
+  worker1:
     type: ssh
     config:
       nodes:
         - worker1.local
-        - worker2.local
-        - worker3.local
       username: user
       sshKey: ~/.ssh/id_rsa
-    workdir: /tmp/streamflow/workers
+    workdir: /tmp/streamflow/worker1
+  worker2:
+    type: ssh
+    config:
+      nodes:
+        - worker2.local
+      username: user
+      sshKey: ~/.ssh/id_rsa
+    workdir: /tmp/streamflow/worker2

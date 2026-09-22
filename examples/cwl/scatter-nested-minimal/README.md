@@ -1,10 +1,9 @@
 # Minimal nested scatter
 
 This is the smallest distributed nested-scatter example: two batches are
-scattered to `batch_workers`; each batch's two strings are scattered to
-`item_workers`, where `echo` writes one file per string. Each pool has one
-worker to keep the generated trace short; the batches still make both scatter
-levels visible.
+scattered on `coordinator`; each batch's two strings are scattered to
+`item_worker`, where `echo` writes one file per string. Each deployment maps to
+one SWIRL location, and each scatter selects its locations with a target list.
 
 ```sh
 swirlc translate --language cwl streamflow.yml --outdir translated

@@ -930,7 +930,12 @@ def _scatter_open(step_name: str, step_display_name: str, input_ports: list[str]
 
     workdir = tempfile.mkdtemp(prefix=f"scatter_open_{step_name}_", dir=SCRATCH_DIR)
     for idx, (out_p, d_type, g_regex) in enumerate(output_specs):
-        comp = components[idx] if idx < len(components) else {}
+        if "open_id" in out_p:
+            ports[out_p] = str(data["id"])
+            available_port_data[out_p].set()
+            continue
+        component_index = idx - sum("open_id" in spec[0] for spec in output_specs[:idx])
+        comp = components[component_index] if component_index < len(components) else {}
         val = comp.get("value")
         if d_type == "file" and comp.get("path") and os.path.isfile(comp.get("path")):
             ports[out_p] = comp["path"]

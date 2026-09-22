@@ -12,13 +12,13 @@
 // Location l0: Scatter Controller & Gather Node
 // ------------------------------------------------------------------------------
 <l0, {(p_in1, d_in1), (p_in2, d_in2)},
-  exec(s_sc, {(p_in1, d_in1), (p_in2, d_in2)} -> {(p_id, id_ID), (p_group, group_ID)}, {l0})
+  exec(s_sc, {(p_in1, d_in1), (p_in2, d_in2)} -> {(p_id, id), (p_group, group)}, {l0})
   .
   (
     !(
       (
-        move(id_ID -> p_id, l0, {l1, l2, l3}) .
-        move(group_ID -> p_group, l0, {l1, l2, l3})
+        move(id -> p_id, l0, {l1, l2, l3}) .
+        move(group -> p_group, l0, {l1, l2, l3})
       )
       +
       (
@@ -30,12 +30,12 @@
   )
   .
   (
-    !(recv(res_ID -> p_res, l1, l0) + recv(eof -> p_res, l1, l0)) |
-    !(recv(res_ID -> p_res, l2, l0) + recv(eof -> p_res, l2, l0)) |
-    !(recv(res_ID -> p_res, l3, l0) + recv(eof -> p_res, l3, l0))
+    !(recv(res -> p_res, l1, l0) + recv(eof -> p_res, l1, l0)) |
+    !(recv(res -> p_res, l2, l0) + recv(eof -> p_res, l2, l0)) |
+    !(recv(res -> p_res, l3, l0) + recv(eof -> p_res, l3, l0))
   )
   .
-  exec(s_G, {(p_res, res_ID)} -> {(p_out, d_out)}, {l0})
+  exec(s_G, {(p_res, res)} -> {(p_out, d_out)}, {l0})
   .
   exec(s_post, {(p_out, d_out)} -> {(p_report, d_report)}, {l0})
 > |
@@ -46,11 +46,11 @@
 <l1, {},
   !(
     (
-      recv(id_ID -> p_id, l0, l1) .
-      recv(group_ID -> p_group, l0, l1) .
-      exec(s_op, {(p_group, group_ID)} -> {(p_a, a_ID), (p_b, b_ID)}, {l1}) .
-      exec(s_work, {(p_id, id_ID), (p_a, a_ID), (p_b, b_ID)} -> {(p_res, res_ID)}, {l1}) .
-      send(res_ID -> p_res, l1, l0)
+      recv(id -> p_id, l0, l1) .
+      recv(group -> p_group, l0, l1) .
+      exec(s_op, {(p_group, group[taskID])} -> {(p_a, a[taskID]), (p_b, b[taskID])}, {l1}) .
+      exec(s_work, {(p_id, id[taskID]), (p_a, a[taskID]), (p_b, b[taskID])} -> {(p_res, res)}, {l1}) .
+      send(res -> p_res, l1, l0)
     )
     +
     (
@@ -66,11 +66,11 @@
 <l2, {},
   !(
     (
-      recv(id_ID -> p_id, l0, l2) .
-      recv(group_ID -> p_group, l0, l2) .
-      exec(s_op, {(p_group, group_ID)} -> {(p_a, a_ID), (p_b, b_ID)}, {l2}) .
-      exec(s_work, {(p_id, id_ID), (p_a, a_ID), (p_b, b_ID)} -> {(p_res, res_ID)}, {l2}) .
-      send(res_ID -> p_res, l2, l0)
+      recv(id[taskID] -> p_id, l0, l2) .
+      recv(group[taskID] -> p_group, l0, l2) .
+      exec(s_op, {(p_group, group[taskID])} -> {(p_a, a[taskID]), (p_b, b[taskID])}, {l2}) .
+      exec(s_work, {(p_id, id[taskID]), (p_a, a[taskID]), (p_b, b[taskID])} -> {(p_res, res[taskID])}, {l2}) .
+      send(res[taskID] -> p_res, l2, l0)
     )
     +
     (
@@ -86,11 +86,11 @@
 <l3, {},
   !(
     (
-      recv(id_ID -> p_id, l0, l3) .
-      recv(group_ID -> p_group, l0, l3) .
-      exec(s_op, {(p_group, group_ID)} -> {(p_a, a_ID), (p_b, b_ID)}, {l3}) .
-      exec(s_work, {(p_id, id_ID), (p_a, a_ID), (p_b, b_ID)} -> {(p_res, res_ID)}, {l3}) .
-      send(res_ID -> p_res, l3, l0)
+      recv(id[taskID] -> p_id, l0, l3) .
+      recv(group[taskID] -> p_group, l0, l3) .
+      exec(s_op, {(p_group, group[taskID])} -> {(p_a, a[taskID]), (p_b, b[taskID])}, {l3}) .
+      exec(s_work, {(p_id, id[taskID]), (p_a, a[taskID]), (p_b, b[taskID])} -> {(p_res, res[taskID])}, {l3}) .
+      send(res[taskID] -> p_res, l3, l0)
     )
     +
     (

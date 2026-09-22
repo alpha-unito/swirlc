@@ -6,19 +6,19 @@ steps:
     type: scatter_pairer
     outputs:
       p_id:
-        dataName: id_ID
+        dataName: id
       p_group:
-        dataName: group_ID
+        dataName: group
 
   s_op:
     displayName: "ScatterOpen"
     type: scatter_open
     outputs:
       p_a:
-        dataName: a_ID
+        dataName: a
         glob: "input_a.txt"
       p_b:
-        dataName: b_ID
+        dataName: b
         glob: "input_b.txt"
 
   s_work:
@@ -36,7 +36,7 @@ steps:
       - value: "result.txt"
     outputs:
       p_res:
-        dataName: res_ID
+        dataName: res
         glob: "result.txt"
 
   s_G:
@@ -81,15 +81,15 @@ dependencies:
   d_in2:
     type: file
     value: "/home/tommo/Coding/Alpha/swirlc/examples/swirl/scatter/data/ArchiveB.zip"
-  id_ID:
+  id:
     type: file
-  group_ID:
+  group:
     type: file
-  a_ID:
+  a:
     type: file
-  b_ID:
+  b:
     type: file
-  res_ID:
+  res:
     type: file
   d_out:
     type: list[file]
@@ -97,4 +97,3 @@ dependencies:
     type: file
   eof:
     type: string
-

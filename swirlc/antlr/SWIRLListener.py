@@ -143,6 +143,15 @@ class SWIRLListener(ParseTreeListener):
         pass
 
 
+    # Enter a parse tree produced by SWIRLParser#locationSet.
+    def enterLocationSet(self, ctx:SWIRLParser.LocationSetContext):
+        pass
+
+    # Exit a parse tree produced by SWIRLParser#locationSet.
+    def exitLocationSet(self, ctx:SWIRLParser.LocationSetContext):
+        pass
+
+
     # Enter a parse tree produced by SWIRLParser#mapping.
     def enterMapping(self, ctx:SWIRLParser.MappingContext):
         pass

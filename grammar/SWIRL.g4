@@ -31,7 +31,7 @@ locationSet : '{' name? (',' name)* '}' | ID;
 mapping     : locationSet;
 
 // Variables
-data        : ID ('[' ID ']')? | ZERO | EOF_VAL;
+data        : ID ('[' ID ']')? | ZERO | EOF_VAL | '(' data ',' data ')';
 dst         : locationSet;
 name        : ID;
 port        : ID;
@@ -45,7 +45,7 @@ step        : ID;
 
 // Operators
 REPL        :   '!';
-CHOICE      :   '+' ('[' ID ']')?;
+CHOICE      :   '+';
 PAR         :   '|';
 SEQ         :   '.';
 
@@ -59,4 +59,3 @@ ID          :   [a-zA-Z_] [a-zA-Z0-9_]*;
 WS          :   [ \n\r\t]+ -> skip;
 COMMENT     :   '//' ~[\r\n]* -> skip;
 BLOCK_COMMENT:  '/*' .*? '*/' -> skip;
-
