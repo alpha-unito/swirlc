@@ -17,8 +17,8 @@
   (
     !(
       (
-        move(id -> p_id, l0, {l1, l2, l3}) .
-        move(group -> p_group, l0, {l1, l2, l3})
+        // move(id -> p_id, l0, {l1, l2, l3}) .
+        move((id, d_1[id], d_2[id], d_3[id]) -> p_group, l0, {l1, l2, l3})
       )
       +
       (
@@ -46,7 +46,7 @@
 <l1, {},
   !(
     (
-      recv(id -> p_id, l0, l1) .
+      // recv(taskID -> p_id, l0, l1) .
       recv(group -> p_group, l0, l1) .
       exec(s_op, {(p_group, group[taskID])} -> {(p_a, a[taskID]), (p_b, b[taskID])}, {l1}) .
       exec(s_work, {(p_id, id[taskID]), (p_a, a[taskID]), (p_b, b[taskID])} -> {(p_res, res)}, {l1}) .

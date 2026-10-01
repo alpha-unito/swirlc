@@ -86,7 +86,15 @@ class AbstractTranslator:
     def translate(
         self, workflow_output: TextIO = sys.stdout, metadata_output: TextIO = sys.stdout
     ):
-        workflow = self._translate()
+        self.render(self._translate(), workflow_output, metadata_output)
+
+    def render(
+        self,
+        workflow: Workflow,
+        workflow_output: TextIO = sys.stdout,
+        metadata_output: TextIO = sys.stdout,
+    ):
+        """Render a lowered workflow without selecting a translation path."""
 
         # Dictionaries to generate metadata file
         dependencies = {}
@@ -145,7 +153,8 @@ class AbstractTranslator:
                             data_name in loc.data
                             and loc.name != location.name
                             and (
-                                recv := f"recv({port.name} -> {data_name},{loc.name},{location.name})"
+                                recv
+                                := f"recv({port.name} -> {data_name},{loc.name},{location.name})"
                             )
                             not in trace_recvs
                         ):

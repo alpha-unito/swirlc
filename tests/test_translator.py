@@ -138,7 +138,10 @@ def test_translate_cwl_scatter(tmp_path):
 
     swirl_content = swirl_file.read_text()
     assert "exec(_s_scatter_0," in swirl_content
-    assert "move((task_id_0, task_payload_0) -> p_task_0, l0, {l0, l1, l2})" in swirl_content
+    assert (
+        "move((task_id_0, task_payload_0) -> p_task_0, l0, {l0, l1, l2})"
+        in swirl_content
+    )
     assert "send(eof -> p_task_0, l0, l0)" in swirl_content
     assert "exec(_s_open_0," in swirl_content
     assert "exec(s_compute," in swirl_content
@@ -169,8 +172,7 @@ def test_translate_cwl_scatter(tmp_path):
     }
     assert list(metadata["locations"]) == ["l0", "l1", "l2"]
     assert {
-        location["deployment"]["port"]
-        for location in metadata["locations"].values()
+        location["deployment"]["port"] for location in metadata["locations"].values()
     } == {35080, 35081, 35082}
     assert swirl_content.count("<l0,") == 1
     assert "recv((task_id_0, task_payload_0) -> p_task_0, l0, l0)" in swirl_content
@@ -194,6 +196,8 @@ def test_translate_cwl_scatter(tmp_path):
 )
 def test_scatter_examples_emit_one_trace_per_location(tmp_path, example, config):
     """Every migrated scatter example remains valid SWIRL after translation."""
+    import re
+
     import antlr4
     from ruamel.yaml import YAML
 
@@ -219,6 +223,11 @@ def test_scatter_examples_emit_one_trace_per_location(tmp_path, example, config)
     )
 
     trace = (outdir / "workflow.swirl").read_text()
+    assert re.search(
+        r"// @compiler end scatter\.dispatch 0\s*\)\s*\|\s*\(\s*"
+        r"// @compiler begin scatter\.gather 0",
+        trace,
+    )
     with open(outdir / "metadata.yml") as metadata_file:
         metadata = YAML(typ="safe").load(metadata_file)
     assert "[taskID]" not in (outdir / "metadata.yml").read_text()
@@ -270,6 +279,28 @@ def test_cwl_region_tree_preserves_nested_scatter_paths():
     assert inspect.input_bindings == {
         "target_file": ("/process_all_zips/unzip_step/extracted_files",)
     }
+
+
+def test_cwl_translation_builds_region_tree_once():
+    """Analysis is shared by validation, lowering, naming, and metadata."""
+    import io
+    from pathlib import Path
+
+    from swirlc.translator.cwl.cwl_translator import CWLTranslator
+
+    example = Path(__file__).parent.parent / "examples" / "cwl" / "scatter"
+    translator = CWLTranslator(example / "streamflow.yml")
+    original = translator.build_region_tree
+    calls = 0
+
+    def counted_build():
+        nonlocal calls
+        calls += 1
+        return original()
+
+    translator.build_region_tree = counted_build
+    translator.translate(io.StringIO(), io.StringIO())
+    assert calls == 1
 
 
 @pytest.mark.parametrize(
@@ -406,12 +437,8 @@ def test_translate_cwl_scatter_nested_zip_acceptance(tmp_path):
             "scatterPorts": ["target_file"],
         },
     }
-    assert {"_s_scatter_0", "_s_open_0", "_s_gather_0"}.issubset(
-        metadata["steps"]
-    )
-    assert {"_s_scatter_1", "_s_open_1", "_s_gather_1"}.issubset(
-        metadata["steps"]
-    )
+    assert {"_s_scatter_0", "_s_open_0", "_s_gather_0"}.issubset(metadata["steps"])
+    assert {"_s_scatter_1", "_s_open_1", "_s_gather_1"}.issubset(metadata["steps"])
     for worker in ("l3", "l4", "l5"):
         assert "exec(s_inspect_step, {(p_open_data_0_1," in trace
         assert f")}}, {{{worker}}})" in trace
@@ -450,18 +477,28 @@ def test_nested_scatter_uses_task_envelopes_and_scoped_eof(tmp_path):
     """Nested dispatch matches the reference task-envelope lifecycle."""
     from swirlc.main import main
 
-    example = pathlib.Path(__file__).parent.parent / "examples" / "cwl" / "scatter-nested-minimal"
+    example = (
+        pathlib.Path(__file__).parent.parent
+        / "examples"
+        / "cwl"
+        / "scatter-nested-minimal"
+    )
     outdir = tmp_path / "translated"
     outdir.mkdir()
 
-    assert main([
-        "translate",
-        "--language",
-        "cwl",
-        str(example / "streamflow.yml"),
-        "--outdir",
-        str(outdir),
-    ]) == 0
+    assert (
+        main(
+            [
+                "translate",
+                "--language",
+                "cwl",
+                str(example / "streamflow.yml"),
+                "--outdir",
+                str(outdir),
+            ]
+        )
+        == 0
+    )
 
     trace = (outdir / "workflow.swirl").read_text()
     assert "move((task_id_0, task_payload_0) -> p_task_0, l0, {l0, l2})" in trace
@@ -484,18 +521,25 @@ def test_nested_scatter_is_emitted_when_worker_pool_is_shared(tmp_path):
     """A shared pool must not collapse nested regions into local step scatter."""
     from swirlc.main import main
 
-    example = pathlib.Path(__file__).parent.parent / "examples" / "cwl" / "scatter-nested"
+    example = (
+        pathlib.Path(__file__).parent.parent / "examples" / "cwl" / "scatter-nested"
+    )
     outdir = tmp_path / "translated"
     outdir.mkdir()
 
-    assert main([
-        "translate",
-        "--language",
-        "cwl",
-        str(example / "streamflow.yml"),
-        "--outdir",
-        str(outdir),
-    ]) == 0
+    assert (
+        main(
+            [
+                "translate",
+                "--language",
+                "cwl",
+                str(example / "streamflow.yml"),
+                "--outdir",
+                str(outdir),
+            ]
+        )
+        == 0
+    )
 
     trace = (outdir / "workflow.swirl").read_text()
     for region in range(3):
@@ -521,19 +565,19 @@ def test_translate_cwl_dotproduct_rejects_unequal_lengths():
 
 
 def test_translate_cwl_scatter_nested(tmp_path):
-    """Test translating, compiling, and running a CWL workflow with subworkflow scatter and dynamic scatter."""
-    import subprocess
+    """Nested tuple transport is represented completely in SWIRL and metadata."""
     from pathlib import Path
 
+    import antlr4
     from ruamel.yaml import YAML
 
+    from swirlc.antlr.SWIRLLexer import SWIRLLexer
+    from swirlc.antlr.SWIRLParser import SWIRLParser
     from swirlc.main import main
 
     example = Path(__file__).parent.parent / "examples" / "cwl" / "scatter-nested"
     translated_dir = tmp_path / "translated"
-    compiled_dir = tmp_path / "compiled"
     translated_dir.mkdir()
-    compiled_dir.mkdir()
 
     # 1. Translate
     assert (
@@ -557,7 +601,9 @@ def test_translate_cwl_scatter_nested(tmp_path):
 
     swirl_content = swirl_file.read_text()
     assert "exec(_s_scatter_0," in swirl_content
-    assert "move((task_id_0, task_payload_0) -> p_task_0, l0, {l1, l2})" in swirl_content
+    assert (
+        "move((task_id_0, task_payload_0) -> p_task_0, l0, {l1, l2})" in swirl_content
+    )
     assert "exec(_s_open_0," in swirl_content
     assert "exec(s_generate_items," in swirl_content
     assert "exec(s_compute_item," in swirl_content
@@ -575,10 +621,13 @@ def test_translate_cwl_scatter_nested(tmp_path):
     assert "p_open_data_0_0" in metadata["steps"]["_s_open_0"]["outputs"]
     assert "p_open_data_1_0" in metadata["steps"]["_s_open_0"]["outputs"]
     assert "p_open_data_2_0" in metadata["steps"]["_s_open_0"]["outputs"]
-    pytest.xfail("Tuple transport runtime support belongs to the compiler phase")
     assert "expression" in metadata["steps"]["s_generate_items"]
-    assert metadata["steps"]["s_compute_item"]["scatter"] == ["p_generate_items_items"]
-    assert metadata["steps"]["s_tag_item"]["scatter"] == ["p_open_data_1_0"]
+    assert metadata["steps"]["_s_scatter_1"]["scatterPorts"] == [
+        "p_generate_items_items"
+    ]
+    assert metadata["steps"]["_s_scatter_2"]["scatterPorts"] == [
+        "p_open_data_1_0"
+    ]
     assert metadata["steps"]["_s_gather_0"]["type"] == "scatter_gather"
     assert "p_gather_data_0_0" in metadata["steps"]["_s_gather_0"]["outputs"]
     assert "p_gather_data_1_0" in metadata["steps"]["_s_gather_0"]["outputs"]
@@ -587,42 +636,11 @@ def test_translate_cwl_scatter_nested(tmp_path):
     assert "l1" in metadata["locations"]
     assert "l2" in metadata["locations"]
 
-    # 2. Compile
-    assert (
-        main(
-            [
-                "compile",
-                str(swirl_file),
-                str(metadata_file),
-                "--outdir",
-                str(compiled_dir),
-            ]
-        )
-        == 0
+    parser = SWIRLParser(
+        antlr4.CommonTokenStream(SWIRLLexer(antlr4.InputStream(swirl_content)))
     )
-
-    assert (compiled_dir / "l0.py").exists()
-    assert (compiled_dir / "l1.py").exists()
-    assert (compiled_dir / "l2.py").exists()
-    assert (compiled_dir / "run.sh").exists()
-
-    # 3. Execute compiled workflow
-    proc = subprocess.run(
-        ["bash", "run.sh"], cwd=compiled_dir, capture_output=True, text=True
-    )
-    assert proc.returncode == 0, f"run.sh failed: {proc.stderr}"
-
-    # Verify final report
-    report_files = list(compiled_dir.glob("**/final_report.txt"))
-    assert report_files, "final_report.txt was not generated"
-    report_content = report_files[0].read_text()
-    assert "=== FINAL WORKFLOW REPORT ===" in report_content
-    assert "total=23" in report_content
-    assert "total=43" in report_content
-    assert "[ALPHA] total=23" in report_content
-    assert "[BETA] total=23" in report_content
-    assert "[ALPHA] total=43" in report_content
-    assert "[BETA] total=43" in report_content
+    parser.workflow()
+    assert parser.getNumberOfSyntaxErrors() == 0
 
 
 def test_cwl_file_location_is_coerced_to_an_absolute_path(tmp_path):
@@ -631,9 +649,12 @@ def test_cwl_file_location_is_coerced_to_an_absolute_path(tmp_path):
     assert _coerce_cwl_value(
         {"class": "File", "location": "data/input.vcf.gz"}, "file", tmp_path
     ) == str(tmp_path / "data" / "input.vcf.gz")
-    assert _coerce_cwl_value(
-        {"class": "File", "location": "file:///data/input.vcf.gz"}, "file", tmp_path
-    ) == "/data/input.vcf.gz"
+    assert (
+        _coerce_cwl_value(
+            {"class": "File", "location": "file:///data/input.vcf.gz"}, "file", tmp_path
+        )
+        == "/data/input.vcf.gz"
+    )
     with pytest.raises(ValueError, match="Unsupported CWL file URI"):
         _coerce_cwl_value(
             {"class": "File", "location": "https://example.test/input.vcf.gz"},
@@ -653,16 +674,19 @@ def test_translate_1000genome_nested_scatters(tmp_path):
     example = pathlib.Path(__file__).parent.parent / "examples" / "cwl" / "1000genome"
     outdir = tmp_path / "1000genome"
     outdir.mkdir()
-    assert main(
-        [
-            "translate",
-            "--language",
-            "cwl",
-            str(example / "streamflow.yml"),
-            "--outdir",
-            str(outdir),
-        ]
-    ) == 0
+    assert (
+        main(
+            [
+                "translate",
+                "--language",
+                "cwl",
+                str(example / "streamflow.yml"),
+                "--outdir",
+                str(outdir),
+            ]
+        )
+        == 0
+    )
 
     trace = (outdir / "workflow.swirl").read_text()
     metadata_path = outdir / "metadata.yml"

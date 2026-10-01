@@ -57,7 +57,7 @@ def test_expression_tool_uses_self_bootstrapping_javascript_runtime(
     assert "import js2py_ as js2py" in trace
     assert "js2py.eval_js(invocation)" in trace
     assert "function weightedScore(items, multiplier)" in trace
-    assert '_expression(\n            "evaluate",' in trace
+    assert '_expression(\n        "evaluate",' in trace
     assert "def _expression_s0(inputs):" not in trace
 
     requirements = (tmp_path / "l0.requirements.txt").read_text()
