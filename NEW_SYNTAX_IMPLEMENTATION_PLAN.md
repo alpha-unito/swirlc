@@ -8,8 +8,11 @@ phases:
 1. Update the CWL translator and review its emitted traces and metadata.
 2. After the user accepts the translator, implement the Python compiler/runtime.
 
-This is a plan, not authorization to start implementation. Do not commit, push,
-or interact with Git remotes. Preserve unrelated worktree changes.
+Implementation was authorized on 2026-10-02. The user clarified that satisfaction
+gates apply to working implementation and emitted artifacts, not acceptance of
+the plan alone. Start with a usable translator slice and present its output for
+review. Do not commit, push, or interact with Git remotes. Preserve unrelated
+worktree changes.
 
 This document is self-contained: syntax, semantics, fixture coverage, review
 gates, and implementation boundaries are specified below.
@@ -419,8 +422,10 @@ Tasks:
   schemas. Do not add a metadata version without a concrete need.
 
 Review artifact: baseline output plus a concise syntax/scope contract and a
-before/after lowering example. Exit gate: user accepts this contract; only then
-add/run tests for translator analysis behavior covered by this accepted part.
+before/after lowering example. Per the 2026-10-02 clarification, combine this
+review with the first working emission slice rather than stop at a plan-only
+approval. Only after acceptance of that implementation add/run tests for
+translator analysis behavior covered by this accepted part.
 New-language parser tests remain deferred to Phase 2.
 
 ### Part 1B: simple scatter emission
@@ -612,13 +617,36 @@ and the relevant complete suite. Only now can end-to-end execution be claimed.
 
 ## Acceptance record
 
+2026-10-02: Part 1A baseline translations and manual inspection completed.
+See [Part 1A review](NEW_SYNTAX_PART_1A_REVIEW.md) for artifacts, preservation
+findings, proposed U snapshot semantics, qualified-channel isolation, and dynamic
+metadata descriptors. Contract acceptance remains pending; no tests have run.
+
+2026-10-02 clarification: Part 1B simple emission is now implemented for review;
+see [working translator review](NEW_SYNTAX_PART_1B_REVIEW.md). Root invocation
+channels are operation-specific. The earlier qualified-channel extension is
+unapproved and unimplemented; nested scatter is diagnosed explicitly until its
+scope lowering is implemented. No parser/compiler/runtime/schema changes or unit
+tests have been made. Parts 1A/1B await implementation satisfaction together.
+
+2026-10-02: The user accepted the working simple slice ("looks correct to me")
+and authorized continuation. Focused simple-scatter/ordinary checks now pass
+9/9, including fresh output bindings when CWL input/output names overlap. The
+first Part 1C batch emits parent-qualified channels, invocation activation/routes,
+nested rekeyed gathers, and method/shape metadata. See
+[Part 1C working review](NEW_SYNTAX_PART_1C_REVIEW.md). Existing minimal/shared/ZIP
+and new three-level/method fixtures translate for manual review. This batch's
+acceptance and automated nested tests remain pending; distributed inputs and
+multi-source semantics remain the next consent/review batch. Compiler/runtime
+and schemas remain unchanged.
+
 Fill these during implementation; none is accepted merely because it is planned.
 
 | Part | User acceptance | Approved test result | Open decisions |
 | --- | --- | --- | --- |
-| 1A: baseline/contract | Pending | Not run | Invocation scope; U reads |
-| 1B: simple emission | Pending | Not run | None recorded |
-| 1C: complex lowering | Pending | Not run | Consent for changed lowering |
+| 1A: baseline/contract | Simple-slice contract accepted 2026-10-02 | 9 focused checks passed with 1B | Nested batch awaits review; dynamic schema for Phase 2 |
+| 1B: simple emission | Accepted 2026-10-02: "looks correct to me" | 9 passed | None for accepted simple slice |
+| 1C: complex lowering | First nested/method batch implemented; pending satisfaction | New-batch tests deferred; 1B checks pass | Review qualified channels/activation; later consent for distributed lowering |
 | 1D: translator complete | Pending | Not run | Required Phase 2 gate |
 | 2A: parser/compiler contract | Not started | Not run | After translator acceptance |
 | 2B: bindings/communication | Not started | Not run | None recorded |

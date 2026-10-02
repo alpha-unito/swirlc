@@ -1,0 +1,10 @@
+groups:
+- []
+- - []
+  - - a
+    - a
+- - - b
+prefix: 'item:'
+labels:
+- red
+- blue

@@ -1,0 +1,36 @@
+version: v1.0
+workflows:
+  master:
+    type: cwl
+    config:
+      file: main.cwl
+      settings: inputs.yml
+    bindings:
+    - step: /
+      target:
+        deployment: coordinator
+    - step: /outer
+      target:
+      - deployment: worker1
+      - deployment: worker2
+    - step: /outer/middle
+      target:
+      - deployment: worker1
+      - deployment: worker2
+    - step: /outer/middle/leaf
+      target:
+      - deployment: worker1
+      - deployment: worker2
+deployments:
+  coordinator:
+    type: local
+    config: {}
+    port: 35500
+  worker1:
+    type: local
+    config: {}
+    port: 35501
+  worker2:
+    type: local
+    config: {}
+    port: 35502

@@ -1,0 +1,29 @@
+version: v1.0
+workflows:
+  master:
+    type: cwl
+    config:
+      file: main-nested_crossproduct.cwl
+      settings: inputs-empty-inner.yml
+    bindings:
+    - step: /
+      target:
+        deployment: coordinator
+    - step: /process
+      target:
+      - deployment: worker1
+      - deployment: worker2
+
+deployments:
+  coordinator:
+    type: local
+    config: {}
+    port: 35080
+  worker1:
+    type: local
+    config: {}
+    port: 35081
+  worker2:
+    type: local
+    config: {}
+    port: 35082
