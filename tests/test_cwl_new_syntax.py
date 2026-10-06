@@ -18,6 +18,47 @@ def translate(translator):
     return trace.getvalue(), YAML(typ="safe").load(metadata.getvalue())
 
 
+@pytest.mark.parametrize("config", [
+    "scatter/streamflow.yml",
+    "scatter-methods-new-syntax/streamflow-dotproduct.yml",
+    "scatter-methods-new-syntax/streamflow-nested_crossproduct.yml",
+    "scatter-methods-new-syntax/streamflow-empty-inner.yml",
+    "scatter-distributed-new-syntax/streamflow.yml",
+    "scatter-nested-new-syntax/streamflow-shared.yml",
+    "scatter-nested-new-syntax/streamflow-separate.yml",
+])
+def test_worker_termination_receives_all_input_eofs_before_end(config):
+    trace, metadata = translate(CWLTranslator(EXAMPLES / config))
+    blocks = re.findall(
+        r"// @compiler begin scatter.worker (\d+)\n(.*?)"
+        r"// @compiler end scatter.worker \1", trace, re.S,
+    )
+    assert blocks
+    for region, block in blocks:
+        termination = re.search(
+            r"\+\s*\((recv\(eof.*?end\(\))\)\s*\)\s*\.\s*(.*)",
+            block, re.S,
+        )
+        assert termination
+        closing, after_join = termination.groups()
+        inputs = list(metadata["scatterRegions"][region]["scope"]["inputChannels"].items())
+        eofs = re.findall(r"recv\(eof -> (.*?), (l\d+), (l\d+)\)", closing)
+        assert [port for port, _, _ in eofs] == [port for _, port in inputs]
+        worker = eofs[0][2]
+        routes = metadata["scatterRegions"][region]["scope"]["routes"]
+        assert any(
+            worker in route["workers"]
+            and [source for _, source, _ in eofs] == [route["producers"][name] for name, _ in inputs]
+            for route in routes
+        )
+        assert closing == " . ".join(
+            [f"recv(eof -> {port}, {source}, {worker})" for port, source, _ in eofs]
+            + ["end()"]
+        )
+        assert "recv(eof" not in after_join
+        assert "send(eof" in after_join
+
+
 @pytest.mark.parametrize(
     "case,items",
     [
@@ -35,56 +76,64 @@ def test_simple_scatter_preserves_inputs_and_collection_contract(case, items):
         "type": "list[string]",
         "value": items,
     }
-    pair = metadata["steps"]["_s_scatter_0"]
-    assert pair["outputs"] == {
-        "p_task_0": {
-            "collection": {
-                "name": "tasks_0",
-                "key": "key_0",
-                "fields": {"item": "string"},
-            }
-        }
+    dispatch = metadata["steps"]["_s_dispatch_0_0"]
+    assert dispatch["type"] == "scatter_dispatch"
+    assert dispatch["dimension"] == "item"
+    assert dispatch["outputs"] == {
+        "p_scatter_0_0": {"collection": {
+            "name": "stream_d_items", "key": "key_0", "type": "string",
+        }}
     }
-    assert pair["key"] == {
-        "operation": "scatter:/process",
-        "parentCoordinates": [],
+    assert dispatch["key"] == {
+        "operation": "scatter:/process", "parentKeys": [],
         "coordinates": "declaration_order",
     }
-    assert "-> {U(p_task_0, tasks_0)}" in trace
-    assert trace.count("+[p_task_0 has data]") == 2
+    assert "exec(_s_dispatch_0_0, {(p_items, d_items)} -> {U(p_scatter_0_0, stream_d_items)}" in trace
+    assert trace.count("+[p_scatter_0_0 has data]") == 2
+    assert "scatter_open" not in str(metadata)
+    assert "_s_open_" not in trace and "p_task_" not in trace
     assert "[taskID]" not in trace
-    assert "?payload_0" in trace and "?key_0" in trace
+    assert "_key_0" not in trace
     assert all(trace.count(f"<{location},") == 1 for location in metadata["locations"])
-    for worker in pair["workers"]:
-        assert f"move((?payload_0, ?key_0) -> p_task_0, l0, {worker})" in trace
-        assert f"recv(eof -> p_task_0, l0, {worker}) . end()" in trace
-        assert re.search(r"\)\s*\.\s*send\(eof -> p_task_0, l0, " + worker, trace)
-
-    gather = metadata["steps"]["_s_gather_0"]
-    assert gather["order"] == "declaration_order_coordinates"
-    assert gather["shapeFrom"] == "_s_scatter_0"
-    assert {value["type"] for value in gather["collections"].values()} == {
-        "string",
-        "int",
-    }
-    assert len(gather["outputs"]) == len(gather["collections"]) == 2
-    gather_trace = trace.split("// @compiler begin scatter.gather 0\n", 1)[1].split(
-        "// @compiler end scatter.gather 0", 1
-    )[0]
-    # All receiver loops finish as a grouped parallel join before the snapshot read.
-    assert re.search(r"\)\)\)\s*\.\s*exec\(_s_gather_0", gather_trace)
-    for port, collection in gather["collections"].items():
+    workers = metadata["scatterRegions"]["0"]["scope"]["routes"][0]["workers"]
+    payload = "(?element_d_items, ?key_0)"
+    for worker in workers:
+        hint = f"scatter_stream stream_d_items {worker} p_scatter_0_0"
+        stream_trace = trace.split(f"// @compiler begin {hint}\n", 1)[1].split(
+            f"// @compiler end {hint}", 1
+        )[0]
+        assert f"move({payload} -> p_scatter_0_0, l0, {worker})" in stream_trace
+        assert stream_trace.startswith("(\n!(")
+        assert stream_trace.rstrip().endswith(f"send(eof -> p_scatter_0_0, l0, {worker})\n)")
+        assert f"move({payload} -> p_scatter_0_0, l0, {worker})" in trace
+        assert f"recv(eof -> p_scatter_0_0, l0, {worker}) . end()" in trace
+        assert re.search(r"\)\s*\.\s*send\(eof -> p_scatter_0_0, l0, " + worker, trace)
+    gathers = [step for step in metadata["steps"].values() if step.get("type") == "scatter_gather"]
+    assert len(gathers) == 2
+    assert {next(iter(step["collections"].values()))["type"] for step in gathers} == {"string", "int"}
+    for output_index, gather in enumerate(gathers):
+        assert gather["order"] == "declaration_order_coordinates"
+        assert gather["shapeFrom"] == ["_s_dispatch_0_0"]
+        assert len(gather["outputs"]) == len(gather["collections"]) == 1
+        port, collection = next(iter(gather["collections"].items()))
         assert collection["read"] == "snapshot"
-        assert f"U({port}, {collection['name']})" in gather_trace
-        for worker in pair["workers"]:
-            assert f"recv(eof -> {port}, {worker}, l0) . end()" in gather_trace
+        assert f"exec(_s_gather_{output_index}_0, {{U({port}, {collection['name']})}}" in trace
+        for worker in workers:
+            hint = f"gather_stream {collection['name']} {worker} {port}"
+            receive_trace = trace.split(f"// @compiler begin {hint}\n", 1)[1].split(
+                f"// @compiler end {hint}", 1
+            )[0]
+            assert receive_trace.startswith("(\n!(")
+            assert receive_trace.rstrip().endswith("\n)\n)")
+            assert f"recv(eof -> {port}, {worker}, l0) . end()" in receive_trace
+            assert f"recv(eof -> {port}, {worker}, l0) . end()" in trace
             assert f"send(eof -> {port}, {worker}, l0)" in trace
     assert set(metadata["dependencies"]) == {
         "d_items",
         "d_prefix",
         "d_labels",
-        "d_process_rendered_0",
-        "d_process_invariant_count_0",
+        "d_process_rendered",
+        "d_process_invariant_count",
     }
     assert all(
         "?" not in name and "eof" not in name for name in metadata["dependencies"]
@@ -95,12 +144,11 @@ def test_scalar_and_whole_list_invariants_are_initialized_once_per_worker():
     trace, metadata = translate(
         CWLTranslator(EXAMPLES / "scatter-new-syntax" / "streamflow-many.yml")
     )
-    pair = metadata["steps"]["_s_scatter_0"]
-    assert pair["scatterPorts"] == ["p_items"]
-    assert pair["invariantPorts"] == ["p_prefix", "p_labels"]
-    assert "exec(_s_scatter_0, {(p_items, d_items)}" in trace
-    assert metadata["steps"]["_s_open_0"]["inputFields"] == {"item": "p_open_data_0_0"}
-    for worker in pair["workers"]:
+    dispatch = metadata["steps"]["_s_dispatch_0_0"]
+    assert dispatch["dimension"] == "item"
+    assert "exec(_s_dispatch_0_0, {(p_items, d_items)}" in trace
+    workers = metadata["scatterRegions"]["0"]["scope"]["routes"][0]["workers"]
+    for worker in workers:
         branch = trace.split(f"<{worker},", 1)[1].split(
             "// @compiler end scatter.worker 0", 1
         )[0]
@@ -118,16 +166,14 @@ def test_same_source_can_be_scattered_and_passed_as_a_whole_list():
         next(binding.source for binding in bindings if binding.id.endswith("/item"))
     )
     trace, metadata = translate(translator)
-    pair = metadata["steps"]["_s_scatter_0"]
-    assert pair["scatterPorts"] == ["p_items"]
-    assert pair["invariantPorts"] == ["p_prefix", "p_items"]
+    dispatch = metadata["steps"]["_s_dispatch_0_0"]
+    assert dispatch["dimension"] == "item"
     tool = next(step for step in metadata["steps"].values() if "expression" in step)
     assert tool["expression"]["inputs"]["labels"] == {
-        "port": "p_items",
-        "type": "list[string]",
+        "port": "p_items", "type": "list[string]",
     }
-    assert metadata["steps"]["_s_open_0"]["inputFields"] == {"item": "p_open_data_0_0"}
-    for worker in pair["workers"]:
+    workers = metadata["scatterRegions"]["0"]["scope"]["routes"][0]["workers"]
+    for worker in workers:
         assert trace.count(f"send(d_items -> p_items, l0, {worker})") == 1
 
 
@@ -140,11 +186,12 @@ def test_exec_output_binds_a_fresh_payload_when_input_and_output_names_match(out
     translator.cwl_obj.outputs[0].outputSource = step.out[0]
     step.run.expression = step.run.expression.replace("rendered:", output_name + ":")
     _, metadata = translate(translator)
-    opened = next(iter(metadata["steps"]["_s_open_0"]["outputs"].values()))["binding"]
+    stream = next(iter(metadata["steps"]["_s_dispatch_0_0"]["outputs"]))
     tool = next(step for step in metadata["steps"].values() if "expression" in step)
     produced = next(iter(tool["outputs"].values()))["binding"]
-    assert opened["payload"] != produced["payload"]
-    assert opened["key"] == produced["key"]
+    assert stream in tool["expression"]["inputs"]["item"]["port"]
+    assert produced["payload"] == f"element_d_process_{output_name}"
+    assert produced["key"] == "key_0"
 
 
 def test_ordinary_basic_workflow_keeps_substantive_trace_and_metadata():

@@ -14,6 +14,12 @@ the plan alone. Start with a usable translator slice and present its output for
 review. Do not commit, push, or interact with Git remotes. Preserve unrelated
 worktree changes.
 
+2026-10-05 correction: each scattered input has an independent producer-local
+dispatch, and each output has an independent gather. Pair/open payload bundling
+is not the intended lowering. The user confirmed that move operations are
+deterministic/synchronized so matching keys reach the same worker. See
+[corrected implementation review](NEW_SYNTAX_INDEPENDENT_STREAMS_REVIEW.md).
+
 This document is self-contained: syntax, semantics, fixture coverage, review
 gates, and implementation boundaries are specified below.
 
@@ -647,7 +653,7 @@ Fill these during implementation; none is accepted merely because it is planned.
 | 1A: baseline/contract | Simple-slice contract accepted 2026-10-02 | 9 focused checks passed with 1B | Nested batch awaits review; dynamic schema for Phase 2 |
 | 1B: simple emission | Accepted 2026-10-02: "looks correct to me" | 9 passed | None for accepted simple slice |
 | 1C: complex lowering | First nested/method batch implemented; pending satisfaction | New-batch tests deferred; 1B checks pass | Review qualified channels/activation; later consent for distributed lowering |
-| 1D: translator complete | Pending | Not run | Required Phase 2 gate |
+| 1D: translator complete | Pending; 26-fixture review run on 2026-10-02 superseded by 27 corrected-stream artifacts on 2026-10-05 | 9 accepted checks pass | Corrected streams require review; required Phase 2 gate |
 | 2A: parser/compiler contract | Not started | Not run | After translator acceptance |
 | 2B: bindings/communication | Not started | Not run | None recorded |
 | 2C: replication/joins | Not started | Not run | None recorded |

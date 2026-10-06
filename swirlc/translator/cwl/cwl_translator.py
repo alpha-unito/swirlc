@@ -31,9 +31,9 @@ _CWL_SCALAR_TO_SWIRL = {
 _SCATTER_METHODS = {"dotproduct", "flat_crossproduct", "nested_crossproduct"}
 
 
-def _keyed_data(name: str, task_id: str = "taskID") -> str:
+def _keyed_data(name: str, task_id: str) -> str:
     """Render a payload reference retaining its replica's bound task key."""
-    return f"(?{name}_{task_id}, ?{task_id})"
+    return f"(?{name}, ?{task_id})"
 
 
 def _generated_name(*parts: str) -> str:
@@ -127,6 +127,7 @@ class LoweringContext:
     task_id: str | None = None
     task_keys: tuple[str, ...] = ()
     available: dict[str, tuple[str, str, str]] = field(default_factory=dict)
+    value_locations: dict[str, str] = field(default_factory=dict)
     fragments: dict[str, list[str]] = field(default_factory=dict)
     steps: dict[str, dict] = field(default_factory=dict)
     dependencies: dict[str, dict] = field(default_factory=dict)
@@ -152,6 +153,7 @@ class LoweringContext:
                 if task_id is not None and task_id != self.task_id else self.task_keys
             ),
             available=self.available.copy(),
+            value_locations=self.value_locations.copy(),
             fragments=self.fragments,
             steps=self.steps,
             dependencies=self.dependencies,
@@ -929,6 +931,7 @@ class CWLTranslator(AbstractTranslator):
                 context.available[f"{region.path.rstrip('/')}/{name}"] = self._value(
                     context, sources[0]
                 )
+                context.value_locations[f"{region.path.rstrip('/')}/{name}"] = context.value_locations.get(sources[0], context.controller)
 
     def _tool_trace(
         self,
@@ -960,7 +963,7 @@ class CWLTranslator(AbstractTranslator):
             and not follows_scattered_subworkflow
             and context.task_id is None
             else (
-                f"s_{_generated_name(invocation.path.strip('/'), context.task_id)}"
+                f"s_{_generated_name(invocation.path.strip('/'))}"
                 if context.task_id else f"s_{local}"
             )
         )
@@ -1004,7 +1007,7 @@ class CWLTranslator(AbstractTranslator):
         for tool_output in getattr(tool, "outputs", []):
             name = _local_name(tool_output.id).split("/")[-1]
             identity = (
-                _generated_name(invocation.path.strip('/'), name, context.task_id)
+                _generated_name(invocation.path.strip('/'), name)
                 if context.task_id else f"{local}_{name}"
             )
             port = _scoped_port(f"p_{identity}", context.task_keys[:-1])
@@ -1013,7 +1016,7 @@ class CWLTranslator(AbstractTranslator):
                 if context.task_id else identity
             )
             data = (
-                _keyed_data(f"output_{base_data}", context.task_id)
+                _keyed_data(f"element_d_{base_data}", context.task_id)
                 if context.task_id else f"d_{base_data}"
             )
             data_type = invocation.output_types.get(name, DATA_TYPE)
@@ -1026,6 +1029,7 @@ class CWLTranslator(AbstractTranslator):
             if not context.task_id:
                 context.dependencies[data] = {"type": data_type}
             context.available[invocation.outputs[name]] = (port, data, data_type)
+            context.value_locations[invocation.outputs[name]] = context.controller
             output_flow.append(f"({port}, {data})")
             expression_outputs[name] = port
 
@@ -1065,15 +1069,52 @@ class CWLTranslator(AbstractTranslator):
                 sources = invocation.process.outputs.get(output_name, ())
                 if sources:
                     context.available[output_path] = self._value(child, sources[0])
+                    context.value_locations[output_path] = child.value_locations.get(sources[0], child.controller)
             context.available.update(child.available)
+            context.value_locations.update(child.value_locations)
             return traces
-        return [self._tool_trace(invocation, context)]
+        # Ordinary producers may be placed independently of the scatter that
+        # consumes their lists. Keep the value's location beside its binding.
+        target = next(iter(invocation.deployments), None)
+        location = (
+            context.location_by_deployment.get(target.deployment, context.controller)
+            if target and not context.task_id else context.controller
+        )
+        child = context.child(context.region, controller=location)
+        receives = []
+        for sources in invocation.input_bindings.values():
+            for source in sources:
+                producer = context.value_locations.get(source, context.controller)
+                if producer == location:
+                    continue
+                port, data, _ = self._value(context, source)
+                receive = (
+                    f"recv({data} -> {port}, {producer}, {location})"
+                    if data.startswith("(?")
+                    else f"recv({port} -> {data}, {producer}, {location})"
+                )
+                if receive not in receives:
+                    context.fragments[producer].append(
+                        f"send({data} -> {port}, {producer}, {location})"
+                    )
+                    receives.append(receive)
+        trace = self._tool_trace(invocation, child)
+        if receives:
+            setup = " | ".join(receives)
+            trace = (f"({setup})" if len(receives) > 1 else setup) + "\n.\n" + trace
+        context.available.update(child.available)
+        context.value_locations.update(child.value_locations)
+        if location != context.controller:
+            context.fragments[location].append(trace)
+            return []
+        return [trace]
 
     def lower_invocation(
         self, invocation: Invocation, context: LoweringContext
     ) -> list[str]:
         if invocation.scatter:
-            return [self.lower_scatter(invocation, context)]
+            self.lower_scatter(invocation, context)
+            return []
         return self._lower_invocation_body(invocation, context)
 
     def lower_region(
@@ -1088,17 +1129,9 @@ class CWLTranslator(AbstractTranslator):
             traces.extend(self.lower_invocation(invocation, context))
         return traces
 
-    def lower_scatter(self, invocation: Invocation, context: LoweringContext) -> str:
+    def lower_scatter(self, invocation: Invocation, context: LoweringContext) -> None:
         index = self._region_number(context, invocation)
-        pair, opened, gather = (
-            f"_s_scatter_{index}",
-            f"_s_open_{index}",
-            f"_s_gather_{index}",
-        )
         task_id = f"key_{index}"
-        payload = f"payload_{index}"
-        task_port = _scoped_port(f"p_task_{index}", context.task_keys)
-        task_data = f"(?{payload}, ?{task_id})"
         inputs = []
         invariants = []
         for name, sources in invocation.input_bindings.items():
@@ -1117,6 +1150,10 @@ class CWLTranslator(AbstractTranslator):
                 (name, value)
             )
         by_name = dict(inputs)
+        if not invocation.scatter.inputs or any(
+            name not in by_name for name in invocation.scatter.inputs
+        ):
+            raise ValueError(f"Scatter dimensions require input sources at {invocation.path}")
         inputs = [(name, by_name[name]) for name in invocation.scatter.inputs]
         fields = {}
         for name, (_, _, data_type) in inputs:
@@ -1150,80 +1187,77 @@ class CWLTranslator(AbstractTranslator):
             raise ValueError(
                 f"Scatter step {invocation.path} requires deployment targets"
             )
-        route = {"controller": context.controller, "workers": workers}
+        streams = []
+        worker_values_base = dict(invariants)
         scope = context.scatter_scopes.setdefault(
             str(index),
             {
                 "operation": invocation.scatter.region_id,
                 "parentKeys": list(context.task_keys),
-                "taskChannel": task_port,
-                "activation": "finite_collection_publication" if context.task_keys else "workflow_start",
+                **({"parentOperation": context.scatter_regions[
+                    int(context.task_id.removeprefix("key_"))
+                ].scatter.region_id} if context.task_id else {}),
+                "activation": "parent_task_admission" if context.task_keys else "workflow_start",
+                "routing": "synchronized_moves_by_full_key",
+                "missingKey": "error_when_input_closed",
                 "routes": [],
+                "inputChannels": {},
             },
         )
+        route = {"controller": context.controller, "workers": workers, "producers": {
+            name: context.value_locations.get(invocation.input_bindings[name][0], context.controller)
+            for name, _ in inputs
+        }}
         if route not in scope["routes"]:
             scope["routes"].append(route)
-        context.steps[pair] = {
-            "displayName": f"{invocation.path} ScatterPairer",
-            "type": "scatter_pairer",
-            "scatterPorts": [value[0] for _, value in inputs],
-            "scatterMethod": invocation.scatter.method,
-            "operationId": invocation.scatter.region_id,
-            "dimensions": list(invocation.scatter.inputs),
-            **(
-                {"controller": context.controller, "workers": workers}
-                if not context.task_keys
-                else {}
-            ),
-            "routes": scope["routes"],
-            "invariantPorts": [
-                _scoped_port(value[0], context.task_keys) for _, value in invariants
-            ],
-            "key": {
-                "operation": invocation.scatter.region_id,
-                **(
-                    {"parentKeys": list(context.task_keys)}
-                    if context.task_keys
-                    else {"parentCoordinates": []}
-                ),
-                "coordinates": "declaration_order",
-            },
-            "outputs": {
-                task_port: {
-                    "collection": {
-                        "name": f"tasks_{index}",
-                        "key": task_id,
-                        "fields": fields,
-                    }
-                }
-            },
-        }
-        opened_outputs = {}
-        opened_values = dict(invariants)
-        opened_flow = []
-        for input_index, (name, (_, _, _)) in enumerate(inputs):
-            port = _scoped_port(f"p_open_data_{input_index}_{index}", context.task_keys)
-            data = _keyed_data(
-                _generated_name("input", invocation.path.strip("/"), name), task_id
-            )
-            opened_outputs[port] = _output_descriptor(data, fields[name])
-            opened_values[name] = (port, data, fields[name])
-            opened_flow.append(f"({port}, {data})")
-        context.steps[opened] = {
-            "displayName": f"{invocation.path} ScatterOpen",
-            "type": "scatter_open",
-            "inputFields": {
-                name: _scoped_port(f"p_open_data_{i}_{index}", context.task_keys)
-                for i, (name, _) in enumerate(inputs)
-            },
-            "outputs": opened_outputs,
-        }
+        source_counts = Counter(value[1] for _, value in inputs)
+        for input_index, (name, value) in enumerate(inputs):
+            source = invocation.input_bindings[name][0]
+            producer = context.value_locations.get(source, context.controller)
+            port = _scoped_port(f"p_scatter_{input_index}_{index}", context.task_keys)
+            source_name = value[1][2:].split(",", 1)[0] if value[1].startswith("(?") else value[1]
+            if source_counts[value[1]] > 1:
+                source_name = _generated_name(source_name, name)
+            element = f"element_{source_name}"
+            data = f"(?{element}, ?{task_id})"
+            dispatch = f"_s_dispatch_{input_index}_{index}"
+            collection = f"stream_{source_name}"
+            streams.append((dispatch, port, data, producer, collection, value))
+            worker_values_base[name] = (port, data, fields[name])
+            scope["inputChannels"][name] = port
+            context.steps[dispatch] = {
+                "displayName": f"{invocation.path}/{name} ScatterDispatch",
+                "type": "scatter_dispatch",
+                "operationId": invocation.scatter.region_id,
+                "dimension": name,
+                "dimensions": list(invocation.scatter.inputs),
+                "scatterMethod": invocation.scatter.method,
+                "routes": scope["routes"],
+                "key": {
+                    "operation": invocation.scatter.region_id,
+                    "parentKeys": list(context.task_keys),
+                    "coordinates": "declaration_order",
+                },
+                # No payload transfer between dispatch helpers: share cardinalities
+                # to expand Cartesian coordinates and validate aligned lengths.
+                "keySpace": {
+                    "dispatches": [f"_s_dispatch_{i}_{index}" for i in range(len(inputs))],
+                    "cardinalities": "publish_before_expansion",
+                    "validation": "equal_lengths" if invocation.scatter.method == "dotproduct" else "cartesian_shape",
+                    "routing": "synchronized_moves_by_full_key",
+                },
+                "outputs": {
+                    port: {"collection": {
+                        "name": collection, "key": task_id, "type": fields[name],
+                    }}
+                },
+            }
         worker_results = {}
-        invariant_sends = []
         for worker in workers:
-            worker_values = opened_values.copy()
-            if worker != context.controller or context.task_keys:
-                for name, (port, data, data_type) in invariants:
+            worker_values = worker_values_base.copy()
+            for name, (port, data, data_type) in invariants:
+                producer = context.value_locations.get(invocation.input_bindings[name][0], context.controller)
+                if producer != worker or context.task_keys:
                     worker_values[name] = (
                         _scoped_port(port, context.task_keys),
                         data,
@@ -1243,6 +1277,7 @@ class CWLTranslator(AbstractTranslator):
                     child.available[f"{invocation.process.path.rstrip('/')}/{name}"] = (
                         value
                     )
+                    child.value_locations[f"{invocation.process.path.rstrip('/')}/{name}"] = worker
             body = (
                 self.lower_region(invocation.process, child)
                 if isinstance(invocation.process, WorkflowRegion)
@@ -1295,27 +1330,52 @@ class CWLTranslator(AbstractTranslator):
                 for port in result_ports.values()
             ]
             body_trace = "\n.\n".join(body + sends)
+            eof_trace = " | ".join(eof_sends)
+            if len(eof_sends) > 1:
+                eof_trace = f"({eof_trace})"
+            _, master_port, master_data, master_producer, _, _ = streams[0]
+            matching = [
+                f"recv({data} -> {port}, {producer}, {worker})"
+                for _, port, data, producer, _, _ in streams[1:]
+            ]
+            matching_trace = " | ".join(matching)
+            if len(matching) > 1:
+                matching_trace = f"({matching_trace})"
+            if matching_trace:
+                matching_trace += " . "
+            input_eofs = [
+                f"recv(eof -> {port}, {producer}, {worker})"
+                for _, port, _, producer, _, _ in streams
+            ]
+            closing = " . ".join(input_eofs + ["end()"])
             branch = (
-                f"(\n!(\n  (recv({task_data} -> {task_port}, {context.controller}, {worker}) . "
-                f"exec({opened}, {{({task_port}, {task_data})}} -> {{{', '.join(opened_flow)}}}, {{{worker}}}) . "
-                f"{body_trace})\n  +\n  "
-                f"(recv(eof -> {task_port}, {context.controller}, {worker}) . end())\n)\n)"
-                f"\n.\n({' | '.join(eof_sends)})"
+                f"!(\n  (recv({master_data} -> {master_port}, {master_producer}, {worker}) . "
+                f"{matching_trace}{body_trace})\n  +\n  "
+                f"({closing})\n)"
+                f"\n.\n{eof_trace}"
             )
             invariant_recvs = []
-            if worker != context.controller or context.task_keys:
-                for port, data, _ in dict.fromkeys(value for _, value in invariants):
-                    port = _scoped_port(port, context.task_keys)
-                    invariant_sends.append(
-                        f"send({data} -> {port}, {context.controller}, {worker})"
-                    )
-                    invariant_recvs.append(
-                        f"recv({data} -> {port}, {context.controller}, {worker})"
-                        if data.startswith("(?")
-                        else f"recv({port} -> {data}, {context.controller}, {worker})"
-                    )
+            invariant_transfers = []
+            for port, data, _ in dict.fromkeys(value for _, value in invariants):
+                producer = next(
+                    context.value_locations.get(invocation.input_bindings[name][0], context.controller)
+                    for name, value in invariants if value[:2] == (port, data)
+                )
+                if producer == worker and not context.task_keys:
+                    continue
+                port = _scoped_port(port, context.task_keys)
+                send = f"send({data} -> {port}, {producer}, {worker})"
+                invariant_transfers.append((producer, send))
+                invariant_recvs.append(
+                    f"recv({data} -> {port}, {producer}, {worker})"
+                    if data.startswith("(?")
+                    else f"recv({port} -> {data}, {producer}, {worker})"
+                )
             if invariant_recvs:
-                branch = f"({' | '.join(invariant_recvs)})\n.\n({branch})"
+                invariant_trace = " | ".join(invariant_recvs)
+                if len(invariant_recvs) > 1:
+                    invariant_trace = f"({invariant_trace})"
+                branch = f"{invariant_trace}\n.\n{branch}"
             fragment = (
                 f"{self._scatter_hint(context, invocation.scatter.region_id, 'worker', True)}\n"
                 f"{branch}\n"
@@ -1323,91 +1383,74 @@ class CWLTranslator(AbstractTranslator):
             )
             if fragment not in context.fragments[worker]:
                 context.fragments[worker].append(fragment)
-        gather_outputs, gather_in, gather_out, receives = {}, [], [], []
-        collections = {}
-        for output_index, (name, (source_port, source_data, source_type)) in enumerate(
+                for producer, send in invariant_transfers:
+                    context.fragments[producer].append(send)
+        for output_index, (name, (_, source_data, source_type)) in enumerate(
             worker_results.items()
         ):
             source_port = result_ports[name]
-            port = _scoped_port(
-                f"p_gather_data_{output_index}_{index}", context.task_keys
-            )
-            base_data = _generated_name(
-                "d", invocation.path.strip("/"), name, str(index)
-            )
-            data = (
-                _keyed_data(f"gather_{base_data}", context.task_id)
-                if context.task_id
-                else base_data
-            )
-            depth = (
-                len(inputs) if invocation.scatter.method == "nested_crossproduct" else 1
-            )
+            port = _scoped_port(f"p_gather_data_{output_index}_{index}", context.task_keys)
+            base_data = _generated_name("d", invocation.path.strip("/"), name)
+            data = (_keyed_data(base_data, context.task_id)
+                    if context.task_id else base_data)
+            depth = len(inputs) if invocation.scatter.method == "nested_crossproduct" else 1
             data_type = "list[" * depth + source_type + "]" * depth
             if not context.task_id:
                 context.dependencies[data] = {"type": data_type}
-            gather_outputs[port] = _output_descriptor(data, data_type)
-            collection = f"results_{output_index}_{index}"
-            gather_in.append(f"U({source_port}, {collection})")
-            gather_out.append(f"({port}, {data})")
-            collections[source_port] = {
-                "name": collection,
-                "output": port,
-                "type": source_type,
-                "read": "snapshot",
+            collection = f"stream_{base_data}"
+            gather = f"_s_gather_{output_index}_{index}"
+            context.steps[gather] = {
+                "displayName": f"{invocation.path}/{name} ScatterGather",
+                "type": "scatter_gather",
+                "operationId": invocation.scatter.region_id,
+                "scatterMethod": invocation.scatter.method,
+                "order": "declaration_order_coordinates",
+                "shapeFrom": [stream[0] for stream in streams],
+                "collections": {source_port: {
+                    "name": collection, "output": port,
+                    "type": source_type, "read": "snapshot",
+                }},
+                "outputs": {port: _output_descriptor(data, data_type)},
             }
             scope.setdefault("resultChannels", {})[name] = source_port
             context.available[invocation.outputs[name]] = (port, data, data_type)
-            receives.extend(
+            context.value_locations[invocation.outputs[name]] = context.controller
+            receives = [
+                f"// @compiler begin gather_stream {collection} {worker} {source_port}\n(\n"
                 f"!(\n  (recv({source_data} -> {source_port}, {worker}, {context.controller}))\n  +\n"
-                f"  (recv(eof -> {source_port}, {worker}, {context.controller}) . end())\n)"
+                f"  (recv(eof -> {source_port}, {worker}, {context.controller}) . end())\n)\n)\n"
+                f"// @compiler end gather_stream {collection} {worker} {source_port}"
                 for worker in workers
+            ]
+            receive_trace = "\n|\n".join(receives)
+            if len(receives) > 1:
+                receive_trace = f"(\n{receive_trace}\n)"
+            fragment = (
+                f"{receive_trace}\n.\n"
+                f"exec({gather}, {{U({source_port}, {collection})}} -> {{({port}, {data})}}, {{{context.controller}}})"
             )
-        context.steps[gather] = {
-            "displayName": f"{invocation.path} ScatterGather",
-            "type": "scatter_gather",
-            "operationId": invocation.scatter.region_id,
-            "scatterMethod": invocation.scatter.method,
-            "order": "declaration_order_coordinates",
-            "shapeFrom": pair,
-            "collections": collections,
-            "outputs": gather_outputs,
-        }
-        input_flow = ", ".join(f"({port}, {data})" for _, (port, data, _) in inputs)
-        distributors = [
-            f"(\n  !(\n    (move({task_data} -> {task_port}, {context.controller}, {worker}))\n"
-            f"    +[{task_port} has data]\n    (end())\n  )\n)\n.\n"
-            f"send(eof -> {task_port}, {context.controller}, {worker})"
-            for worker in workers
-        ]
-        distribution = "\n|\n".join(f"({trace})" for trace in distributors)
-        collection_receives = "\n|\n".join(f"({trace})" for trace in receives)
-        invariant_setup = (
-            f"({' | '.join(invariant_sends)})\n.\n" if invariant_sends else ""
-        )
-        # Nested receive templates open when the finite collection is published,
-        # including for zero tasks; publish before synchronous invariant sends.
-        dispatch_setup = f"exec({pair}, {{{input_flow}}} -> {{U({task_port}, tasks_{index})}}, {{{context.controller}}})\n.\n"
-        if context.task_keys:
-            dispatch_setup += invariant_setup
-            invariant_setup = ""
-        return f"""(
-{invariant_setup}(
-(
-{self._scatter_hint(context, invocation.scatter.region_id, 'dispatch', True)}
-{dispatch_setup}({distribution})
-{self._scatter_hint(context, invocation.scatter.region_id, 'dispatch', False)}
-)
-|
-(
-{self._scatter_hint(context, invocation.scatter.region_id, 'gather', True)}
-({collection_receives})
-.
-exec({gather}, {{{', '.join(gather_in)}}} -> {{{', '.join(gather_out)}}}, {{{context.controller}}})
-{self._scatter_hint(context, invocation.scatter.region_id, 'gather', False)}
-)
-)
-)"""
+            if fragment not in context.fragments[context.controller]:
+                context.fragments[context.controller].append(fragment)
+        # Each dispatch is an independent producer-side continuation. Nested
+        # templates inherit their enclosing parent's key bindings at admission.
+        for dispatch, port, data, producer, collection, (source_port, source_data, _) in streams:
+            distributors = [
+                f"// @compiler begin scatter_stream {collection} {worker} {port}\n(\n"
+                f"!(\n  (move({data} -> {port}, {producer}, {worker}))\n"
+                f"  +[{port} has data]\n  (end())\n)\n.\n"
+                f"send(eof -> {port}, {producer}, {worker})\n)\n"
+                f"// @compiler end scatter_stream {collection} {worker} {port}"
+                for worker in workers
+            ]
+            distribution = distributors[0] if len(distributors) == 1 else (
+                "(\n" + "\n|\n".join(distributors) + "\n)"
+            )
+            fragment = (
+                f"exec({dispatch}, {{({source_port}, {source_data})}} -> {{U({port}, {collection})}}, {{{producer}}})"
+                f"\n.\n{distribution}"
+            )
+            if fragment not in context.fragments[producer]:
+                context.fragments[producer].append(fragment)
 
     def translate(
         self, workflow_output: TextIO = sys.stdout, metadata_output: TextIO = sys.stdout
@@ -1419,7 +1462,7 @@ exec({gather}, {{{', '.join(gather_in)}}} -> {{{', '.join(gather_out)}}}, {{{con
                 continue
             lengths = []
             for name in invocation.scatter.inputs:
-                sources = invocation.input_bindings[name]
+                sources = invocation.input_bindings.get(name, ())
                 if len(sources) != 1 or sources[0].count("/") != 1:
                     break
                 value = self.workflow_inputs.get(sources[0].lstrip("/"))
@@ -1442,11 +1485,12 @@ exec({gather}, {{{', '.join(gather_in)}}} -> {{{', '.join(gather_out)}}}, {{{con
             value = _coerce_cwl_value(raw, data_type, self.cwl_file.parent)
             context.dependencies[data] = {"type": data_type, "value": value}
             context.available[f"/{name}"] = (port, data, data_type)
+            context.value_locations[f"/{name}"] = context.controller
             context.datasets[context.controller].append((port, data))
 
-        context.fragments[context.controller].append(
-            "\n.\n".join(self.lower_region(region, context))
-        )
+        main_trace = "\n.\n".join(self.lower_region(region, context))
+        if main_trace:
+            context.fragments[context.controller].append(main_trace)
         workflow_output.write(
             _render_location_traces(
                 context.locations,

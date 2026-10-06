@@ -1,9 +1,18 @@
 # Part 1C, first batch: scoped nesting and scatter methods
 
+Historical batch: bundled pair/open dispatch and finite-publication activation
+were superseded on 2026-10-05. See
+[independent streams review](NEW_SYNTAX_INDEPENDENT_STREAMS_REVIEW.md).
+
 Implemented for review on 2026-10-02. This is a working translator batch, not
 complete Part 1C acceptance or runtime execution. The accepted simple-scatter
 checks pass **9/9**; new nesting/method tests wait for satisfaction with this
 batch, as required by the plan. Parser/compiler/runtime/schema files are unchanged.
+
+Formatting follow-up: redundant wrappers around replication, singleton
+distributors/receivers and EOF sends were removed. Grouping remains around
+parallel joins and choice/sequence boundaries. Review artifacts were regenerated;
+the nine accepted checks and lint still pass.
 
 ## Try the implementation
 
