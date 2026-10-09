@@ -1,6 +1,6 @@
 version: v1.0
 workflows:
-  master:
+  nested:
     type: cwl
     config:
       file: main.cwl
@@ -8,25 +8,23 @@ workflows:
     bindings:
       - step: /
         target:
-          deployment: coordinator
-      - step: /process_group
+          deployment: source
+      - step: /echo_batch
         target:
-          - deployment: worker1
-          - deployment: worker2
-      - step: /final_report
+          deployment: outer
+      - step: /echo_batch/echo_item
         target:
-          deployment: coordinator
-
+          deployment: inner
 deployments:
-  coordinator:
+  source:
     type: local
     config: {}
     port: 35100
-  worker1:
+  outer:
     type: local
     config: {}
-    port: 35110
-  worker2:
+    port: 35101
+  inner:
     type: local
     config: {}
-    port: 35111
+    port: 35102

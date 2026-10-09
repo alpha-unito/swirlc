@@ -112,7 +112,7 @@ def test_translate_cwl_scatter(tmp_path):
     from swirlc.antlr.SWIRLParser import SWIRLParser
     from swirlc.main import main
 
-    example = Path(__file__).parent.parent / "examples" / "cwl" / "scatter"
+    example = Path(__file__).parent.parent / "tests" / "fixtures" / "cwl" / "scatter"
     translated_dir = tmp_path / "translated"
     translated_dir.mkdir()
 
@@ -205,7 +205,7 @@ def test_scatter_examples_emit_one_trace_per_location(tmp_path, example, config)
     from swirlc.antlr.SWIRLParser import SWIRLParser
     from swirlc.main import main
 
-    source = pathlib.Path(__file__).parent.parent / "examples" / "cwl" / example
+    source = pathlib.Path(__file__).parent.parent / "tests" / "fixtures" / "cwl" / example
     outdir = tmp_path / f"{example}-{pathlib.Path(config).stem}"
     outdir.mkdir()
     assert (
@@ -246,7 +246,7 @@ def test_cwl_region_tree_preserves_nested_scatter_paths():
 
     from swirlc.translator.cwl.cwl_translator import CWLTranslator, WorkflowRegion
 
-    example = Path(__file__).parent.parent / "examples" / "cwl" / "scatter-nested-zip"
+    example = Path(__file__).parent.parent / "tests" / "fixtures" / "cwl" / "scatter-nested-zip"
     translator = CWLTranslator(example / "streamflow.yml")
     root = translator.build_region_tree()
 
@@ -288,7 +288,7 @@ def test_cwl_translation_builds_region_tree_once():
 
     from swirlc.translator.cwl.cwl_translator import CWLTranslator
 
-    example = Path(__file__).parent.parent / "examples" / "cwl" / "scatter"
+    example = Path(__file__).parent.parent / "tests" / "fixtures" / "cwl" / "scatter"
     translator = CWLTranslator(example / "streamflow.yml")
     original = translator.build_region_tree
     calls = 0
@@ -312,7 +312,7 @@ def test_cwl_region_tree_preserves_scatter_method(method):
 
     from swirlc.translator.cwl.cwl_translator import CWLTranslator
 
-    example = Path(__file__).parent.parent / "examples" / "cwl" / "scatter"
+    example = Path(__file__).parent.parent / "tests" / "fixtures" / "cwl" / "scatter"
     translator = CWLTranslator(example / "streamflow.yml")
     translator.cwl_obj.steps[0].scatterMethod = method
 
@@ -402,7 +402,7 @@ def test_translate_cwl_scatter_nested_zip_acceptance(tmp_path):
     from swirlc.antlr.SWIRLParser import SWIRLParser
     from swirlc.main import main
 
-    example = Path(__file__).parent.parent / "examples" / "cwl" / "scatter-nested-zip"
+    example = Path(__file__).parent.parent / "tests" / "fixtures" / "cwl" / "scatter-nested-zip"
     outdir = tmp_path / "translated"
     outdir.mkdir()
     assert (
@@ -479,7 +479,8 @@ def test_nested_scatter_uses_task_envelopes_and_scoped_eof(tmp_path):
 
     example = (
         pathlib.Path(__file__).parent.parent
-        / "examples"
+        / "tests"
+        / "fixtures"
         / "cwl"
         / "scatter-nested-minimal"
     )
@@ -522,7 +523,7 @@ def test_nested_scatter_is_emitted_when_worker_pool_is_shared(tmp_path):
     from swirlc.main import main
 
     example = (
-        pathlib.Path(__file__).parent.parent / "examples" / "cwl" / "scatter-nested"
+        pathlib.Path(__file__).parent.parent / "tests" / "fixtures" / "cwl" / "scatter-nested"
     )
     outdir = tmp_path / "translated"
     outdir.mkdir()
@@ -555,7 +556,7 @@ def test_translate_cwl_dotproduct_rejects_unequal_lengths():
 
     from swirlc.translator.cwl.cwl_translator import CWLTranslator
 
-    example = Path(__file__).parent.parent / "examples" / "cwl" / "scatter"
+    example = Path(__file__).parent.parent / "tests" / "fixtures" / "cwl" / "scatter"
     translator = CWLTranslator(example / "streamflow.yml")
     translator.cwl_obj.steps[0].scatterMethod = "dotproduct"
     translator.workflow_inputs["files_b"] = translator.workflow_inputs["files_b"][:-1]
@@ -575,7 +576,7 @@ def test_translate_cwl_scatter_nested(tmp_path):
     from swirlc.antlr.SWIRLParser import SWIRLParser
     from swirlc.main import main
 
-    example = Path(__file__).parent.parent / "examples" / "cwl" / "scatter-nested"
+    example = Path(__file__).parent.parent / "tests" / "fixtures" / "cwl" / "scatter-nested"
     translated_dir = tmp_path / "translated"
     translated_dir.mkdir()
 
@@ -671,7 +672,7 @@ def test_translate_1000genome_nested_scatters(tmp_path):
     from swirlc.antlr.SWIRLParser import SWIRLParser
     from swirlc.main import main
 
-    example = pathlib.Path(__file__).parent.parent / "examples" / "cwl" / "1000genome"
+    example = pathlib.Path(__file__).parent.parent / "tests" / "fixtures" / "cwl" / "1000genome"
     outdir = tmp_path / "1000genome"
     outdir.mkdir()
     assert (

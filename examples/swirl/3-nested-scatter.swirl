@@ -1,0 +1,190 @@
+// Handwritten concrete reference; not generated, parsed or executed by swirlc.
+// Input [[[a, b], []], [[c]]] retains all three list levels.
+// Outer/middle workflows expose only their declared nested output.
+// Dependency destination collector owns item -> list -> matrix -> cube gathers.
+// Sender ownership: inner closes item streams; collector closes list/matrix
+// materialization streams after its admitted children and acknowledged sends join.
+// Controls constrain every remote admission to a bound prefix plus one coordinate.
+// No complete scope aliases, worker-local return gathers or implicit branch exports.
+
+<source, {(p_input, (d_cubes, root))},
+  send((begin, root) -> p_outer, source, outer)
+  .
+  exec(s_dispatch_outer, {(p_input, (d_cubes, root))}
+    -> {U(p_outer, matrix_stream, root)}, {source})
+  .
+  !(move((?matrix, root / ?iteration_1) -> p_outer, source, outer)
+    +[p_outer has data in root] end())
+  .
+  send((eof, root) -> p_outer, source, outer)
+> |
+
+<outer, {},
+  recv((begin, ?scope_0) -> p_outer, source, outer)
+  .
+  (send((begin, ?scope_0) -> p_middle_control, outer, middle)
+    | send((begin, ?scope_0) -> p_inner_control, outer, inner)
+    | send((begin, ?scope_0) -> p_interface_control, outer, collector))
+  .
+  !(
+    (
+      recv((?matrix, ?scope_0 / ?iteration_1) -> p_outer, source, outer)
+      .
+      send((begin, ?scope_0 / ?iteration_1) -> p_middle, outer, middle)
+      .
+      exec(s_dispatch_middle, {(p_outer, (?matrix, ?scope_0 / ?iteration_1))}
+        -> {U(p_middle, list_stream, ?scope_0 / ?iteration_1)}, {outer})
+      .
+      !(move((?items, ?scope_0 / ?iteration_1 / ?iteration_2) -> p_middle, outer, middle)
+        +[p_middle has data in ?scope_0 / ?iteration_1] end())
+      .
+      send((eof, ?scope_0 / ?iteration_1) -> p_middle, outer, middle)
+    )
+    + (recv((eof, ?scope_0) -> p_outer, source, outer) . end())
+  )
+  .
+  (send((eof, ?scope_0) -> p_middle_control, outer, middle)
+    | send((eof, ?scope_0) -> p_inner_control, outer, inner)
+    | send((eof, ?scope_0) -> p_interface_control, outer, collector))
+> |
+
+<middle, {},
+  recv((begin, ?scope_0) -> p_middle_control, outer, middle)
+  .
+  !(
+    (
+      recv((begin, ?scope_0 / ?iteration_1) -> p_middle, outer, middle)
+      .
+      (send((begin, ?scope_0 / ?iteration_1) -> p_inner_sessions, middle, inner)
+        | send((begin, ?scope_0 / ?iteration_1) -> p_interface_sessions, middle, collector))
+      .
+      !(
+        (
+          recv((?items, ?scope_0 / ?iteration_1 / ?iteration_2) -> p_middle, outer, middle)
+          .
+          send((begin, ?scope_0 / ?iteration_1 / ?iteration_2) -> p_inner, middle, inner)
+          .
+          exec(s_dispatch_inner, {(p_middle, (?items, ?scope_0 / ?iteration_1 / ?iteration_2))}
+            -> {U(p_inner, item_stream, ?scope_0 / ?iteration_1 / ?iteration_2)}, {middle})
+          .
+          !(move((?item, ?scope_0 / ?iteration_1 / ?iteration_2 / ?iteration_3) -> p_inner, middle, inner)
+            +[p_inner has data in ?scope_0 / ?iteration_1 / ?iteration_2] end())
+          .
+          send((eof, ?scope_0 / ?iteration_1 / ?iteration_2) -> p_inner, middle, inner)
+        )
+        + (recv((eof, ?scope_0 / ?iteration_1) -> p_middle, outer, middle) . end())
+      )
+      .
+      (send((eof, ?scope_0 / ?iteration_1) -> p_inner_sessions, middle, inner)
+        | send((eof, ?scope_0 / ?iteration_1) -> p_interface_sessions, middle, collector))
+    )
+    + (recv((eof, ?scope_0) -> p_middle_control, outer, middle) . end())
+  )
+> |
+
+<inner, {},
+  recv((begin, ?scope_0) -> p_inner_control, outer, inner)
+  .
+  !(
+    (
+      recv((begin, ?scope_0 / ?iteration_1) -> p_inner_sessions, middle, inner)
+      .
+      !(
+        (
+          recv((begin, ?scope_0 / ?iteration_1 / ?iteration_2) -> p_inner, middle, inner)
+          .
+          send((begin, ?scope_0 / ?iteration_1 / ?iteration_2) -> p_item_results, inner, collector)
+          .
+          !(
+            (
+              recv((?item, ?scope_0 / ?iteration_1 / ?iteration_2 / ?iteration_3) -> p_inner, middle, inner)
+              .
+              exec(s_work, {(p_inner, (?item, ?scope_0 / ?iteration_1 / ?iteration_2 / ?iteration_3))}
+                -> {(p_item_results, (?result, ?scope_0 / ?iteration_1 / ?iteration_2 / ?iteration_3))}, {inner})
+              .
+              send((?result, ?scope_0 / ?iteration_1 / ?iteration_2 / ?iteration_3) -> p_item_results, inner, collector)
+            )
+            + (recv((eof, ?scope_0 / ?iteration_1 / ?iteration_2) -> p_inner, middle, inner) . end())
+          )
+          .
+          send((eof, ?scope_0 / ?iteration_1 / ?iteration_2) -> p_item_results, inner, collector)
+        )
+        + (recv((eof, ?scope_0 / ?iteration_1) -> p_inner_sessions, middle, inner) . end())
+      )
+    )
+    + (recv((eof, ?scope_0) -> p_inner_control, outer, inner) . end())
+  )
+> |
+
+<collector, {},
+  recv((begin, ?scope_0) -> p_interface_control, outer, collector)
+  .
+  (
+    (
+      send((begin, ?scope_0) -> p_matrix_results, collector, collector)
+      .
+      !(
+        (
+          recv((begin, ?scope_0 / ?iteration_1) -> p_interface_sessions, middle, collector)
+          .
+          (
+            (
+              send((begin, ?scope_0 / ?iteration_1) -> p_list_results, collector, collector)
+              .
+              !(
+                (
+                  recv((begin, ?scope_0 / ?iteration_1 / ?iteration_2) -> p_item_results, inner, collector)
+                  .
+                  !(
+                    recv((?result, ?scope_0 / ?iteration_1 / ?iteration_2 / ?iteration_3) -> p_item_results, inner, collector)
+                    + (recv((eof, ?scope_0 / ?iteration_1 / ?iteration_2) -> p_item_results, inner, collector) . end())
+                  )
+                  .
+                  exec(s_gather_inner, {U(p_item_results, item_results, ?scope_0 / ?iteration_1 / ?iteration_2)}
+                    -> {(p_list_results, (?list_results, ?scope_0 / ?iteration_1 / ?iteration_2))}, {collector})
+                  .
+                  send((?list_results, ?scope_0 / ?iteration_1 / ?iteration_2) -> p_list_results, collector, collector)
+                )
+                + (recv((eof, ?scope_0 / ?iteration_1) -> p_interface_sessions, middle, collector) . end())
+              )
+              .
+              send((eof, ?scope_0 / ?iteration_1) -> p_list_results, collector, collector)
+            )
+            |
+            (
+              recv((begin, ?scope_0 / ?iteration_1) -> p_list_results, collector, collector)
+              .
+              !(
+                recv((?list_results, ?scope_0 / ?iteration_1 / ?iteration_2) -> p_list_results, collector, collector)
+                + (recv((eof, ?scope_0 / ?iteration_1) -> p_list_results, collector, collector) . end())
+              )
+              .
+              exec(s_gather_middle, {U(p_list_results, list_results, ?scope_0 / ?iteration_1)}
+                -> {(p_matrix_results, (?matrix_results, ?scope_0 / ?iteration_1))}, {collector})
+              .
+              send((?matrix_results, ?scope_0 / ?iteration_1) -> p_matrix_results, collector, collector)
+            )
+          )
+        )
+        + (recv((eof, ?scope_0) -> p_interface_control, outer, collector) . end())
+      )
+      .
+      send((eof, ?scope_0) -> p_matrix_results, collector, collector)
+    )
+    |
+    (
+      recv((begin, ?scope_0) -> p_matrix_results, collector, collector)
+      .
+      !(
+        recv((?matrix_results, ?scope_0 / ?iteration_1) -> p_matrix_results, collector, collector)
+        + (recv((eof, ?scope_0) -> p_matrix_results, collector, collector) . end())
+      )
+      .
+      exec(s_gather_outer, {U(p_matrix_results, matrix_results, ?scope_0)}
+        -> {(p_output, (d_output, ?scope_0))}, {collector})
+      .
+      exec(s_consumer, {(p_output, (d_output, ?scope_0))}
+        -> {(p_final, (d_final, ?scope_0))}, {collector})
+    )
+  )
+>

@@ -1,29 +1,36 @@
 # Example status
 
-Checked on 2026-10-05 against the independent-stream CWL translator and current
-legacy compiler. Generated files are under `build/`; source workflows were not
-executed and input data were not downloaded.
+## Current CWL examples (2026-10-08)
 
-## Regenerated CWL examples
+`examples/cwl` contains five basic workflows (`basic`, `nested`, `expressions`,
+`lists`, `lists-input`), one simple paired scatter (`scatter`) and one simple
+nested scatter (`scatter-nested`). The basic workflows retain their deployment
+variants: **11 configurations** in total.
 
-All **27** `streamflow*.yml` configurations under `examples/cwl`, plus the
-distributed `examples/1000genome` configuration included in that count,
-translate successfully. Current traces, metadata, translation logs and
-compilation logs are in `build/new-syntax/independent/<example>-<configuration>/`.
-The distributed 1000Genomes directory is `1000genome-distributed`.
-`results.json` indexes the exact source configuration and output directory.
+All 11 configurations translated successfully after cleanup. Basic outputs are
+under `build/cwl-examples/<workflow>/<configuration>/`; scatter outputs are under
+`build/scatter/` and `build/scatter-nested/`. Each directory contains the generated
+trace, metadata and translation log.
 
-| Coverage | Translation | Legacy compilation |
-| --- | --- | --- |
-| basic, nested, expressions (including deployment variants), lists, lists-input: 9 configurations | Pass | Pass |
-| scatter, nested scatter, scatter methods, independent producers, both 1000Genomes configurations: 18 configurations | Pass | Rejected by legacy metadata schema |
+The simple scatter pairs `[a, b]` with `[1, 2]`. The nested scatter uses
+`[[a, b], [], [c]]` and preserves a `list[list[file]]` output type. Trace and
+metadata inspection establishes emission only; no workflow was executed.
+The translator now emits begin/scoped-EOF, composed IDs and explicit receiving
+owners using one recursive lowering path at arbitrary finite scatter depth.
+The one-/two-/three-level concrete references and one-/two-level virtual
+references now describe dependency-routed gathers and sender-owned EOF.
+Manual three-/five-level, empty, sibling, ordinary internal, invariant and
+multiple-consumer artifacts are under `build/recursive-validation/final/`.
+Receiving owners constrain admission to one child of their bound enclosing path;
+exposed output lists materialize from the innermost scatter boundary outward.
+The existing compiler does not support the complete new syntax.
 
-The 13 Python files produced by the nine successful compilations pass Python
-syntax checks. New scatter metadata uses `binding`, `collection`, `keySpace`,
-and invocation scope descriptors that the old schema rejects. The old parser
-also lacks `U`, `?` variables, guarded exhaustion, `end()`, and qualified ports.
-Compilation failure here does not mean the CWL sources are outdated: completing
-the new compiler/runtime is still Phase 2.
+The larger scatter and CWL 1000Genomes cases were initially moved to
+`tests/fixtures/cwl`, then removed by the user. Automated tests were not run.
+Additional manual artifact checks are under `build/new-syntax-validation/`.
+The distributed `examples/1000genome` workflow remains in its original location.
+Earlier 27-configuration translation records refer to the pre-cleanup layout;
+their generated files remain under `build/envelope-validation/`.
 
 ## Handwritten SWIRL examples
 
@@ -39,15 +46,8 @@ the new compiler/runtime is still Phase 2.
 `build/example-audit/swirl-results.json` records parser and compilation outcomes.
 Parsing alone does not establish executable semantics.
 
-## Outdated documentation
+## Historical documentation
 
-- `cwl/scatter/README.md` still describes ScatterPairer/Open. Current translation
-  emits separate producer-local dispatch streams and independent output gathers.
-- `swirl/scatter/README.md` describes an unzip/wc/cat pipeline, whereas its source
-  and metadata describe paired inputs with ComputeItem/AnalyzeReport.
-- `swirl/basic/doc.md` uses nonexistent `examples/basic` paths; the files are
-  under `examples/swirl/basic`.
-
-The CWL sources themselves remain usable translation fixtures. Historical SWIRL
-sources and their metadata have been retained for comparison rather than
-silently rewritten into a different execution model.
+The handwritten SWIRL status above records the 2026-10-05 legacy compiler audit,
+not a new compilation check. `swirl/scatter/README.md` and `swirl/basic/doc.md`
+still contain historical pipeline/path descriptions.

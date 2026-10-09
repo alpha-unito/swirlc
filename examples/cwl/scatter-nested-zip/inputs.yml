@@ -1,5 +1,0 @@
-zip_files:
-  - class: File
-    path: data/archive_1.zip
-  - class: File
-    path: data/archive_2.zip

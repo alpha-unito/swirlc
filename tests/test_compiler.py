@@ -169,7 +169,7 @@ def test_scatter() -> None:
 
 
 def test_nested_scatter_trace_target() -> None:
-    example = pathlib.Path(__file__).parent.parent / "examples" / "cwl" / "scatter-nested-zip"
+    example = pathlib.Path(__file__).parent.parent / "tests" / "fixtures" / "cwl" / "scatter-nested-zip"
     with tempfile.TemporaryDirectory() as workdir:
         translated = pathlib.Path(workdir) / "translated"
         translated.mkdir()

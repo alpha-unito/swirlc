@@ -10,6 +10,7 @@ from ruamel.yaml import YAML
 from swirlc.translator.cwl.cwl_translator import CWLTranslator
 
 EXAMPLES = Path(__file__).resolve().parents[1] / "examples" / "cwl"
+FIXTURES = Path(__file__).resolve().parent / "fixtures" / "cwl"
 
 
 def translate(translator):
@@ -28,7 +29,7 @@ def translate(translator):
     "scatter-nested-new-syntax/streamflow-separate.yml",
 ])
 def test_worker_termination_receives_all_input_eofs_before_end(config):
-    trace, metadata = translate(CWLTranslator(EXAMPLES / config))
+    trace, metadata = translate(CWLTranslator(FIXTURES / config))
     blocks = re.findall(
         r"// @compiler begin scatter.worker (\d+)\n(.*?)"
         r"// @compiler end scatter.worker \1", trace, re.S,
@@ -70,7 +71,7 @@ def test_worker_termination_receives_all_input_eofs_before_end(config):
 )
 def test_simple_scatter_preserves_inputs_and_collection_contract(case, items):
     trace, metadata = translate(
-        CWLTranslator(EXAMPLES / "scatter-new-syntax" / f"streamflow-{case}.yml")
+        CWLTranslator(FIXTURES / "scatter-new-syntax" / f"streamflow-{case}.yml")
     )
     assert metadata["dependencies"]["d_items"] == {
         "type": "list[string]",
@@ -142,7 +143,7 @@ def test_simple_scatter_preserves_inputs_and_collection_contract(case, items):
 
 def test_scalar_and_whole_list_invariants_are_initialized_once_per_worker():
     trace, metadata = translate(
-        CWLTranslator(EXAMPLES / "scatter-new-syntax" / "streamflow-many.yml")
+        CWLTranslator(FIXTURES / "scatter-new-syntax" / "streamflow-many.yml")
     )
     dispatch = metadata["steps"]["_s_dispatch_0_0"]
     assert dispatch["dimension"] == "item"
@@ -160,7 +161,7 @@ def test_scalar_and_whole_list_invariants_are_initialized_once_per_worker():
 
 
 def test_same_source_can_be_scattered_and_passed_as_a_whole_list():
-    translator = CWLTranslator(EXAMPLES / "scatter-new-syntax" / "streamflow-many.yml")
+    translator = CWLTranslator(FIXTURES / "scatter-new-syntax" / "streamflow-many.yml")
     bindings = translator.cwl_obj.steps[0].in_
     next(binding for binding in bindings if binding.id.endswith("/labels")).source = (
         next(binding.source for binding in bindings if binding.id.endswith("/item"))
@@ -179,7 +180,7 @@ def test_same_source_can_be_scattered_and_passed_as_a_whole_list():
 
 @pytest.mark.parametrize("output_name", ["item", "input_item"])
 def test_exec_output_binds_a_fresh_payload_when_input_and_output_names_match(output_name):
-    translator = CWLTranslator(EXAMPLES / "scatter-new-syntax" / "streamflow-one.yml")
+    translator = CWLTranslator(FIXTURES / "scatter-new-syntax" / "streamflow-one.yml")
     step = translator.cwl_obj.steps[0]
     step.run.outputs[0].id = step.run.outputs[0].id.removesuffix("rendered") + output_name
     step.out[0] = step.out[0].removesuffix("rendered") + output_name

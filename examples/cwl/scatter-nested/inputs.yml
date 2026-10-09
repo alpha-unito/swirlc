@@ -1,13 +1,4 @@
-groups:
-  - class: File
-    path: data/group_1.txt
-  - class: File
-    path: data/group_2.txt
-
-tags:
-  - class: File
-    path: data/tag_a.txt
-  - class: File
-    path: data/tag_b.txt
-
-num_items: 2
+batches:
+  - [a, b]
+  - []
+  - [c]

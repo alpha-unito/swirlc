@@ -1,0 +1,83 @@
+// Handwritten design example: not generated or compiled by swirlc.
+// Proposed semantics: begin opens a scope; data keys extend that scope.
+// scope / iteration matches or constructs a hierarchical key.
+// Guards and U snapshots explicitly select the scope.
+// Begin/EOF match the scope exactly; root names the common root invocation.
+// The dependency routes worker occurrences to collector; collector gathers before s_consumer.
+// Worker completion waits for occurrence acknowledgments, never final consumer execution.
+// Dispatches agree on child keys and synchronized move destinations.
+
+<source_a, {(p_list_a, (d_a, root))},
+  send((begin, root) -> p_a, source_a, worker)
+  .
+  exec(s_dispatch_a, {(p_list_a, (d_a, root))} -> {U(p_a, stream_a, root)}, {source_a})
+  .
+  !(
+    move((?a, root / ?iteration_1) -> p_a, source_a, worker)
+    +[p_a has data in root]
+    end()
+  )
+  .
+  send((eof, root) -> p_a, source_a, worker)
+> |
+
+<source_b, {(p_list_b, (d_b, root))},
+  send((begin, root) -> p_b, source_b, worker)
+  .
+  exec(s_dispatch_b, {(p_list_b, (d_b, root))} -> {U(p_b, stream_b, root)}, {source_b})
+  .
+  !(
+    move((?b, root / ?iteration_1) -> p_b, source_b, worker)
+    +[p_b has data in root]
+    end()
+  )
+  .
+  send((eof, root) -> p_b, source_b, worker)
+> |
+
+<worker, {},
+  recv((begin, ?scope_0) -> p_a, source_a, worker)
+  .
+  recv((begin, ?scope_0) -> p_b, source_b, worker)
+  .
+  send((begin, ?scope_0) -> p_results, worker, collector)
+  .
+  !(
+    (
+      recv((?a, ?scope_0 / ?iteration_1) -> p_a, source_a, worker)
+      .
+      recv((?b, ?scope_0 / ?iteration_1) -> p_b, source_b, worker)
+      .
+      // Ordinary workflow steps share this task ID; only explicit scatter adds a coordinate.
+      exec(s_work, {(p_a, (?a, ?scope_0 / ?iteration_1)), (p_b, (?b, ?scope_0 / ?iteration_1))} -> {(p_results, (?result, ?scope_0 / ?iteration_1))}, {worker})
+      .
+      send((?result, ?scope_0 / ?iteration_1) -> p_results, worker, collector)
+    )
+    +
+    (
+      recv((eof, ?scope_0) -> p_a, source_a, worker)
+      .
+      recv((eof, ?scope_0) -> p_b, source_b, worker)
+      .
+      end()
+    )
+  )
+  .
+  send((eof, ?scope_0) -> p_results, worker, collector)
+> |
+
+<collector, {},
+  recv((begin, ?scope_0) -> p_results, worker, collector)
+  .
+  !(
+    recv((?result, ?scope_0 / ?iteration_1) -> p_results, worker, collector)
+    +
+    (
+      recv((eof, ?scope_0) -> p_results, worker, collector)
+      .
+      end()
+    )
+  )
+  .
+  exec(s_gather, {U(p_results, results, ?scope_0)} -> {(p_output, (d_output, ?scope_0))}, {collector})
+>

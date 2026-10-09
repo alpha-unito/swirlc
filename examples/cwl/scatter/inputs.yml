@@ -1,23 +1,2 @@
-files_a:
-  - class: File
-    path: data/a_0.txt
-  - class: File
-    path: data/a_1.txt
-  - class: File
-    path: data/a_2.txt
-  - class: File
-    path: data/a_3.txt
-  - class: File
-    path: data/a_4.txt
-
-files_b:
-  - class: File
-    path: data/b_0.txt
-  - class: File
-    path: data/b_1.txt
-  - class: File
-    path: data/b_2.txt
-  - class: File
-    path: data/b_3.txt
-  - class: File
-    path: data/b_4.txt
+letters: [a, b]
+numbers: ["1", "2"]

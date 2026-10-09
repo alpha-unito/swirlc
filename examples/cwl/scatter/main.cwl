@@ -1,31 +1,20 @@
-#!/usr/bin/env cwl-runner
 cwlVersion: v1.2
 class: Workflow
-
 requirements:
   ScatterFeatureRequirement: {}
-
 inputs:
-  files_a: File[]
-  files_b: File[]
-
+  letters: string[]
+  numbers: string[]
 outputs:
-  report:
-    type: File
-    outputSource: analyze/report
-
+  results:
+    type: File[]
+    outputSource: echo_pair/result
 steps:
-  compute:
-    run: compute.cwl
-    scatter: [file_a, file_b]
-    scatterMethod: flat_crossproduct
+  echo_pair:
+    run: echo.cwl
     in:
-      file_a: files_a
-      file_b: files_b
+      letter: letters
+      number: numbers
     out: [result]
-
-  analyze:
-    run: analyze.cwl
-    in:
-      inputs: compute/result
-    out: [report]
+    scatter: [letter, number]
+    scatterMethod: dotproduct

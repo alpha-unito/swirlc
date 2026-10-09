@@ -1,0 +1,78 @@
+// Conceptual notation only; not implemented grammar or a translator IR.
+// Expansion: 2-nested-scatter.swirl; contracts as in the one-level virtual view.
+// Explicit owners retain constrained admission; scatter_exec emits occurrences.
+// Outer declares inner's output as its exposed output. Its interface is placed
+// at collector by the actual downstream dependency, never an assumed return.
+// Collector materializes inner lists, then gathers outer occurrences exactly once.
+// Each materialization sender closes its own stream after acknowledged sends.
+// Parallel receivers keep self-send acknowledgments live; no binding is exported
+// implicitly from a sibling branch. Empty streams preserve [] at each boundary.
+
+<source, {(p_input, (d_lists, root))},
+  scatter_send((d_lists, root) -> p_outer, source, outer)
+> |
+
+<outer, {},
+  recv((begin, ?scope_0) -> p_outer, source, outer)
+  .
+  (send((begin, ?scope_0) -> p_inner_control, outer, inner)
+    | send((begin, ?scope_0) -> p_interface_control, outer, collector))
+  .
+  !(
+    (recv((?items, ?scope_0 / ?iteration_1) -> p_outer, source, outer)
+      . scatter_send((?items, ?scope_0 / ?iteration_1) -> p_inner, outer, inner))
+    + (recv((eof, ?scope_0) -> p_outer, source, outer) . end())
+  )
+  .
+  (send((eof, ?scope_0) -> p_inner_control, outer, inner)
+    | send((eof, ?scope_0) -> p_interface_control, outer, collector))
+> |
+
+<inner, {},
+  recv((begin, ?scope_0) -> p_inner_control, outer, inner)
+  .
+  !(
+    (
+      recv((begin, ?scope_0 / ?iteration_1) -> p_inner, outer, inner)
+      .
+      scatter_exec(s_work,
+        {U(p_inner, inner_stream, ?scope_0 / ?iteration_1)}
+        -> {U(p_inner_results, inner_results, ?scope_0 / ?iteration_1)}, {inner}, collector)
+    )
+    + (recv((eof, ?scope_0) -> p_inner_control, outer, inner) . end())
+  )
+> |
+
+<collector, {},
+  recv((begin, ?scope_0) -> p_interface_control, outer, collector)
+  .
+  (
+    (
+      send((begin, ?scope_0) -> p_outer_results, collector, collector)
+      .
+      !(
+        (
+          recv((begin, ?scope_0 / ?iteration_1) -> p_inner_results, inner, collector)
+          .
+          scatter_recv(U(p_inner_results, inner_results, ?scope_0 / ?iteration_1)
+            -> {(p_outer_results, (?results, ?scope_0 / ?iteration_1))}, inner, collector)
+          .
+          send((?results, ?scope_0 / ?iteration_1) -> p_outer_results, collector, collector)
+        )
+        + (recv((eof, ?scope_0) -> p_interface_control, outer, collector) . end())
+      )
+      .
+      send((eof, ?scope_0) -> p_outer_results, collector, collector)
+    )
+    |
+    (
+      recv((begin, ?scope_0) -> p_outer_results, collector, collector)
+      .
+      scatter_recv(U(p_outer_results, outer_results, ?scope_0)
+        -> {(p_output, (d_output, ?scope_0))}, collector, collector)
+      .
+      exec(s_consumer, {(p_output, (d_output, ?scope_0))}
+        -> {(p_final, (d_final, ?scope_0))}, {collector})
+    )
+  )
+>

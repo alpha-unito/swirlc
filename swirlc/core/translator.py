@@ -73,7 +73,7 @@ def _add_step(step, steps, workflow, dependencies):
         steps[step.name]["outputs"] = {}
         for port_name, processor in step.processors.items():
             data_name = next(iter(workflow.ports[port_name].data))
-            steps[step.name]["outputs"][port_name] = {"dataName": data_name}
+            steps[step.name]["outputs"][port_name] = {"dataName": data_name, "id": "root"}
             dependencies[data_name] = {"type": processor.type}
             if processor.glob:
                 steps[step.name]["outputs"][port_name]["glob"] = processor.glob
@@ -108,7 +108,7 @@ class AbstractTranslator:
             for data in sorted(location.data.keys()):
                 for port in workflow.ports.values():
                     if data in port.data:
-                        datapair.append(f"({port.name},{data})")
+                        datapair.append(f"({port.name},({data}, root))")
                         break
             workflow_output.write(f"<{location.name}, {{{','.join(datapair)}}},\n\t")
 
@@ -122,16 +122,18 @@ class AbstractTranslator:
                 for port in workflow.ports.values():
                     if data.name in port.data:
                         for send in (
-                            f"send({data.name}->{port.name},{location.name},{out_loc.name})"
+                            f"send(({data.name}, root)->{port.name},{location.name},{out_loc.name})"
                             for out_loc in workflow.get_output_locations(port)
                             if out_loc.name != location.name
                         ):
                             copying_dataset.add(send)
-            parallel_dataset_send = (
-                f"({' | '.join(copying_dataset)}) | " if copying_dataset else ""
-            )
-            workflow_output.write(f"{parallel_dataset_send}")
             nof_steps = len(workflow.get_location_steps(location))
+            parallel_dataset_send = (
+                f"({' | '.join(sorted(copying_dataset))})" if copying_dataset else ""
+            )
+            if parallel_dataset_send and nof_steps:
+                parallel_dataset_send += " | "
+            workflow_output.write(parallel_dataset_send)
             for j, step in enumerate(workflow.get_location_steps(location)):
                 recvs, sends = set(), set()
                 _add_step(step, steps, workflow, dependencies)
@@ -140,7 +142,7 @@ class AbstractTranslator:
                     data_name = next(iter(port.data))
                     # data from other steps
                     for recv in (
-                        f"recv({port.name} -> {data_name},{in_loc.name},{location.name})"
+                        f"recv(({data_name}, root) -> {port.name},{in_loc.name},{location.name})"
                         for in_loc in workflow.get_input_locations(port)
                         if in_loc.name != location.name
                     ):
@@ -154,22 +156,32 @@ class AbstractTranslator:
                             and loc.name != location.name
                             and (
                                 recv
-                                := f"recv({port.name} -> {data_name},{loc.name},{location.name})"
+                                := f"recv(({data_name}, root) -> {port.name},{loc.name},{location.name})"
                             )
                             not in trace_recvs
                         ):
                             recvs.add(recv)
                             trace_recvs.add(recv)
+                input_data = sorted(
+                    f"({port.name},({data}, root))"
+                    for port in workflow.get_input_ports(step)
+                    for data in port.data
+                )
+                output_data = sorted(
+                    f"({port.name},({data}, root))"
+                    for port in workflow.get_output_ports(step)
+                    for data in port.data
+                )
                 exec = (
                     f"exec({step.name},"
-                    f"{{{','.join(workflow.get_input_data(step))}}}->"
-                    f"{{{','.join(workflow.get_output_data(step))}}},"
+                    f"{{{','.join(input_data)}}}->"
+                    f"{{{','.join(output_data)}}},"
                     f"{{{','.join([loc.name for loc in workflow.get_step_locations(step)])}}})"
                 )
                 for port in workflow.get_output_ports(step):
                     for d in port.data:
                         for send in (
-                            f"send({d}->{port.name},{location.name},{out_loc.name})"
+                            f"send(({d}, root)->{port.name},{location.name},{out_loc.name})"
                             for out_loc in workflow.get_output_locations(port)
                             if out_loc.name != location.name
                         ):

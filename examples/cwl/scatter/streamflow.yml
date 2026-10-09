@@ -1,6 +1,6 @@
 version: v1.0
 workflows:
-  master:
+  scatter:
     type: cwl
     config:
       file: main.cwl
@@ -8,26 +8,16 @@ workflows:
     bindings:
       - step: /
         target:
-          deployment: coordinator
-      - step: /compute
+          deployment: source
+      - step: /echo_pair
         target:
-          - deployment: coordinator
-          - deployment: worker1
-          - deployment: worker2
-      - step: /analyze
-        target:
-          deployment: coordinator
-
+          deployment: worker
 deployments:
-  coordinator:
+  source:
     type: local
     config: {}
     port: 35080
-  worker1:
+  worker:
     type: local
     config: {}
     port: 35081
-  worker2:
-    type: local
-    config: {}
-    port: 35082

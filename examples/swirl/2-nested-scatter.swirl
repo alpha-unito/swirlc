@@ -1,0 +1,119 @@
+// Handwritten concrete reference; not generated, parsed or executed by swirlc.
+// Explicit scatters: outer at root; inner at root / iteration_1.
+// Inner output is exposed by outer's declared output mapping.
+// Its logical interface gathers at collector, the actual downstream consumer.
+// Inner sends scalar occurrences and owns their EOF; collector materializes
+// one list per outer task, then gathers those list payloads once at root.
+// Controls admit exactly one fresh coordinate under an already bound prefix.
+// Empty inner streams still begin/EOF and gather []; empty outer streams gather [].
+// Every sender joins its work and acknowledged sends, not final consumer execution.
+
+<source, {(p_input, (d_lists, root))},
+  send((begin, root) -> p_outer, source, outer)
+  .
+  exec(s_dispatch_outer, {(p_input, (d_lists, root))}
+    -> {U(p_outer, outer_stream, root)}, {source})
+  .
+  !(move((?items, root / ?iteration_1) -> p_outer, source, outer)
+    +[p_outer has data in root] end())
+  .
+  send((eof, root) -> p_outer, source, outer)
+> |
+
+<outer, {},
+  recv((begin, ?scope_0) -> p_outer, source, outer)
+  .
+  (send((begin, ?scope_0) -> p_inner_control, outer, inner)
+    | send((begin, ?scope_0) -> p_interface_control, outer, collector))
+  .
+  !(
+    (
+      recv((?items, ?scope_0 / ?iteration_1) -> p_outer, source, outer)
+      .
+      send((begin, ?scope_0 / ?iteration_1) -> p_inner, outer, inner)
+      .
+      exec(s_dispatch_inner, {(p_outer, (?items, ?scope_0 / ?iteration_1))}
+        -> {U(p_inner, inner_stream, ?scope_0 / ?iteration_1)}, {outer})
+      .
+      !(move((?item, ?scope_0 / ?iteration_1 / ?iteration_2) -> p_inner, outer, inner)
+        +[p_inner has data in ?scope_0 / ?iteration_1] end())
+      .
+      send((eof, ?scope_0 / ?iteration_1) -> p_inner, outer, inner)
+    )
+    + (recv((eof, ?scope_0) -> p_outer, source, outer) . end())
+  )
+  .
+  (send((eof, ?scope_0) -> p_inner_control, outer, inner)
+    | send((eof, ?scope_0) -> p_interface_control, outer, collector))
+> |
+
+<inner, {},
+  recv((begin, ?scope_0) -> p_inner_control, outer, inner)
+  .
+  !(
+    (
+      recv((begin, ?scope_0 / ?iteration_1) -> p_inner, outer, inner)
+      .
+      send((begin, ?scope_0 / ?iteration_1) -> p_inner_results, inner, collector)
+      .
+      !(
+        (
+          recv((?item, ?scope_0 / ?iteration_1 / ?iteration_2) -> p_inner, outer, inner)
+          .
+          exec(s_work, {(p_inner, (?item, ?scope_0 / ?iteration_1 / ?iteration_2))}
+            -> {(p_inner_results, (?result, ?scope_0 / ?iteration_1 / ?iteration_2))}, {inner})
+          .
+          send((?result, ?scope_0 / ?iteration_1 / ?iteration_2) -> p_inner_results, inner, collector)
+        )
+        + (recv((eof, ?scope_0 / ?iteration_1) -> p_inner, outer, inner) . end())
+      )
+      .
+      send((eof, ?scope_0 / ?iteration_1) -> p_inner_results, inner, collector)
+    )
+    + (recv((eof, ?scope_0) -> p_inner_control, outer, inner) . end())
+  )
+> |
+
+<collector, {},
+  recv((begin, ?scope_0) -> p_interface_control, outer, collector)
+  .
+  (
+    (
+      send((begin, ?scope_0) -> p_outer_results, collector, collector)
+      .
+      !(
+        (
+          recv((begin, ?scope_0 / ?iteration_1) -> p_inner_results, inner, collector)
+          .
+          !(
+            recv((?result, ?scope_0 / ?iteration_1 / ?iteration_2) -> p_inner_results, inner, collector)
+            + (recv((eof, ?scope_0 / ?iteration_1) -> p_inner_results, inner, collector) . end())
+          )
+          .
+          exec(s_gather_inner, {U(p_inner_results, inner_results, ?scope_0 / ?iteration_1)}
+            -> {(p_outer_results, (?results, ?scope_0 / ?iteration_1))}, {collector})
+          .
+          send((?results, ?scope_0 / ?iteration_1) -> p_outer_results, collector, collector)
+        )
+        + (recv((eof, ?scope_0) -> p_interface_control, outer, collector) . end())
+      )
+      .
+      send((eof, ?scope_0) -> p_outer_results, collector, collector)
+    )
+    |
+    (
+      recv((begin, ?scope_0) -> p_outer_results, collector, collector)
+      .
+      !(
+        recv((?results, ?scope_0 / ?iteration_1) -> p_outer_results, collector, collector)
+        + (recv((eof, ?scope_0) -> p_outer_results, collector, collector) . end())
+      )
+      .
+      exec(s_gather_outer, {U(p_outer_results, outer_results, ?scope_0)}
+        -> {(p_output, (d_output, ?scope_0))}, {collector})
+      .
+      exec(s_consumer, {(p_output, (d_output, ?scope_0))}
+        -> {(p_final, (d_final, ?scope_0))}, {collector})
+    )
+  )
+>
