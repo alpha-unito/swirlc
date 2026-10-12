@@ -223,7 +223,7 @@ class LoweringContext:
     steps: dict[str, dict] = field(default_factory=dict)
     dependencies: dict[str, dict] = field(default_factory=dict)
     locations: dict[str, dict] = field(default_factory=dict)
-    location_by_deployment: dict[str, str] = field(default_factory=dict)
+    location_by_deployment: dict[DeploymentTarget, str] = field(default_factory=dict)
     datasets: dict[str, list[tuple[str, DataReference]]] = field(default_factory=dict)
     scatter_regions: list[Invocation] = field(default_factory=list)
     scatter_scopes: dict[str, dict] = field(default_factory=dict)
@@ -232,6 +232,7 @@ class LoweringContext:
     publishers: dict[str, EmittedFragment] = field(default_factory=dict)
     workers: list[ScatterWorker] = field(default_factory=list)
     worker_owner: ScatterWorker | None = None
+    tool_counts: dict[str, int] = field(default_factory=dict)
 
     def child(
         self,
@@ -260,6 +261,7 @@ class LoweringContext:
             publishers=self.publishers.copy(),
             workers=self.workers,
             worker_owner=self.worker_owner,
+            tool_counts=self.tool_counts,
         )
 
 
@@ -306,14 +308,14 @@ def _normalize_bindings(streamflow_config: MutableMapping) -> StreamFlowBindings
 
 
 def _scatter_locations(
-    coordinator: str,
-    deployments: list[str],
+    coordinator: DeploymentTarget,
+    deployments: list[DeploymentTarget],
     config: MutableMapping,
-) -> tuple[dict[str, dict], dict[str, str]]:
-    """Create exactly one SWIRL location for each selected deployment."""
+) -> tuple[dict[str, dict], dict[DeploymentTarget, str]]:
+    """Keep selected deployment/service targets distinct, preserving SSH wrapping."""
     source = config.get("deployments", {})
     selected = list(dict.fromkeys([coordinator, *deployments]))
-    missing = [name for name in selected if name not in source]
+    missing = [target.deployment for target in selected if target.deployment not in source]
     if missing:
         raise ValueError(f"Unknown deployment(s): {', '.join(missing)}")
 
@@ -333,7 +335,8 @@ def _scatter_locations(
 
     locations = {}
     location_by_deployment = {}
-    for index, name in enumerate(selected):
+    for index, target in enumerate(selected):
+        name = target.deployment
         location = f"l{index}"
         deployment = source[name]
         details = {
@@ -352,8 +355,15 @@ def _scatter_locations(
         ):
             if source_key in ssh:
                 details[target_key] = ssh[source_key]
+        if target.service is not None:
+            services = deployment.get("config", {}).get("services", {})
+            if target.service not in services:
+                raise ValueError(f"Unknown service {target.service!r} in deployment {name!r}")
+            details["service"] = target.service
+            if deployment.get("type") == "slurm":
+                details["slurm"] = dict(services[target.service])
         locations[location] = {"deployment": details}
-        location_by_deployment[name] = location
+        location_by_deployment[target] = location
     return locations, location_by_deployment
 
 
@@ -984,17 +994,17 @@ class CWLTranslator(AbstractTranslator):
         scatters = self._scatter_regions(region)
         coordinator = self.bindings.target_for("/")
         deployments = [
-            target.deployment
+            target
             for invocation in self._walk_invocations(region)
             for target in invocation.deployments
             if target.deployment
         ]
         if coordinator and coordinator.deployment:
-            coordinator_name = coordinator.deployment
+            coordinator_name = coordinator
         elif deployments:
             coordinator_name = deployments[0]
         else:
-            coordinator_name = next(iter(self.streamflow_config.get("deployments", {})))
+            coordinator_name = DeploymentTarget(next(iter(self.streamflow_config.get("deployments", {}))))
         locations, by_deployment = _scatter_locations(
             coordinator_name,
             list(dict.fromkeys(deployments)),
@@ -1061,6 +1071,15 @@ class CWLTranslator(AbstractTranslator):
                 )
                 context.value_locations[path] = context.controller
 
+    def _exec_name(self, context: LoweringContext, base: str) -> str:
+        """Allocate once per emitted exec, including replicated worker templates."""
+        count = context.tool_counts.get(base, 0)
+        context.tool_counts[base] = count + 1
+        name = f"{base}_{count}"
+        if name in context.steps:
+            raise ValueError(f"Duplicate exec descriptor {name}")
+        return name
+
     def _tool_trace(
         self,
         invocation: Invocation,
@@ -1069,8 +1088,9 @@ class CWLTranslator(AbstractTranslator):
     ) -> str:
         tool = invocation.process
         local = invocation.path.rsplit("/", 1)[-1]
-        step_name = f"s_{_generated_name(invocation.path.strip('/'))}"
+        step_name = self._exec_name(context, f"s_{_generated_name(invocation.path.strip('/'))}")
         input_flow: list[str] = []
+        input_ports: list[str] = []
         arguments: list[tuple[int, str, dict]] = []
         expression_inputs = {}
         for tool_input in getattr(tool, "inputs", []):
@@ -1093,6 +1113,7 @@ class CWLTranslator(AbstractTranslator):
                 )]
             for port, data, _ in values:
                 input_flow.append(f"({port}, {data})")
+                input_ports.append(port)
             if not values:
                 continue
             port, _, data_type = values[0]
@@ -1134,6 +1155,7 @@ class CWLTranslator(AbstractTranslator):
         command, extras = _command(tool)
         step = {
             "displayName": local,
+            "inputPorts": list(dict.fromkeys(input_ports)),
             "command": command,
             "arguments": [
                 {"value": _resolve_token(extra, self.cwl_file.parent)} for extra in extras
@@ -1179,10 +1201,11 @@ class CWLTranslator(AbstractTranslator):
         # consumes their lists. Keep the value's location beside its binding.
         target = next(iter(invocation.deployments), None)
         location = (
-            context.location_by_deployment.get(target.deployment, context.controller)
+            context.location_by_deployment.get(target, context.controller)
             if target else context.controller
         )
         child = context.child(context.region, controller=location)
+        pending_inputs = set(child.pending)
         receives = self._ready_inputs(invocation, child, location)
         admission = ""
         admission_receive = ""
@@ -1196,10 +1219,15 @@ class CWLTranslator(AbstractTranslator):
             )
         for sources in invocation.input_bindings.values():
             for source in sources:
-                producer = child.value_locations.get(source, context.controller)
-                if producer == location and (location == context.controller or source not in context.publishers):
+                if source in pending_inputs:
                     continue
-                port, data, _ = self._value(child, source)
+                producer = child.value_locations.get(source, context.controller)
+                if producer == location and source not in child.publishers:
+                    continue
+                port, data, data_type = self._value(child, source)
+                if source in context.publishers:
+                    port = _generated_name("p_input", invocation.path.strip("/"), source.strip("/"), location)
+                    child.available[source] = (port, data, data_type)
                 receive = f"recv({data} -> {port}, {producer}, {location})"
                 if receive not in receives:
                     send = f"send({data} -> {port}, {producer}, {location})"
@@ -1213,7 +1241,7 @@ class CWLTranslator(AbstractTranslator):
             setup = " | ".join(receives)
             trace = (f"({setup})" if len(receives) > 1 else setup) + "\n.\n" + trace
         trace = _sequence([admission_receive, trace])
-        publisher = _sequence([])
+        publisher = _parallel([])
         trace.parts.append(publisher)
         for output_path in invocation.outputs.values():
             context.available[output_path] = child.available[output_path]
@@ -1260,7 +1288,7 @@ class CWLTranslator(AbstractTranslator):
         base = _generated_name("d", stage.invocation.path.strip("/"), stage.name, destination)
         data = DataReference(base, scope, bool(stage.scope))
         collection = f"stream_{base}"
-        gather = f"_s_gather_{suffix}"
+        gather = self._exec_name(stage.sources[0].context, f"_s_gather_{suffix}")
         loops, begins, routes = [], [], []
         for source_index, occurrence in enumerate(stage.sources):
             actual = (
@@ -1300,10 +1328,11 @@ class CWLTranslator(AbstractTranslator):
                             "eofOwner": "actual_sender_after_publication_join"}
             routes.append(result_route)
             worker.result_routes.setdefault(location, []).append(result_route)
-        publisher = _sequence([])
+        publisher = _parallel([])
         gather_inputs = ", ".join(f"U({route['port']}, {collection}_{i}, {collector_scope})" for i, route in enumerate(routes))
         fragment = _sequence([
-            *begins,
+            begins[0],
+            _parallel(begins[1:]),
             _parallel(loops),
             f"exec({gather}, {{{gather_inputs}}} -> {{({port}, {data})}}, {{{destination}}})",
             publisher,
@@ -1316,6 +1345,7 @@ class CWLTranslator(AbstractTranslator):
         context.steps[gather] = {
             "displayName": f"{stage.invocation.path}/{stage.name} ScatterGather",
             "type": "scatter_gather",
+            "inputPorts": [route["port"] for route in routes],
             "operationId": stage.invocation.scatter.region_id,
             "scope": scope,
             "scatterMethod": stage.invocation.scatter.method,
@@ -1378,7 +1408,7 @@ class CWLTranslator(AbstractTranslator):
                 source = bindings[0]
                 if source in context.pending:
                     target = next(iter(invocation.deployments), None)
-                    destination = context.location_by_deployment.get(target.deployment, context.controller) if target else context.controller
+                    destination = context.location_by_deployment.get(target, context.controller) if target else context.controller
                     output = self._materialize(context.pending[source], destination)
                     value = output.value
                     producers[name] = destination
@@ -1406,12 +1436,12 @@ class CWLTranslator(AbstractTranslator):
         fields = {name: _list_inner_type(value[2]) for name, value in inputs}
         if any(value is None for value in fields.values()):
             raise ValueError(f"Scatter inputs must be lists at {invocation.path}")
-        workers = list(dict.fromkeys(context.location_by_deployment[target.deployment]
-                                    for target in invocation.deployments if target.deployment in context.location_by_deployment))
-        descendants = {context.location_by_deployment[target.deployment]
+        workers = list(dict.fromkeys(context.location_by_deployment[target]
+                                    for target in invocation.deployments if target in context.location_by_deployment))
+        descendants = {context.location_by_deployment[target]
                        for item in self._walk_invocations(invocation.process)
                        if item.scatter for target in item.deployments
-                       if target.deployment in context.location_by_deployment} if isinstance(invocation.process, WorkflowRegion) else set()
+                       if target in context.location_by_deployment} if isinstance(invocation.process, WorkflowRegion) else set()
         workers = [worker for worker in workers if worker not in descendants] or workers
         if not workers:
             raise ValueError(f"Scatter step {invocation.path} requires deployment targets")
@@ -1430,12 +1460,13 @@ class CWLTranslator(AbstractTranslator):
         if route not in scope["routes"]:
             scope["routes"].append(route)
         streams = []
+        dispatch_names = [self._exec_name(context, f"_s_dispatch_{i}_{index}") for i in range(len(inputs))]
         counts = Counter(value[1] for _, value in inputs)
         for dimension, (name, value) in enumerate(inputs):
             port = f"p_scatter_{dimension}_{index}"
             base = value[1].payload if counts[value[1]] == 1 else _generated_name(value[1].payload, name)
             element, collection = f"element_{base}", f"stream_{base}_{index}_{dimension}"
-            dispatch = f"_s_dispatch_{dimension}_{index}"
+            dispatch = dispatch_names[dimension]
             producer = producers[name]
             activation = []
             dispatch_scope = scope_id
@@ -1451,12 +1482,13 @@ class CWLTranslator(AbstractTranslator):
             dispatch_id = f"{dispatch_scope} / {coordinate}"
             context.steps[dispatch] = {
                 "displayName": f"{invocation.path}/{name} ScatterDispatch", "type": "scatter_dispatch",
+                "inputPorts": [source_port],
                 "operationId": invocation.scatter.region_id, "dimension": name,
                 "dimensions": list(invocation.scatter.inputs), "scatterMethod": invocation.scatter.method,
-                "routes": scope["routes"], "scope": dispatch_scope,
+                "routes": [route], "scope": dispatch_scope,
                 "key": {"operation": invocation.scatter.region_id, "scope": dispatch_scope,
                         "id": dispatch_id, "coordinates": "declaration_order"},
-                "keySpace": {"dispatches": [f"_s_dispatch_{i}_{index}" for i in range(len(inputs))],
+                "keySpace": {"dispatches": dispatch_names,
                              "cardinalities": "publish_before_peer_wait",
                              "validation": "equal_lengths" if invocation.scatter.method == "dotproduct" else "cartesian_shape",
                              "routing": "synchronized_moves_by_operation_and_full_id"},
@@ -1492,7 +1524,7 @@ class CWLTranslator(AbstractTranslator):
                                   fragments={location: [] for location in context.locations})
             child.bound_path = task_path
             openings, closings, result_begins, result_eofs = (_parallel([]) for _ in range(4))
-            body = _sequence([])
+            body = _parallel([])
             owner = ScatterWorker(child, context, invocation, index, task_path, worker_prefix,
                                   body, openings, closings, result_begins, result_eofs)
             child.worker_owner = owner
@@ -1527,7 +1559,10 @@ class CWLTranslator(AbstractTranslator):
                 if len(result_paths) != len(invocation.process.outputs):
                     raise ValueError(f"Scatter outputs require one source at {invocation.path}")
             else:
-                body.parts.append(self._tool_trace(invocation, child, values))
+                publication = _parallel([])
+                body.parts.append(_sequence([self._tool_trace(invocation, child, values), publication]))
+                for path in invocation.outputs.values():
+                    child.publishers[path] = publication
                 result_paths = invocation.outputs
             for name, path in result_paths.items():
                 value = self._value(child, path)
@@ -1536,9 +1571,10 @@ class CWLTranslator(AbstractTranslator):
                     source_port, source_data, data_type = value
                     output_port = _generated_name("p_publish", invocation.path.strip("/"), name)
                     output_data = DataReference(_generated_name("element_d_publish", invocation.path.strip("/"), name), worker_id, True)
-                    publish = _generated_name("_s_publish", invocation.path.strip("/"), name)
+                    publish = self._exec_name(context, _generated_name("_s_publish", invocation.path.strip("/"), name))
                     context.steps[publish] = {
                         "displayName": f"{invocation.path}/{name} OutputOccurrence",
+                        "inputPorts": [source_port],
                         "expression": {
                             "source": "${ return {value: inputs.value}; }",
                             "inputs": {"value": {"port": source_port, "type": data_type}},
@@ -1546,10 +1582,11 @@ class CWLTranslator(AbstractTranslator):
                         },
                         "outputs": {output_port: _output_descriptor(output_data, data_type)},
                     }
-                    body.parts.append(f"exec({publish}, {{({source_port}, {source_data})}} -> {{({output_port}, {output_data})}}, {{{worker}}})")
+                    publication = _parallel([])
+                    body.parts.append(_sequence([f"exec({publish}, {{({source_port}, {source_data})}} -> {{({output_port}, {output_data})}}, {{{worker}}})", publication]))
                     value = (output_port, output_data, data_type)
                     child.value_locations[path] = worker
-                    child.publishers[path] = body
+                    child.publishers[path] = publication
                 publisher = child.publishers.get(path, body)
                 outputs[name].append(OutputOccurrence(child, value,
                     child.value_locations.get(path, worker), publisher, child.pending.get(path)))
@@ -1561,9 +1598,10 @@ class CWLTranslator(AbstractTranslator):
             close = _sequence([*[f"recv((eof, {' / '.join(worker_prefix)}) -> {port}, {producer}, {worker})"
                                   for _, _, port, _, producer in streams], "end()"])
             branch = _sequence([
-                *[f"recv((begin, {' / '.join(worker_prefix)}) -> {port}, {producer}, {worker})"
-                  for _, _, port, _, producer in streams],
-                _parallel(invariant_receives), result_begins, openings,
+                f"recv((begin, {' / '.join(worker_prefix)}) -> {streams[0][2]}, {streams[0][4]}, {worker})",
+                _parallel([*[f"recv((begin, {' / '.join(worker_prefix)}) -> {port}, {producer}, {worker})"
+                  for _, _, port, _, producer in streams[1:]], *invariant_receives, openings]),
+                result_begins,
                 EmittedFragment("replication", [work, close]), closings, result_eofs,
             ])
             context.fragments[worker].append(EmittedFragment("hint", [
@@ -1601,7 +1639,7 @@ class CWLTranslator(AbstractTranslator):
             for location, parts in child.fragments.items():
                 if location == worker:
                     if parts:
-                        owner.body.parts[:] = [_parallel([_sequence(owner.body.parts.copy()), *parts])]
+                        owner.body.parts[:] = [_parallel([_parallel(owner.body.parts.copy()), *parts])]
                     continue
                 if not parts:
                     continue
@@ -1668,7 +1706,7 @@ class CWLTranslator(AbstractTranslator):
             context.value_locations[f"/{name}"] = context.controller
             context.datasets[context.controller].append((port, data))
 
-        main_trace = _sequence(self.lower_region(region, context))
+        main_trace = _parallel(self.lower_region(region, context))
         if main_trace:
             context.fragments[context.controller].append(main_trace)
         for sources in region.outputs.values():

@@ -9,16 +9,17 @@ below identify the reviewed snapshot; relocate actions after regeneration.
 
 ## Scope and gates
 
-This request authorizes writing the plan only. No repairs or artifact regeneration
-have been performed. Future implementation should stay within translator and
-metadata production, preserving the existing recursive region/dependency model,
-deployment lookup and approved worker reservation policy.
+The 2026-10-09 implementation request authorizes repairs #1, #2 and #4 and manual
+translation/artifact regeneration. It supersedes the original planning-only gate.
+Implementation stays within translator and metadata production, preserving the
+existing recursive region/dependency model, deployment lookup and approved worker
+reservation policy.
 
 Do not run/add automated tests, execute workflows, change parser/compiler/runtime,
 restore deleted fixtures, inspect binaries, commit, push or interact with remotes
-under this plan. Manual translation is a future implementation validation step,
-not authorization to perform it during this planning request. Existing artifacts,
-logs and source inspection are structural evidence, never execution proof.
+under this plan. Manual translation is authorized; source and generated workflows
+are not executed. Artifacts, logs and source inspection are structural evidence,
+never execution proof.
 
 Implement #1 first, then #2 and #4. Repairs #3, #5 and #6 are deferred together
 as a later metadata update, including stdout destinations, output processing and
@@ -307,3 +308,100 @@ dependency/binding/shape regressions are identified.
 Obtain translator acceptance before parser/compiler/runtime work. Exact outputs,
 out-of-order completion, hint-free execution and freedom from runtime blocked joins
 remain later execution proof; translation alone cannot establish them.
+
+
+## Implementation evidence — 2026-10-09
+
+Repairs #1, #2 and #4 implemented; user acceptance remains pending. No claim of
+runtime correctness or acceptance is made. Repository-root AGENTS.md was absent;
+the supplied AGENTS.md instructions and /home/tommo/.codex/RTK.md were applied.
+
+### Changes and structural findings
+
+- Invocation groups run in parallel at root and recursively inside ordinary
+  workflows and worker task bodies. Publication tails join parallel destination
+  copies. Sibling outputs use explicit consumer ports and receives, including
+  self communication; gathered values retain their separate readiness route.
+- A first input begin explicitly binds a fresh owner scope before other begin,
+  invariant and descendant-opening branches use it. Remaining setup joins before
+  task admission. Remote services and collectors participate alongside producers.
+- Direct scattered tools and reusable-output occurrence helpers retain execution
+  before their publication tail. EOF stays after admitted work and acknowledged
+  publications; consumer gather/execution is not added to the producer tail.
+- Each concrete exec gets a deterministic allocated metadata name. Replicated
+  runtime instances retain their template descriptor. All descriptors record exact
+  `inputPorts` and outputs. Dispatch keySpace and gather shapeFrom/helper references
+  use allocated names; dispatch routes describe their own producer placement.
+- Location keys include deployment and service. Selected SLURM service name and
+  partition/nodes/ntasks/time coexist with wrapped SSH settings. Existing lookup
+  and descendant worker reservations are retained; placement adds no coordinate.
+
+Source-derived checks: basic step1 -> step2 and greeting fan-out; ordinary nested
+trim -> upper -> annotate without scatter coordinates; whole-list ordinary edges;
+expression output types; dotproduct coordinate pairing; nested inner File[] then
+outer File[][] materialization. Genome chromosome and interval producers are
+independent; individuals waits for both dimensions and invariants, merge waits for
+its gathered File[], and sifting can progress independently. Mutation/frequency
+use separate population scatters and explicit invariant copies.
+
+Walked synchronous startup, admitted tasks, concurrent parent IDs, empty closure
+and delayed publication consumers through both genome parent placements and the
+nested traces. Parallel chromosome destinations can block independently without
+blocking interval production/dispatch. Inner source EOF follows its publication
+join before downstream merge/final gather. Remote materialization senders close
+their own routes, while enclosing services drain admitted descendants. Nested
+stages retain full scope matches, ordering/validation metadata and list nesting.
+Compiler hints were ignored in this reasoning. These are structural walks, not
+observed runtime scheduling or error behavior.
+
+### Regenerated and inspected configurations
+
+Complete translation.log, workflow.swirl and metadata.yml inspected for each:
+
+- examples/cwl/basic/streamflow-slurm.yml -> build/cwl/basic/streamflow-slurm
+- examples/cwl/basic/streamflow-split.yml -> build/cwl/basic/streamflow-split
+- examples/cwl/basic/streamflow.yml -> build/cwl/basic/streamflow
+- examples/cwl/expressions/streamflow-slurm.yml -> build/cwl/expressions/streamflow-slurm
+- examples/cwl/expressions/streamflow.yml -> build/cwl/expressions/streamflow
+- examples/cwl/lists/streamflow.yml -> build/cwl/lists/streamflow
+- examples/cwl/lists-input/streamflow.yml -> build/cwl/lists-input/streamflow
+- examples/cwl/nested/streamflow-split.yml -> build/cwl/nested/streamflow-split
+- examples/cwl/nested/streamflow.yml -> build/cwl/nested/streamflow
+- examples/cwl/scatter/streamflow.yml -> build/cwl/scatter/streamflow
+- examples/cwl/scatter-nested/streamflow.yml -> build/cwl/scatter-nested/streamflow
+- examples/1000genome/streamflow.yml -> build/1000genome/streamflow
+
+Used `rtk .venv/bin/swirlc translate -l cwl CONFIG -o OUTPUT`, capturing stdout and
+stderr in translation.log. File completeness and full logged failures were checked
+independently of exit status. Final repeated translations produced identical SWIRL
+and metadata bytes for every configuration. Raw logs differ where CWL diagnostic
+printing includes object addresses and inline-workflow UUIDs; logs are not claimed
+byte-identical. No logged translation failure found. Metadata inspection found
+71 exec actions and 71 unique matching descriptors (44 in genome), with no
+missing/unused descriptors, input/output port mismatch or dangling helper reference.
+
+New manual probes under build/repair-probes (not restored historical fixtures):
+depth3/streamflow.yml -> depth3/translated, depth5/streamflow.yml -> depth5/translated
+and cartesian/streamflow.yml -> cartesian/translated. Complete logs and both output
+artifacts inspected; final repetitions were byte-identical for SWIRL/metadata,
+with 28 unique matching exec descriptors across the probes. Their source expectations and generated scope/gather
+structure cover unequal concurrent parent cardinalities, empty descendants,
+three/five explicit scatter levels, independent expression dimension producers,
+fan-out to sibling scatters and nested Cartesian 2-by-0 shape [[], []]. Shape is
+specified by metadata; actual resulting payload is not runtime-proven.
+
+### Unresolved work and coverage limits
+
+Deferred metadata #3 (command argument expressions), #5 (stdout and output
+processing) and #6 (inputBinding.valueFrom transformations) remain unresolved.
+`inputPorts` records exec ownership only and does not implement their evaluator or
+expression input map. No source CWL was changed to conceal these omissions.
+Deep probes are co-located; deeper distributed coverage relies on the available
+scatter-nested and genome configurations. The Cartesian empty probe has no admitted
+child task; nonempty dotproduct task reasoning uses the manifest examples.
+Historical build/recursive-validation/final artifacts remain unavailable and were
+not restored or counted. Delayed consumers were reasoned about structurally, not
+executed. No automated tests, source/generated workflow execution, parser/compiler/
+runtime stages, binary inspection, commits, pushes or remote interaction occurred.
+Runtime matching, out-of-order completion, cardinality errors, concrete list payloads
+and hint-free execution remain later execution proof, after user authorization.
