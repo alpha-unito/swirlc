@@ -23,6 +23,8 @@ _PHASE_STEP = {"dispatch": "_s_scatter_", "worker": "_s_open_", "gather": "_s_ga
 
 def scan_hints(source: str, metadata: dict[str, Any]) -> list[HintSpan]:
     """Read optional compiler directives; bad hints never change compilation."""
+    if any(step.get("type") == "scatter_dispatch" for step in metadata.get("steps", {}).values()):
+        return []  # Modern stream hints are advisory; syntax supplies all semantics.
     stack: list[tuple[str, str, int]] = []
     spans: list[HintSpan] = []
     offset = 0

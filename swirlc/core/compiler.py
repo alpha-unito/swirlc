@@ -119,6 +119,10 @@ class BaseCompiler:
         """After processing the body of a replication operator."""
         pass
 
+    def end(self) -> None:
+        """Close and drain the nearest replication owner."""
+        pass
+
     def zero(self) -> None:
         """Process the zero (0) null-process trace."""
         pass
@@ -147,6 +151,7 @@ class CompileVisitor(SWIRLVisitor, ABC):
     ) -> None:
         super().__init__()
         self.compiler: BaseCompiler = compiler
+        self.compiler.metadata = metadata
         self.metadata: MutableMapping[str, Any] = metadata
         self.hints = hints or []
         self.workflow: DistributedWorkflow = DistributedWorkflow()
@@ -193,7 +198,8 @@ class CompileVisitor(SWIRLVisitor, ABC):
     def visitDataSet(self, ctx: SWIRLParser.DataSetContext):
         dataset = []
         for d in ctx.dataPair():
-            port_name, data_name = utils.get_pair(d)
+            port_name, term = utils.get_pair(d, self.metadata["dependencies"])
+            data_name = term.payload.name
             dataset.append(
                 (
                     port_name,
@@ -201,6 +207,7 @@ class CompileVisitor(SWIRLVisitor, ABC):
                         data_name,
                         self.metadata["dependencies"][data_name]["type"],
                         self.metadata["dependencies"][data_name]["value"],
+                        term.identity,
                     ),
                 )
             )
@@ -221,13 +228,51 @@ class CompileVisitor(SWIRLVisitor, ABC):
         self.compiler.end_location()
         return val
 
+    def _descriptor_type(self, descriptor):
+        if "dataName" in descriptor:
+            return self.metadata["dependencies"][descriptor["dataName"]]["type"]
+        for kind in ("binding", "collection"):
+            if kind in descriptor:
+                return descriptor[kind]["type"]
+        raise ValueError(f"Output descriptor has no payload type: {descriptor}")
+
     def _register_step(self, ctx: SWIRLParser.ExecContext):
-        flow = utils.get_flow(ctx)
+        flow = utils.get_flow(ctx, self.metadata["dependencies"])
         inputs, outputs = flow
         mapping = utils.get_location_set(ctx.mapping().locationSet())
         name = utils.get_name(ctx.step())
+        if name not in self.metadata["steps"]:
+            raise ValueError(f"Exec {name} has no metadata descriptor")
+        unknown_locations = mapping - set(self.workflow.locations)
+        if unknown_locations:
+            raise ValueError(f"Step {name}: unknown mapped locations {sorted(unknown_locations)}")
+        step_metadata = self.metadata["steps"][name]
+        declared_inputs = step_metadata.get("inputPorts")
+        if declared_inputs is not None and set(declared_inputs) != {p for p, _ in inputs}:
+            raise ValueError(f"Step {name}: exec inputs do not match metadata inputPorts")
+        if set(step_metadata.get("outputs", {})) != {p for p, _ in outputs}:
+            raise ValueError(f"Step {name}: exec outputs do not match metadata outputs")
+        def same_identity(left, right):
+            return "".join(str(left).split()) == "".join(str(right).split())
+
+        for port_name, term in outputs:
+            descriptor = step_metadata["outputs"][port_name]
+            if "collection" in descriptor:
+                collection = descriptor["collection"]
+                if (term.kind != "collection" or term.items[0].name != collection["name"]
+                        or not same_identity(term.items[1], collection["scope"])):
+                    raise ValueError(f"Step {name}: output collection {port_name} does not match metadata")
+            elif "binding" in descriptor:
+                binding = descriptor["binding"]
+                if (term.payload.kind != "variable" or term.payload.name != binding["payload"]
+                        or not same_identity(term.identity, binding["id"])):
+                    raise ValueError(f"Step {name}: output binding {port_name} does not match metadata")
+            elif (term.payload.kind != "literal" or term.payload.name != descriptor["dataName"]
+                    or not same_identity(term.identity, descriptor.get("id", "root"))):
+                raise ValueError(f"Step {name}: output dependency {port_name} does not match metadata")
+        if step_metadata.get("type") in ("scatter_pair", "scatter_pairer", "scatter_open"):
+            raise ValueError("Legacy pair/open scatter is unsupported; use independent scoped streams")
         if name not in self.workflow.steps:
-            step_metadata = self.metadata["steps"][name]
 
             data_port = {d: p for p, d in list(inputs) + list(outputs)}
             outdata_patterns = step_metadata.get("outputs", {})
@@ -241,7 +286,7 @@ class CompileVisitor(SWIRLVisitor, ABC):
                 command=step_metadata.get("command"),
                 processors={
                     port_name: Processor(
-                        self.metadata["dependencies"][value["dataName"]]["type"],
+                        self._descriptor_type(value),
                         value.get("glob", None),
                     )
                     for port_name, value in outdata_patterns.items()
@@ -251,6 +296,7 @@ class CompileVisitor(SWIRLVisitor, ABC):
                 scatter_method=step_metadata.get("scatterMethod"),
                 scatter=step_metadata.get("scatter") or step_metadata.get("scatterPorts"),
             )
+            step.metadata = step_metadata
             self.workflow.add_step(step)
             for port_name, _ in inputs:
                 port = self.workflow.ports.get(
@@ -272,8 +318,12 @@ class CompileVisitor(SWIRLVisitor, ABC):
                     ),
                 )
                 self.workflow.add_output_port(step, port)
-            for data_name, port_name in data_port.items():
-                self.workflow.ports[port_name].data.add(data_name)
+            for term, port_name in data_port.items():
+                if term.kind != "collection" and term.payload.kind == "literal":
+                    payload = term.payload.name
+                    if payload not in self.metadata["dependencies"]:
+                        raise ValueError(f"Step {name}: unknown payload dependency {payload}")
+                    self.workflow.ports[port_name].data.add(payload)
 
             step_args = step_metadata.get("arguments") or []
             if any(
@@ -315,7 +365,7 @@ class CompileVisitor(SWIRLVisitor, ABC):
             self.workflow.map(self.workflow.steps[name], self.workflow.locations[loc])
 
     def visitExec(self, ctx: SWIRLParser.ExecContext):
-        flow = utils.get_flow(ctx)
+        flow = utils.get_flow(ctx, self.metadata["dependencies"])
         mapping = utils.get_location_set(ctx.mapping().locationSet())
         name = utils.get_name(ctx.step())
         if name not in self.workflow.steps:
@@ -330,42 +380,76 @@ class CompileVisitor(SWIRLVisitor, ABC):
             return text_b, text_a
         return text_a, text_b
 
-    def _get_data_type(self, data: str) -> str:
-        dep_entry = self.metadata["dependencies"].get(data)
-        if not dep_entry and "[" in data:
-            dep_entry = self.metadata["dependencies"].get(data.split("[")[0])
-        return dep_entry.get("type", "file") if dep_entry else "file"
+    def _endpoints(self, ctx):
+        src = utils.get_name(ctx.src())
+        destination = ctx.dst().locationSet()
+        names = [utils.get_name(name) for name in destination.name()]
+        if not names:
+            names = [destination.getText()]
+        unknown = {src, *names} - set(self.workflow.locations)
+        if unknown:
+            raise ValueError(f"Unknown communication locations {sorted(unknown)}")
+        return src, names[0] if len(names) == 1 else names
+
+    def _action_data(self, ctx):
+        term = utils.get_term(ctx.data())
+        port = utils.get_name(ctx.port())
+        # Legacy bare receives allowed port-to-data spelling; envelopes never do.
+        if term.kind == "literal" and port in self.metadata["dependencies"] and term.name not in self.metadata["dependencies"]:
+            term, port = utils.Term("literal", port), term.name
+        if term.kind == "indexed":
+            raise ValueError("Legacy indexed scatter is unsupported; use scoped identity envelopes")
+        return utils.normalize_envelope(term), port
+
+    def _get_data_type(self, data: utils.Term, port: str | None = None) -> str:
+        payload = data.payload
+        if payload.kind == "literal" and payload.name in ("begin", "eof", "0"):
+            return "control"
+        dep = self.metadata["dependencies"].get(payload.name)
+        if dep:
+            return dep["type"]
+        if port is not None:
+            for descriptor in self.metadata["steps"].values():
+                output = descriptor.get("outputs", {}).get(port)
+                if output:
+                    return self._descriptor_type(output)
+                collection = descriptor.get("collections", {}).get(port)
+                if collection:
+                    return collection["type"]
+        types = set()
+        for step in self.metadata["steps"].values():
+            for descriptor in step.get("outputs", {}).values():
+                binding = descriptor.get("binding", {})
+                if binding.get("payload") == payload.name:
+                    types.add(binding["type"])
+        if len(types) == 1:
+            return types.pop()
+        # Input stream bindings take their types from dispatch collections.
+        if payload.kind in ("variable", "tuple"):
+            return "dynamic"
+        raise ValueError(f"Unknown payload {payload}")
 
     def visitRecv(self, ctx: SWIRLParser.RecvContext):
-        p_text = utils.get_name(ctx.port())
-        d_text = utils.get_name(ctx.data())
-        data, port = self._extract_data_and_port(d_text, p_text)
-        src = utils.get_name(ctx.src())
-        dst = utils.get_name(ctx.dst())
+        data, port = self._action_data(ctx)
+        src, dst = self._endpoints(ctx)
 
-        data_type = self._get_data_type(data)
+        data_type = self._get_data_type(data, port)
         return self.compiler.recv(
             port=port, data=data, data_type=data_type, src=src, dst=dst
         )
 
     def visitSend(self, ctx: SWIRLParser.SendContext):
-        p_text = utils.get_name(ctx.port())
-        d_text = utils.get_name(ctx.data())
-        data, port = self._extract_data_and_port(d_text, p_text)
-        src = utils.get_name(ctx.src())
-        dst = utils.get_name(ctx.dst())
-        data_type = self._get_data_type(data)
+        data, port = self._action_data(ctx)
+        src, dst = self._endpoints(ctx)
+        data_type = self._get_data_type(data, port)
         return self.compiler.send(
             data, port, data_type, src, dst
         )
 
     def visitMove(self, ctx: SWIRLParser.MoveContext):
-        p_text = utils.get_name(ctx.port())
-        d_text = utils.get_name(ctx.data())
-        data, port = self._extract_data_and_port(d_text, p_text)
-        src = utils.get_name(ctx.src())
-        dst = utils.get_name(ctx.dst())
-        data_type = self._get_data_type(data)
+        data, port = self._action_data(ctx)
+        src, dst = self._endpoints(ctx)
+        data_type = self._get_data_type(data, port)
         return self.compiler.move(
             data, port, data_type, src, dst
         )
@@ -384,13 +468,19 @@ class CompileVisitor(SWIRLVisitor, ABC):
             self.visit(ctx.trace(1))
             self.compiler.end_seq()
         elif ctx.op.type == SWIRLParser.CHOICE:
-            self.compiler.begin_choice()
+            self.compiler.begin_choice(
+                {"port": utils.get_name(ctx.guard().port()), "scope": utils.get_term(ctx.guard().data())}
+                if ctx.guard() else None
+            )
             self.visit(ctx.trace(0))
             self.compiler.choice()
             self.visit(ctx.trace(1))
             self.compiler.end_choice()
         else:
             raise Exception(f"Unsupported operator {ctx.op.text}")
+
+    def visitEnd(self, ctx: SWIRLParser.EndContext):
+        return self.compiler.end()
 
     def visitTraceRepl(self, ctx: SWIRLParser.TraceReplContext):
         self.compiler.begin_repl()
@@ -410,12 +500,18 @@ class CompileVisitor(SWIRLVisitor, ABC):
 
     def _pre_scan_execs(self, ctx):
         if isinstance(ctx, SWIRLParser.ExecContext):
+            name = utils.get_name(ctx.step())
+            if self.metadata.get("version") == "v1.1" and name in self.workflow.steps:
+                raise ValueError(f"Step {name}: each emitted exec requires its own metadata descriptor")
             self._register_step(ctx)
         elif hasattr(ctx, "getChildren"):
             for child in ctx.getChildren():
                 self._pre_scan_execs(child)
 
     def visitWorkflow(self, ctx: SWIRLParser.WorkflowContext):
+        from swirlc.core.parsing import validate_bindings
+
+        validate_bindings(ctx)
         self._pre_scan_execs(ctx)
         self.compiler.begin_workflow(self.workflow)
         val = self.visitChildren(ctx)

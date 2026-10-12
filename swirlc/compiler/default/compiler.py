@@ -9,18 +9,13 @@ import sys
 import zipfile
 from importlib import metadata
 from pathlib import Path
-from typing import Optional, TextIO
 
-import black
-from black import WriteBack
-from black.mode import TargetVersion
 from packaging.markers import default_environment
 from packaging.requirements import Requirement
 from packaging.utils import canonicalize_name
 
-from swirlc.compiler.standard.compiler import StandardCompiler, TraceNode
-from swirlc.core.entity import Data, Location, Port, Step
-from swirlc.log_handler import logger
+from swirlc.compiler.standard.compiler import StructuredCompiler
+from swirlc.core.entity import Location
 from swirlc.version import VERSION
 
 bash_header = f"""#!/bin/sh
@@ -618,9 +613,9 @@ def _exec(step_name: str, step_display_name: str, input_port_names: MutableSeque
                     target_name = os.path.basename(os.path.normpath(elem_path))
                     if not target_name:
                         continue
-                    dest_name = f"{idx}_{target_name}" if len(flat_elems) > 1 else target_name
+                    dest_name = target_name
                     dest_path = os.path.join(iter_workdir, dest_name)
-                    if len(flat_elems) <= 1 and os.path.exists(dest_path):
+                    if os.path.lexists(dest_path):
                         dest_path = os.path.join(iter_workdir, f"{idx}_{target_name}")
                     try:
                         os.symlink(os.path.abspath(elem_path), dest_path)
@@ -647,7 +642,7 @@ def _exec(step_name: str, step_display_name: str, input_port_names: MutableSeque
 
             if logger.isEnabledFor(logging.INFO):
                 logger.info(f"Step {step_display_name}-{step_name}[iter {combo_idx}] executes '{iter_cmd}'")
-            res_proc = subprocess.run(iter_cmd, capture_output=True, shell=True, cwd=iter_workdir)
+            res_proc = _run_command(iter_cmd, cwd=iter_workdir)
             if res_proc.returncode != 0:
                 raise Exception(f"Step {step_display_name}-{step_name}[iter {combo_idx}] failed with exit status {res_proc.returncode}: {res_proc.stderr.decode('utf-8')}")
 
@@ -698,9 +693,9 @@ def _exec(step_name: str, step_display_name: str, input_port_names: MutableSeque
             target_name = os.path.basename(os.path.normpath(elem_path))
             if not target_name:
                 continue
-            dest_name = f"{idx}_{target_name}" if len(flat_elems) > 1 else target_name
+            dest_name = target_name
             dest_path = os.path.join(workdir, dest_name)
-            if len(flat_elems) <= 1 and os.path.exists(dest_path):
+            if os.path.lexists(dest_path):
                 dest_path = os.path.join(workdir, f"{idx}_{target_name}")
             try:
                 os.symlink(os.path.abspath(elem_path), dest_path)
@@ -727,7 +722,7 @@ def _exec(step_name: str, step_display_name: str, input_port_names: MutableSeque
 
     if logger.isEnabledFor(logging.INFO):
         logger.info(f"Step {step_display_name}-{step_name} executes command '{cmd}'")
-    result = subprocess.run(cmd, capture_output=True, shell=True, cwd=workdir)
+    result = _run_command(cmd, cwd=workdir)
     if result.returncode != 0:
         raise Exception(f"Step {step_display_name}-{step_name} failed with exit status {result.returncode}: {result.stderr.decode('utf-8')}")
     if output_specs:
@@ -1115,7 +1110,7 @@ preamble = "\n".join(
 )
 
 
-class DefaultTarget(StandardCompiler):
+class DefaultTarget(StructuredCompiler):
     def __init__(
         self,
         outdir: str,
@@ -1155,9 +1150,6 @@ class DefaultTarget(StandardCompiler):
     # ======== Threading policy ========
     def exec_is_threaded(self) -> bool:
         return False
-
-    def _open_location_trace(self, location: Location) -> TextIO:
-        return open(os.path.join(self.outdir, f"{location.name}.py"), "w")
 
     def _write_runtime_bundle(self, location: Location) -> None:
         assert self.current_workflow is not None
@@ -1223,7 +1215,8 @@ exec "$PYTHON_BIN" {location.name}.py "$@"
 
     def _write_slurm_script(self, location: Location) -> None:
         slurm = location.slurm or {}
-        options = dict(slurm.get("options") or {})
+        options = {key: slurm[key] for key in ("partition", "nodes", "ntasks", "time") if key in slurm}
+        options.update(slurm.get("options") or {})
         script_path = os.path.join(self.outdir, f"{location.name}.sbatch")
         command = f"./{location.name}.launch.sh --run-id $SWIRLC_RUN_ID"
 
@@ -1261,28 +1254,6 @@ exec "$PYTHON_BIN" {location.name}.py "$@"
             f.write("\n".join(lines))
 
     # ======== Lifecycle overrides ========
-
-    def begin_location(self, location: Location) -> None:
-        self.location_ports = set()
-        super().begin_location(location)
-
-    def end_location(self) -> None:
-        assert self.current_location is not None
-
-        location_name = self.current_location.name
-        super().end_location()
-
-        try:
-            black.format_file_in_place(
-                Path(self.outdir, f"{location_name}.py"),
-                fast=False,
-                mode=black.Mode(line_length=88, target_versions={TargetVersion.PY38}),
-                write_back=WriteBack.YES,
-            )
-        except ImportError:
-            logger.warning(
-                "`black` package not found. Install black to obtain pretty-printed output files."
-            )
 
     def end_workflow(self) -> None:
         assert self.current_workflow is not None
@@ -1375,6 +1346,12 @@ export SWIRLC_RUN_ID
 ADDRESS_FILES="{address_files}"
 
 cleanup() {{
+    cleanup_status=$?
+    if [ "$cleanup_status" -ne 0 ]; then
+        for pid in ${{WORKFLOW_PIDS:-}}; do
+            kill "$pid" 2>/dev/null || true
+        done
+    fi
     rm -f address_book.json address_book.json.tmp *_address.json
 }}
 
@@ -1469,9 +1446,13 @@ echo "Address book ready"
 # complete address book. The location processes continue independently.
 echo "Workflow execution started"
 
+workflow_status=0
 for pid in $WORKFLOW_PIDS; do
-    wait "$pid"
+    wait "$pid" || workflow_status=$?
 done
+if [ "$workflow_status" -ne 0 ]; then
+    exit "$workflow_status"
+fi
 
 echo "Workflow execution terminated"
 """)
@@ -1483,394 +1464,113 @@ echo "Workflow execution terminated"
         )
         super().end_workflow()
 
-    # ======== Write methods ========
+    def render_location(self, location, dataset, root):
+        import json
+        runtime_source = Path(__file__).with_name("runtime.py").read_text()
+        metadata = json.loads(json.dumps(self.metadata))
+        for name, step in self.current_workflow.steps.items():
+            metadata["steps"][name]["runtimeOutputs"] = {
+                port: {"type": processor.type, "glob": processor.glob}
+                for port, processor in (step.processors or {}).items()
+            }
+        initial = [{"port": port, "payload": data.value,
+                    "name": data.name, "type": data.type,
+                    "identity": data.identity.to_dict()}
+                   for port, data in dataset]
+        scratch = self.tmpdir or location.workdir or self.outdir
+        with Path(self.outdir, f"{location.name}.py").open("w") as trace:
+            trace.write("\n".join([python_header, imports, global_vars, file_rendezvous_helpers,
+                                   list_helper, expression_function, framing_helpers, exec_function]))
+            trace.write(runtime_source.replace("from __future__ import annotations", ""))
+            trace.write(f"\nMETADATA = {metadata!r}\nTRACE = {self.serialize(root)!r}\nINITIAL = {initial!r}\n")
+            trace.write(f"LOCATION_NAME = {location.name!r}\nLOCATION_PORT = {location.port or 0}\nBIND_HOST = {location.get_bind_host()!r}\nADVERTISE_COMMAND = {location.get_advertise_command()!r}\n")
+            trace.write(f"SCRATCH_DIR = os.environ.get('SWIRLC_TMP_DIR', {os.path.abspath(scratch)!r})\nOUT_DIR = {os.path.abspath(location.outdir or self.outdir)!r}\n")
+            trace.write("ADDRESS_FILE = f'{LOCATION_NAME}_address.json'\nADDRESS_BOOK_FILE = 'address_book.json'\nRUN_ID = ''\n")
+            if dependency_archive := self._dependency_archive_for_location(location):
+                trace.write(_embedded_dependency_bootstrap(*dependency_archive))
+            trace.write(SCOPED_MAIN)
 
-    def write_location_start(self, location: Location, trace: TextIO):
-        assert self.current_workflow is not None
 
-        trace.write(preamble)
-        trace.write(f"""
+SCOPED_MAIN = r"""
+ACTIVE_RUNTIME = None
+
+
+def _run_command(command, cwd=None):
+    import signal
+    process = subprocess.Popen(command, shell=True, cwd=cwd, stdout=subprocess.PIPE,
+                               stderr=subprocess.PIPE, start_new_session=True)
+    try:
+        while True:
+            try:
+                stdout, stderr = process.communicate(timeout=.1)
+                return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
+            except subprocess.TimeoutExpired:
+                if ACTIVE_RUNTIME is not None and ACTIVE_RUNTIME.error is not None:
+                    raise RuntimeError(f"Command cancelled after scoped failure: {ACTIVE_RUNTIME.error}")
+    except BaseException:
+        if process.poll() is None:
+            os.killpg(process.pid, signal.SIGTERM)
+            try:
+                process.communicate(timeout=1)
+            except subprocess.TimeoutExpired:
+                os.killpg(process.pid, signal.SIGKILL)
+                process.communicate()
+        raise
+
+
+def _execute_bound(tool, inputs):
+    import types
+    descriptor = METADATA["steps"][tool]
+    scope_globals = dict(globals())
+    local_ports = dict(inputs)
+    events = {port: Event() for port in inputs}
+    for event in events.values():
+        event.set()
+    for port in descriptor.get("outputs", {}):
+        events[port] = Event()
+    scope_globals.update(ports=local_ports, available_port_data=events)
+    if descriptor.get("expression"):
+        expr = descriptor["expression"]
+        fn = types.FunctionType(_expression.__code__, scope_globals)
+        fn(descriptor["displayName"], expr["source"],
+           {name: (spec["port"], spec["type"]) for name, spec in expr.get("inputs", {}).items()},
+           {name: (port, descriptor["runtimeOutputs"][port]["type"]) for name, port in expr.get("outputs", {}).items()})
+    else:
+        fn = types.FunctionType(_exec.__code__, scope_globals)
+        arguments = [(arg.get("value", arg.get("valueFrom")), "valueFrom" in arg)
+                     for arg in descriptor.get("arguments", [])]
+        outputs = [(port, spec["type"], spec.get("glob"))
+                   for port, spec in descriptor["runtimeOutputs"].items()]
+        fn(tool, descriptor["displayName"], list(inputs), outputs,
+           descriptor.get("command", ""), arguments, None)
+    return {port: local_ports[port] for port in descriptor.get("outputs", {})}
+
+
 def main():
+    global RUN_ID, ACTIVE_RUNTIME
     parser = argparse.ArgumentParser()
     parser.add_argument("--run-id", required=True)
-    args = parser.parse_args()
-    global RUN_ID
-    RUN_ID = args.run_id
-
-    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    bind_port = LOCATION_PORT if os.environ.get("SWIRLC_USE_CONFIGURED_PORT") else 0
-    sock.bind((BIND_HOST, bind_port))
-    sock.settimeout(3)
-    sock.listen({len(self.current_workflow.locations) - 1})
-
-    _thread(_accept, sock)
-    _write_address_file(sock.getsockname()[1])
+    RUN_ID = parser.parse_args().run_id
+    os.makedirs(SCRATCH_DIR, exist_ok=True)
+    os.makedirs(OUT_DIR, exist_ok=True)
+    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    listener.bind((BIND_HOST, LOCATION_PORT))
+    listener.listen()
+    _write_address_file(listener.getsockname()[1])
     _load_address_book()
-""")
+    runtime = Runtime(METADATA, LOCATION_NAME, locations, listener,
+                      _send_value, _recv_value, _execute_bound)
+    ACTIVE_RUNTIME = runtime
+    runtime.start()
+    try:
+        runtime.run(TRACE, initial=INITIAL)
+        with open(os.path.join(OUT_DIR, f"{LOCATION_NAME}.outputs.json"), "w") as fd:
+            json.dump(runtime.values, fd)
+    finally:
+        runtime.close()
 
-    def write_location_end(self, location: Location, trace: TextIO):
-        assert self.current_workflow is not None
-        trace.write("""
-    logger.info("Terminated trace")
-    global stopping
-    stopping = True
-""")
 
-        out_dir = (
-            f'str(Path("{location.outdir}").expanduser().absolute())'
-            if location.outdir
-            else "os.getcwd()"
-        )
-        if self.tmpdir:
-            scratch_dir = f'str(Path("{self.tmpdir}").expanduser().absolute())'
-        elif location.workdir:
-            scratch_dir = f'str(Path("{location.workdir}").expanduser().absolute())'
-        else:
-            scratch_dir = "os.getcwd()"
-        ports_str = ",\n".join([f"\t'{p}': Event()" for p in self.location_ports])
-        trace.write(f"""
-available_port_data = {{
-{ports_str}
-}}
-
-LOCATION_NAME = "{location.name}"
-LOCATION_PORT = {location.port or 0}
-BIND_HOST = "{location.get_bind_host()}"
-ADVERTISE_COMMAND = {location.get_advertise_command()!r}
-RUN_ID = ""
-ADDRESS_FILE = f"{{LOCATION_NAME}}_address.json"
-ADDRESS_BOOK_FILE = "address_book.json"
-OUT_DIR = {out_dir}
-SCRATCH_DIR = os.environ.get("SWIRLC_TMP_DIR", os.environ.get("SWIRLC_SCRATCH_DIR", {scratch_dir}))
-os.makedirs(SCRATCH_DIR, exist_ok=True)
-os.makedirs(OUT_DIR, exist_ok=True)
-""")
-
-        if dependency_archive := self._dependency_archive_for_location(location):
-            trace.write(_embedded_dependency_bootstrap(*dependency_archive))
-        trace.write("""
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()
-""")
-
-    def write_thread_start(self, node: TraceNode, indent: int, trace: TextIO):
-        if node.depth == 0:
-            return
-        i = "    " * indent
-        trace.write(f"\n{i}def {node.id}():\n")
-
-    def write_thread_end(
-        self,
-        node: TraceNode,
-        indent: int,
-        trace: TextIO,
-        comment: Optional[str] = None,
-    ):
-        if node.depth == 0:
-            return
-
-        i = "    " * indent
-        trace.write(f"{i}{node.handle} = _thread({node.id})\n")
-
-    def write_wait_for(self, node: TraceNode, indent: int, trace: TextIO):
-        if node.depth == 0:
-            return
-        i = "    " * indent
-        trace.write(f"{i}_wait([{node.handle}])\n")
-
-    def write_exec(
-        self,
-        node: TraceNode,
-        indent: int,
-        trace: TextIO,
-        step: Step,
-        flow: tuple[set[tuple[str, str]], set[tuple[str, str]]],
-        mapping: set[str],
-    ):
-        i = "    " * indent
-        if getattr(step, "step_type", None) == "scatter_pairer":
-            input_ports = sorted([pn for pn, _ in flow[0]])
-            output_specs = []
-            for pn, _ in sorted(flow[1], key=lambda x: x[0]):
-                self.location_ports.add(pn)
-                glob_val = step.processors[pn].glob if (step.processors and pn in step.processors) else ""
-                type_val = step.processors[pn].type if (step.processors and pn in step.processors) else "file"
-                output_specs.append((pn, type_val, glob_val))
-            for pn, _ in flow[0]:
-                self.location_ports.add(pn)
-            scatter_method = getattr(step, "scatter_method", "dotproduct") or "dotproduct"
-            scatter_ports = getattr(step, "scatter", None)
-            if scatter_ports:
-                trace.write(
-                    f"\n{i}_scatter_pair({step.name!r}, {step.display_name!r}, {input_ports!r}, {output_specs!r}, {scatter_method!r}, {scatter_ports!r})\n"
-                )
-            else:
-                trace.write(
-                    f"\n{i}_scatter_pair({step.name!r}, {step.display_name!r}, {input_ports!r}, {output_specs!r}, {scatter_method!r})\n"
-                )
-            return
-        elif getattr(step, "step_type", None) == "scatter_open":
-            input_ports = sorted([pn for pn, _ in flow[0]])
-            output_specs = []
-            if step.processors:
-                port_order = {p: i for i, p in enumerate(step.processors.keys())}
-                ordered_flow1 = sorted(flow[1], key=lambda x: port_order.get(x[0], 999))
-            else:
-                ordered_flow1 = sorted(flow[1], key=lambda x: x[0])
-            for pn, _ in ordered_flow1:
-                self.location_ports.add(pn)
-                glob_val = step.processors[pn].glob if (step.processors and pn in step.processors) else ""
-                type_val = step.processors[pn].type if (step.processors and pn in step.processors) else "file"
-                output_specs.append((pn, type_val, glob_val))
-            for pn, _ in flow[0]:
-                self.location_ports.add(pn)
-            trace.write(
-                f"\n{i}_scatter_open({step.name!r}, {step.display_name!r}, {input_ports!r}, {output_specs!r})\n"
-            )
-            return
-        elif getattr(step, "step_type", None) == "scatter_gather":
-            input_ports = sorted([pn for pn, _ in flow[0]])
-            output_specs = []
-            for pn, _ in sorted(flow[1], key=lambda x: x[0]):
-                self.location_ports.add(pn)
-                glob_val = step.processors[pn].glob if (step.processors and pn in step.processors) else ""
-                type_val = step.processors[pn].type if (step.processors and pn in step.processors) else "file"
-                output_specs.append((pn, type_val, glob_val))
-            for pn, _ in flow[0]:
-                self.location_ports.add(pn)
-            trace.write(
-                f"\n{i}_scatter_gather({step.name!r}, {step.display_name!r}, {input_ports!r}, {output_specs!r})\n"
-            )
-            return
-
-        assert step.arguments is not None
-        assert step.processors is not None
-
-        if step.expression is not None:
-            assert self.current_workflow is not None
-            input_specs = {
-                name: (port.name, step.expression_input_types[name])
-                for name, port in (step.expression_inputs or {}).items()
-            }
-            output_specs = {}
-            for output_name, port in (step.expression_outputs or {}).items():
-                port_name = port.name
-                self.location_ports.add(port_name)
-                output_specs[output_name] = (
-                    port_name,
-                    step.processors[port_name].type,
-                )
-            trace.write(
-                f"\n{i}_expression({step.display_name!r}, {step.expression!r}, {input_specs!r}, {output_specs!r})\n"
-            )
-            return
-
-        arguments = [
-            (arg.name if isinstance(arg, Port) else arg, isinstance(arg, Port))
-            for arg in step.arguments
-        ]
-        output_specs = []
-        for pn, _ in flow[1]:
-            self.location_ports.add(pn)
-            glob_val = step.processors[pn].glob if (step.processors and pn in step.processors) else ""
-            type_val = step.processors[pn].type if (step.processors and pn in step.processors) else "string"
-            output_specs.append((pn, type_val, glob_val))
-        for pn, _ in flow[0]:
-            self.location_ports.add(pn)
-
-        scatter_info = None
-        if getattr(step, "scatter", None):
-            scatter_info = {
-                "scatter_ports": getattr(step, "scatter", []),
-                "scatter_method": getattr(step, "scatter_method", "dotproduct") or "dotproduct",
-            }
-            trace.write(
-                f"""\n{i}_exec({step.name!r}, {step.display_name!r}, {[pn for pn, _ in flow[0]]!r}, {output_specs!r}, {step.command!r}, {arguments!r}, {scatter_info!r})\n"""
-            )
-        else:
-            trace.write(
-                f"""\n{i}_exec({step.name!r}, {step.display_name!r}, {[pn for pn, _ in flow[0]]!r}, {output_specs!r}, {step.command!r}, {arguments!r})\n"""
-            )
-
-    def write_recv(
-        self,
-        node: TraceNode,
-        indent: int,
-        trace: TextIO,
-        port: str,
-        data: str,
-        data_type: str,
-        src: str,
-        dst: str,
-    ):
-        self.location_ports.add(port)
-        i = "    " * indent
-        in_repl = False
-        in_choice = False
-        curr: TraceNode | None = node
-        while curr:
-            if getattr(curr, "has_choice", False) or getattr(curr, "is_choice", False):
-                in_choice = True
-            if getattr(curr, "is_repl", False):
-                curr.repl_sources.add(src)
-                in_repl = True
-            curr = curr.parent
-        is_gather = False
-        if self.current_workflow:
-            for step in self.current_workflow.get_location_steps(self.current_location):
-                if getattr(step, "step_type", None) == "scatter_gather":
-                    if any(p.name == port for p in self.current_workflow.get_input_ports(step)):
-                        is_gather = True
-                        break
-        if not is_gather:
-            is_gather = (self.current_location.name in ("lG", "l_gather"))
-        trace.write(
-            f"""{i}{node.handle} = _thread(_recv, "{port}", "{data_type}", "{src}", {is_gather})\n"""
-        )
-        if in_repl:
-            trace.write(f"{i}_wait([{node.handle}])\n")
-            if not in_choice and data != "eof":
-                trace.write(f"{i}if any(src == '{src}' for src, _ in _eof_ports):\n")
-                trace.write(f"{i}    return\n")
-
-
-
-    def write_send(
-        self,
-        node: TraceNode,
-        indent: int,
-        trace: TextIO,
-        data: str,
-        port: str,
-        data_type: str,
-        src: str,
-        dst: str,
-    ):
-        self.location_ports.add(port)
-        i = "    " * indent
-        trace.write(
-            f"""{i}{node.handle} = _thread(_send, "{data}", "{port}", "{data_type}", "{src}", "{dst}")\n"""
-        )
-
-    def write_move(
-        self,
-        node: TraceNode,
-        indent: int,
-        trace: TextIO,
-        data: str,
-        port: str,
-        data_type: str,
-        src: str,
-        dst: str,
-    ):
-        self.location_ports.add(port)
-        i = "    " * indent
-        dst_str = str(dst).strip()
-        in_repl = False
-        curr: TraceNode | None = node
-        while curr:
-            if getattr(curr, "is_choice", False):
-                curr.has_scatter_moves = True
-            if getattr(curr, "is_repl", False):
-                curr.has_scatter_moves = True
-                in_repl = True
-            curr = curr.parent
-        if dst_str.startswith("{") and dst_str.endswith("}"):
-            workers = [x.strip() for x in dst_str.strip("{}").split(",") if x.strip()]
-            trace.write(f"{i}_workers = {workers!r}\n")
-            trace.write(
-                f"""{i}{node.handle} = _thread(_send, "{data}", "{port}", "{data_type}", "{src}", _workers[_worker_idx[0] % len(_workers)])\n"""
-                f"""{i}_wait([{node.handle}])\n"""
-            )
-            if not in_repl:
-                trace.write(f"{i}_worker_idx[0] += 1\n")
-        else:
-            trace.write(
-                f"""{i}{node.handle} = _thread(_send, "{data}", "{port}", "{data_type}", "{src}", "{dst}")\n"""
-            )
-
-
-
-    def _has_choice_descendant(self, node: TraceNode) -> bool:
-        if getattr(node, "is_choice", False):
-            return True
-        return any(self._has_choice_descendant(c) for c in node.children.values())
-
-    def write_choice_start(
-        self, node: TraceNode, indent: int, trace: TextIO, guard: str = "True"
-    ):
-        if node.depth == 0:
-            return
-        i = "    " * indent
-        trace.write(f"\n{i}if {guard}:\n")
-
-    def write_choice_alt(self, node: TraceNode, indent: int, trace: TextIO):
-        if node.depth == 0:
-            return
-        i = "    " * indent
-        body_i = "    " * (indent + 1)
-        if getattr(node, "has_scatter_moves", False):
-            trace.write(f"{body_i}_worker_idx[0] += 1\n")
-        if getattr(node, "choice_eof_branch", None) == 0 and node.in_repl:
-            trace.write(f"{body_i}break\n")
-        trace.write(f"{i}else:\n")
-
-    def write_choice_end(self, node: TraceNode, indent: int, trace: TextIO):
-        if node.depth == 0:
-            return
-        body_i = "    " * (indent + 1)
-        if getattr(node, "choice_eof_branch", None) == 1 and node.in_repl:
-            trace.write(f"{body_i}break\n")
-
-    def write_repl_start(
-        self,
-        node: TraceNode,
-        indent: int,
-        trace: TextIO,
-    ):
-        if node.depth == 0:
-            return
-        i = "    " * indent
-        trace.write(f"\n{i}def {node.id}():\n")
-        trace.write(f"{i}    while True:\n")
-
-
-
-    def write_repl_end(self, node: TraceNode, indent: int, trace: TextIO):
-        if node.depth == 0:
-            return
-        i = "    " * indent
-        has_choice = getattr(node, "has_choice", False)
-        if getattr(node, "has_scatter_moves", False) and not has_choice:
-            trace.write(f"{i}        _worker_idx[0] += 1\n")
-        if not has_choice:
-            if node.repl_sources:
-                sources_check = f"any(src in {list(node.repl_sources)!r} for src, _ in _eof_ports)"
-            else:
-                sources_check = "_eof_ports"
-            trace.write(
-                f"{i}        if {sources_check} or (any(isinstance(ports.get(p), list) for p in ports) and all(len(ports[p]) == 0 for p in ports if isinstance(ports.get(p), list))):\n"
-            )
-            trace.write(f"{i}            break\n")
-        trace.write(f"{i}{node.handle} = _thread({node.id})\n")
-
-
-
-
-
-
-    def write_zero(self, node: TraceNode, indent: int, trace: TextIO):
-        i = "    " * indent
-        trace.write(f"{i}pass\n")
-
-
-    def write_dataset(
-        self, node: TraceNode, indent: int, trace: TextIO, port: str, data: Data
-    ):
-        assert self.current_location is not None
-
-        self.location_ports.add(port)
-        i = "    " * indent
-        # repr() so both scalar strings and list values emit as valid Python literals.
-        trace.write(f"""{i}_init_dataset("{port}", {data.value!r})\n""")
+"""

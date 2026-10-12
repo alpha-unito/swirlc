@@ -9,12 +9,13 @@ from swirlc.core.utils import flatten_list
 
 
 class Data:
-    __slots__ = ("name", "type", "value")
+    __slots__ = ("name", "type", "value", "identity")
 
-    def __init__(self, name: str, type: str, value: Any):
+    def __init__(self, name: str, type: str, value: Any, identity=None):
         self.name = name
         self.type = type
         self.value = value
+        self.identity = identity
 
 
 class Location:
@@ -126,6 +127,7 @@ class Step:
         "step_type",
         "scatter_method",
         "scatter",
+        "metadata",
     )
 
     def __init__(
@@ -155,6 +157,7 @@ class Step:
         self.step_type = step_type
         self.scatter_method = scatter_method
         self.scatter = scatter
+        self.metadata = {}
 
 
 class Workflow:

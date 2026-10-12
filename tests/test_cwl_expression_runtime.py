@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import base64
 import io
+import json
+import os
 import subprocess
+import sys
 import zipfile
 from pathlib import Path
 
@@ -57,7 +60,8 @@ def test_expression_tool_uses_self_bootstrapping_javascript_runtime(
     assert "import js2py_ as js2py" in trace
     assert "js2py.eval_js(invocation)" in trace
     assert "function weightedScore(items, multiplier)" in trace
-    assert '_expression(\n        "evaluate",' in trace
+    assert "'displayName': 'evaluate'" in trace
+    assert "'kind': 'exec'" in trace and "'tool': 's_evaluate_0'" in trace
     assert "def _expression_s0(inputs):" not in trace
 
     requirements = (tmp_path / "l0.requirements.txt").read_text()
@@ -76,6 +80,25 @@ def test_expression_tool_uses_self_bootstrapping_javascript_runtime(
     assert "./l0.launch.sh --run-id $SWIRLC_RUN_ID" in run_script
     assert "Workflow execution started" in run_script
     assert "wait_workflow_processes" not in run_script
+
+    assert main([
+        "compile", str(tmp_path / "workflow.swirl"), str(tmp_path / "metadata.yml"),
+        "--bundle-dependencies", "--outdir", str(tmp_path),
+    ]) == 0
+    subprocess.run(
+        ["bash", "run.sh"], cwd=tmp_path, check=True, timeout=30,
+        env=dict(os.environ, SWIRLC_PYTHON=sys.executable, SWIRLC_RUNTIME_TIMEOUT="10"),
+        capture_output=True,
+    )
+    actual = {
+        record["port"]: record["payload"]
+        for record in json.loads((tmp_path / "l0.outputs.json").read_text())
+        if record["port"].startswith("p_evaluate_") and record["id"] == []
+    }
+    assert actual == {
+        "p_evaluate_prefix": "alpha", "p_evaluate_score": 12,
+        "p_evaluate_accepted": True, "p_evaluate_words": ["alpha", "beta", "gamma"],
+    }
 
 
 def test_runtime_setup_runs_inside_each_deployment() -> None:

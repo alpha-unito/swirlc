@@ -1,5 +1,1095 @@
 {
   "$schema": "https://json-schema.org/draft/2019-09/schema",
   "$id": "schemas/config/v1.1/config_schema.json",
-  "allOf": [{"$ref": "../v1.0/config_schema.json"}]
+  "type": "object",
+  "$defs": {
+    "choice": {
+      "type": "object",
+      "properties": {
+        "condition": {
+          "type": "string",
+          "description": "Python expression returning bool. Port values available as local variables (e.g. p1, p2)."
+        }
+      },
+      "additionalProperties": false
+    },
+    "dependency": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "pattern": "^(string|int|bool|file|stdout|directory)$|^list\\[.+\\]$",
+          "description": "Data type. Base types: (string, int, bool, file, stdout, directory). Generic lists: list[<type>], nestable e.g. list[file], list[list[string]]."
+        },
+        "value": {
+          "oneOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "integer"
+            },
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "array"
+            }
+          ],
+          "description": "Value of the data if it is input workflow data. Array when the type is a list."
+        }
+      },
+      "required": [
+        "type"
+      ],
+      "additionalProperties": false
+    },
+    "deployment": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": [
+            "ssh",
+            "docker",
+            "slurm"
+          ],
+          "description": "It declares how to access the location."
+        },
+        "hostname": {
+          "type": "string",
+          "description": "The IP address to connect to."
+        },
+        "port": {
+          "type": "integer",
+          "description": "The port on which to open the connection."
+        },
+        "username": {
+          "type": "string",
+          "description": "The SSH username for remote locations."
+        },
+        "sshKey": {
+          "type": "string",
+          "description": "The SSH private key path for remote locations."
+        },
+        "checkHostKey": {
+          "type": "boolean",
+          "description": "Whether SSH host key checking should be enabled."
+        },
+        "workdir": {
+          "type": "string",
+          "description": "Path to the working directory."
+        },
+        "slurm": {
+          "type": "object",
+          "properties": {
+            "service": {
+              "type": "string",
+              "description": "The SLURM service selected from the source deployment configuration."
+            },
+            "options": {
+              "type": "object",
+              "description": "SBATCH options for the selected SLURM service.",
+              "additionalProperties": {
+                "type": [
+                  "string",
+                  "integer",
+                  "number",
+                  "boolean"
+                ]
+              }
+            },
+            "partition": {
+              "type": "string"
+            },
+            "nodes": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "ntasks": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "time": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false
+        },
+        "service": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "location": {
+      "type": "object",
+      "properties": {
+        "deployment": {
+          "$ref": "#/$defs/deployment"
+        },
+        "hostname": {
+          "type": "string",
+          "description": "The IP address to connect to."
+        },
+        "port": {
+          "type": "integer",
+          "description": "The port on which to open the connection."
+        },
+        "username": {
+          "type": "string",
+          "description": "The SSH username for remote locations."
+        },
+        "sshKey": {
+          "type": "string",
+          "description": "The SSH private key path for remote locations."
+        },
+        "checkHostKey": {
+          "type": "boolean",
+          "description": "Whether SSH host key checking should be enabled."
+        },
+        "outdir": {
+          "type": "string",
+          "description": "Path to the output directory."
+        },
+        "workdir": {
+          "type": "string",
+          "description": "Path to the working directory."
+        },
+        "connectionType": {
+          "type": "string",
+          "enum": [
+            "ssh",
+            "docker",
+            "slurm"
+          ],
+          "description": "It declares how to access to the location."
+        },
+        "slurm": {
+          "type": "object",
+          "properties": {
+            "service": {
+              "type": "string",
+              "description": "The SLURM service selected from the source deployment configuration."
+            },
+            "options": {
+              "type": "object",
+              "description": "SBATCH options for the selected SLURM service.",
+              "additionalProperties": {
+                "type": [
+                  "string",
+                  "integer",
+                  "number",
+                  "boolean"
+                ]
+              }
+            },
+            "partition": {
+              "type": "string"
+            },
+            "nodes": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "ntasks": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "time": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "step": {
+      "type": "object",
+      "properties": {
+        "displayName": {
+          "type": "string",
+          "description": "User-friendly step name"
+        },
+        "type": {
+          "type": "string",
+          "enum": [
+            "scatter_pairer",
+            "scatter_open",
+            "scatter_gather",
+            "scatter_dispatch"
+          ],
+          "description": "Built-in special operation type"
+        },
+        "scatterMethod": {
+          "type": "string",
+          "enum": [
+            "dotproduct",
+            "flat_crossproduct",
+            "nested_crossproduct"
+          ],
+          "description": "Scatter pairing method for scatter_pairer"
+        },
+        "scatter": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Port names or parameter names to scatter over"
+        },
+        "scatterPorts": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Input port names to scatter over in scatter_pairer"
+        },
+        "command": {
+          "type": "string",
+          "description": "Application which step executes"
+        },
+        "arguments": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "patternProperties": {
+              "^value(From)?$": {
+                "type": "string"
+              }
+            },
+            "description": "Arguments. If it is static use 'value' keyword. If it is a data of a previous step use 'valueFrom' and the port name",
+            "additionalProperties": false
+          }
+        },
+        "outputs": {
+          "type": "object",
+          "patternProperties": {
+            "^[a-zA-Z_][a-zA-Z0-9_]*$": {
+              "$ref": "#/$defs/output"
+            }
+          },
+          "additionalProperties": false
+        },
+        "expression": {
+          "type": "object",
+          "properties": {
+            "source": {
+              "type": "string"
+            },
+            "inputs": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "object",
+                "properties": {
+                  "port": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "port",
+                  "type"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "outputs": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "string"
+              }
+            }
+          },
+          "required": [
+            "source",
+            "inputs",
+            "outputs"
+          ],
+          "additionalProperties": false
+        },
+        "inputPorts": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "uniqueItems": true
+        },
+        "operationId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "scope": {
+          "type": "string",
+          "minLength": 1
+        },
+        "dimension": {
+          "type": "string",
+          "minLength": 1
+        },
+        "order": {
+          "const": "declaration_order_coordinates"
+        },
+        "validation": {
+          "const": "expected_keys_without_duplicates"
+        },
+        "emptyShape": {
+          "const": "retain_all_dimension_cardinalities"
+        },
+        "completion": {
+          "const": "all_source_eofs_then_gather_then_acknowledged_publications"
+        },
+        "dimensions": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "shapeFrom": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "routes": {
+          "type": "array",
+          "items": {
+            "oneOf": [
+              {
+                "$ref": "#/$defs/dispatchRoute"
+              },
+              {
+                "$ref": "#/$defs/resultRoute"
+              }
+            ]
+          }
+        },
+        "key": {
+          "type": "object",
+          "properties": {
+            "operation": {
+              "type": "string",
+              "minLength": 1
+            },
+            "scope": {
+              "type": "string",
+              "minLength": 1
+            },
+            "id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "coordinates": {
+              "const": "declaration_order"
+            }
+          },
+          "required": [
+            "operation",
+            "scope",
+            "id",
+            "coordinates"
+          ],
+          "additionalProperties": false
+        },
+        "keySpace": {
+          "type": "object",
+          "properties": {
+            "cardinalities": {
+              "const": "publish_before_peer_wait"
+            },
+            "validation": {
+              "enum": [
+                "equal_lengths",
+                "cartesian_shape"
+              ]
+            },
+            "routing": {
+              "const": "synchronized_moves_by_operation_and_full_id"
+            },
+            "dispatches": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              },
+              "minItems": 1,
+              "uniqueItems": true
+            }
+          },
+          "required": [
+            "dispatches",
+            "cardinalities",
+            "validation",
+            "routing"
+          ],
+          "additionalProperties": false
+        },
+        "collections": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string",
+                "minLength": 1
+              },
+              "scope": {
+                "type": "string",
+                "minLength": 1
+              },
+              "output": {
+                "type": "string",
+                "minLength": 1
+              },
+              "read": {
+                "type": "string",
+                "minLength": 1
+              },
+              "type": {
+                "type": "string",
+                "pattern": "^(string|int|bool|file|stdout|directory)$|^list\\[.+\\]$",
+                "description": "Data type. Base types: (string, int, bool, file, stdout, directory). Generic lists: list[<type>], nestable e.g. list[file], list[list[string]]."
+              }
+            },
+            "required": [
+              "name",
+              "scope",
+              "output",
+              "type",
+              "read"
+            ],
+            "additionalProperties": false
+          }
+        }
+      },
+      "anyOf": [
+        {
+          "required": [
+            "command"
+          ]
+        },
+        {
+          "required": [
+            "expression"
+          ]
+        },
+        {
+          "required": [
+            "type"
+          ]
+        }
+      ],
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "scatter_dispatch"
+              }
+            },
+            "required": [
+              "type"
+            ]
+          },
+          "then": {
+            "required": [
+              "inputPorts",
+              "operationId",
+              "scope",
+              "dimension",
+              "dimensions",
+              "scatterMethod",
+              "routes",
+              "key",
+              "keySpace",
+              "outputs"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "scatter_gather"
+              }
+            },
+            "required": [
+              "type"
+            ]
+          },
+          "then": {
+            "required": [
+              "inputPorts",
+              "outputs",
+              "operationId",
+              "scope",
+              "scatterMethod",
+              "order",
+              "shapeFrom",
+              "validation",
+              "emptyShape",
+              "routes",
+              "completion",
+              "collections"
+            ]
+          }
+        }
+      ]
+    },
+    "dispatchRoute": {
+      "type": "object",
+      "properties": {
+        "controller": {
+          "type": "string",
+          "minLength": 1
+        },
+        "workers": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "producers": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      },
+      "required": [
+        "controller",
+        "workers",
+        "producers"
+      ],
+      "additionalProperties": false
+    },
+    "resultRoute": {
+      "type": "object",
+      "properties": {
+        "port": {
+          "type": "string",
+          "minLength": 1
+        },
+        "source": {
+          "type": "string",
+          "minLength": 1
+        },
+        "receiver": {
+          "type": "string",
+          "minLength": 1
+        },
+        "scope": {
+          "type": "string",
+          "minLength": 1
+        },
+        "operation": {
+          "type": "string",
+          "minLength": 1
+        },
+        "output": {
+          "type": "string",
+          "minLength": 1
+        },
+        "elementId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "eofOwner": {
+          "const": "actual_sender_after_publication_join"
+        }
+      },
+      "required": [
+        "port",
+        "source",
+        "receiver",
+        "scope",
+        "operation",
+        "output",
+        "elementId",
+        "eofOwner"
+      ],
+      "additionalProperties": false
+    },
+    "output": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "dataName": {
+              "type": "string",
+              "minLength": 1
+            },
+            "id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "glob": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "required": [
+            "dataName"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "binding": {
+              "type": "object",
+              "properties": {
+                "payload": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "id": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "type": {
+                  "type": "string",
+                  "pattern": "^(string|int|bool|file|stdout|directory)$|^list\\[.+\\]$",
+                  "description": "Data type. Base types: (string, int, bool, file, stdout, directory). Generic lists: list[<type>], nestable e.g. list[file], list[list[string]]."
+                }
+              },
+              "required": [
+                "payload",
+                "id",
+                "type"
+              ],
+              "additionalProperties": false
+            },
+            "glob": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "required": [
+            "binding"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "collection": {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "scope": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "elementId": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "type": {
+                  "type": "string",
+                  "pattern": "^(string|int|bool|file|stdout|directory)$|^list\\[.+\\]$",
+                  "description": "Data type. Base types: (string, int, bool, file, stdout, directory). Generic lists: list[<type>], nestable e.g. list[file], list[list[string]]."
+                }
+              },
+              "required": [
+                "name",
+                "scope",
+                "elementId",
+                "type"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "collection"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    }
+  },
+  "properties": {
+    "dependencies": {
+      "type": "object",
+      "patternProperties": {
+        "^[a-zA-Z_][a-zA-Z0-9_]*$": {
+          "$ref": "#/$defs/dependency"
+        }
+      },
+      "additionalProperties": false
+    },
+    "locations": {
+      "type": "object",
+      "patternProperties": {
+        "^[a-zA-Z_][a-zA-Z0-9_]*$": {
+          "$ref": "#/$defs/location"
+        }
+      },
+      "additionalProperties": false
+    },
+    "steps": {
+      "type": "object",
+      "patternProperties": {
+        "^[a-zA-Z_][a-zA-Z0-9_]*$": {
+          "$ref": "#/$defs/step"
+        }
+      },
+      "additionalProperties": false
+    },
+    "version": {
+      "type": "string"
+    },
+    "tmpdir": {
+      "type": "string"
+    },
+    "workdir": {
+      "type": "string"
+    },
+    "scatterRegions": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "parentRegion": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "method": {
+            "type": "string",
+            "enum": [
+              "dotproduct",
+              "flat_crossproduct",
+              "nested_crossproduct"
+            ],
+            "description": "Scatter pairing method for scatter_pairer"
+          },
+          "scatterPorts": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "scope": {
+            "type": "object",
+            "properties": {
+              "operation": {
+                "type": "string",
+                "minLength": 1
+              },
+              "invocationId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "workerScope": {
+                "type": "string",
+                "minLength": 1
+              },
+              "iteration": {
+                "type": "string",
+                "minLength": 1
+              },
+              "taskId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "admission": {
+                "const": "bound_enclosing_path_plus_one_fresh_coordinate"
+              },
+              "activation": {
+                "const": "input_begin"
+              },
+              "routing": {
+                "const": "synchronized_moves_by_operation_and_full_id"
+              },
+              "missingKey": {
+                "const": "error_when_input_closed"
+              },
+              "boundPrefix": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "routes": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/$defs/dispatchRoute"
+                }
+              },
+              "inputChannels": {
+                "type": "object",
+                "additionalProperties": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "owners": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "port": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "source": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "receiver": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "scope": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "admission": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "close": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "invocationPort": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "childId": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "freshCoordinate": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "binding": {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "minLength": 1
+                      }
+                    },
+                    "resultSources": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/$defs/resultRoute"
+                      }
+                    }
+                  },
+                  "required": [
+                    "port",
+                    "source",
+                    "receiver",
+                    "scope",
+                    "binding",
+                    "admission",
+                    "close",
+                    "resultSources",
+                    "invocationPort",
+                    "childId",
+                    "freshCoordinate"
+                  ],
+                  "additionalProperties": false
+                }
+              },
+              "lifecycle": {
+                "type": "object",
+                "properties": {
+                  "begin": {
+                    "const": "exact_scope"
+                  },
+                  "eof": {
+                    "const": "all_inputs_in_declaration_order"
+                  },
+                  "resultEof": {
+                    "const": "actual_sender_after_acknowledged_occurrence_sends"
+                  }
+                },
+                "required": [
+                  "begin",
+                  "eof",
+                  "resultEof"
+                ],
+                "additionalProperties": false
+              },
+              "outputBoundaries": {
+                "type": "object",
+                "additionalProperties": {
+                  "type": "object",
+                  "properties": {
+                    "path": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "scope": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "elementId": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "payloadType": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "outputType": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "materialization": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "ordinaryAliases": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  },
+                  "required": [
+                    "path",
+                    "scope",
+                    "elementId",
+                    "payloadType",
+                    "outputType",
+                    "materialization",
+                    "ordinaryAliases"
+                  ],
+                  "additionalProperties": false
+                }
+              },
+              "materializations": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "output": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "receiver": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "scope": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "helper": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "stages": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "sources": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/$defs/resultRoute"
+                      }
+                    }
+                  },
+                  "required": [
+                    "output",
+                    "receiver",
+                    "scope",
+                    "sources",
+                    "helper",
+                    "stages"
+                  ],
+                  "additionalProperties": false
+                }
+              },
+              "invariants": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "input": {
+                      "type": "string"
+                    },
+                    "source": {
+                      "type": "string"
+                    },
+                    "receiver": {
+                      "type": "string"
+                    },
+                    "port": {
+                      "type": "string"
+                    },
+                    "id": {
+                      "type": "string"
+                    },
+                    "reusable": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "input",
+                    "source",
+                    "receiver",
+                    "port",
+                    "id",
+                    "reusable"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "required": [
+              "operation",
+              "invocationId",
+              "workerScope",
+              "iteration",
+              "taskId",
+              "boundPrefix",
+              "admission",
+              "activation",
+              "routing",
+              "missingKey",
+              "routes",
+              "inputChannels",
+              "owners",
+              "lifecycle"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "method",
+          "scatterPorts"
+        ],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": [
+    "version"
+  ],
+  "additionalProperties": false
 }

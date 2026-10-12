@@ -1,4 +1,4 @@
-# Generated from /home/tommo/Coding/Alpha/swirlc/grammar/SWIRL.g4 by ANTLR 4.13.1
+# Generated from grammar/SWIRL.g4 by ANTLR 4.13.2
 from antlr4 import *
 if "." in __name__:
     from .SWIRLParser import SWIRLParser
@@ -116,12 +116,39 @@ class SWIRLListener(ParseTreeListener):
         pass
 
 
+    # Enter a parse tree produced by SWIRLParser#end.
+    def enterEnd(self, ctx:SWIRLParser.EndContext):
+        pass
+
+    # Exit a parse tree produced by SWIRLParser#end.
+    def exitEnd(self, ctx:SWIRLParser.EndContext):
+        pass
+
+
+    # Enter a parse tree produced by SWIRLParser#guard.
+    def enterGuard(self, ctx:SWIRLParser.GuardContext):
+        pass
+
+    # Exit a parse tree produced by SWIRLParser#guard.
+    def exitGuard(self, ctx:SWIRLParser.GuardContext):
+        pass
+
+
     # Enter a parse tree produced by SWIRLParser#dataPair.
     def enterDataPair(self, ctx:SWIRLParser.DataPairContext):
         pass
 
     # Exit a parse tree produced by SWIRLParser#dataPair.
     def exitDataPair(self, ctx:SWIRLParser.DataPairContext):
+        pass
+
+
+    # Enter a parse tree produced by SWIRLParser#collection.
+    def enterCollection(self, ctx:SWIRLParser.CollectionContext):
+        pass
+
+    # Exit a parse tree produced by SWIRLParser#collection.
+    def exitCollection(self, ctx:SWIRLParser.CollectionContext):
         pass
 
 

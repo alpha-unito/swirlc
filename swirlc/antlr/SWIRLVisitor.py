@@ -1,4 +1,4 @@
-# Generated from /home/tommo/Coding/Alpha/swirlc/grammar/SWIRL.g4 by ANTLR 4.13.1
+# Generated from grammar/SWIRL.g4 by ANTLR 4.13.2
 from antlr4 import *
 if "." in __name__:
     from .SWIRLParser import SWIRLParser
@@ -69,8 +69,23 @@ class SWIRLVisitor(ParseTreeVisitor):
         return self.visitChildren(ctx)
 
 
+    # Visit a parse tree produced by SWIRLParser#end.
+    def visitEnd(self, ctx:SWIRLParser.EndContext):
+        return self.visitChildren(ctx)
+
+
+    # Visit a parse tree produced by SWIRLParser#guard.
+    def visitGuard(self, ctx:SWIRLParser.GuardContext):
+        return self.visitChildren(ctx)
+
+
     # Visit a parse tree produced by SWIRLParser#dataPair.
     def visitDataPair(self, ctx:SWIRLParser.DataPairContext):
+        return self.visitChildren(ctx)
+
+
+    # Visit a parse tree produced by SWIRLParser#collection.
+    def visitCollection(self, ctx:SWIRLParser.CollectionContext):
         return self.visitChildren(ctx)
 
 

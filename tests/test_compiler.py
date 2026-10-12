@@ -154,22 +154,23 @@ def test_example2() -> None:
     )
 
 
-def test_scatter() -> None:
+def test_legacy_indexed_scatter_is_rejected() -> None:
+    import pytest
+
+    from swirlc.core.parsing import parse_workflow, validate_bindings
+
+    source = (_EXAMPLES_PATH / "scatter" / "source.swirl").read_text()
+    with pytest.raises(ValueError, match="Legacy indexed scatter is unsupported"):
+        validate_bindings(parse_workflow(source))
     with tempfile.TemporaryDirectory() as workdir:
-        _compile(
-            str(_EXAMPLES_PATH / "scatter" / "source.swirl"),
-            str(_EXAMPLES_PATH / "scatter" / "config.yml"),
-            outdir=workdir,
-        )
-        l0 = (pathlib.Path(workdir) / "l0.py").read_text()
-        l1 = (pathlib.Path(workdir) / "l1.py").read_text()
-        assert "_scatter_pair(" in l0
-        assert "_scatter_open(" in l1
-        assert "_scatter_gather(" in l0
+        assert main([
+            "compile", str(_EXAMPLES_PATH / "scatter" / "source.swirl"),
+            str(_EXAMPLES_PATH / "scatter" / "config.yml"), "--outdir", workdir,
+        ]) == 1
 
 
 def test_nested_scatter_trace_target() -> None:
-    example = pathlib.Path(__file__).parent.parent / "tests" / "fixtures" / "cwl" / "scatter-nested-zip"
+    example = pathlib.Path(__file__).parent.parent / "examples" / "cwl" / "pipeline" / "depth-2" / "plain"
     with tempfile.TemporaryDirectory() as workdir:
         translated = pathlib.Path(workdir) / "translated"
         translated.mkdir()
@@ -180,7 +181,7 @@ def test_nested_scatter_trace_target() -> None:
         traced.mkdir()
         assert main(["compile", str(source), str(metadata), "--outdir", str(traced), "--target", "trace"]) == 0
         trace = "\n".join(path.read_text() for path in sorted(traced.glob("*.md")))
-        for expected in ("repeat", "choice", "move (", "recv (", "eof", "_s_scatter_", "_s_open_", "_s_gather_"):
+        for expected in ("repl owner=", "choice", "move (", "recv (", "eof", "_s_dispatch_", "_s_gather_", "close owner=", "join activated descendants"):
             assert expected in trace
 
         stripped = pathlib.Path(workdir) / "without-hints.swirl"

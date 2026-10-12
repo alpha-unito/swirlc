@@ -1,5 +1,38 @@
 # Example status
 
+## Compiler execution evidence — 2026-10-12
+
+The accepted concrete contract now uses one ANTLR frontend, structured terms and
+strict v1.1 metadata for both targets. Trace output includes envelopes, scoped
+guards, fresh/exact bindings, owners, closure and completion joins. Generated
+Python uses scoped occurrence storage, atomic matching, synchronous TCP commits,
+concurrent replication, descendant joins, independent cardinality publication,
+full-key routing and validated shape-preserving gathers. Existing deployment,
+launcher, framing, command and expression infrastructure is reused.
+
+All four `examples/cwl/pipeline/depth-{0,1,2,3}/plain` configurations translated,
+compiled to both targets, and executed across their configured distinct local
+locations, with and without advisory hints. Final File contents matched each
+`expected.json` exactly, retaining duplicates, ordering, empty branches and nested
+arrays. Depth 0 preserved stage-to-finish file transport. Observed command task
+counts were 2, 3, 3 and 4 respectively, each with an isolated work directory.
+Logs, traces, generated bundles and per-depth `acceptance.json` reports are under
+`build/compiler-contract`. Reproduce with
+`rtk .venv/bin/python tests/test_pipeline_contract.py`.
+
+Focused regressions cover parsing/binding rejection, metadata ownership, trace
+joins, atomic scoped transport, concurrent reverse completion, dynamic unequal
+cardinalities, consistent routing, empty Cartesian shape, invalid/duplicate/missing
+gather keys and bounded blocked/failure joins. This evidence supersedes older
+claims that the concrete compiler contract is entirely unimplemented; older
+execution claims remain historical and must not be extrapolated.
+
+Deferred metadata repairs #3, #5 and #6 remain excluded. SSH/SLURM execution,
+1000Genomes and broader CWL conformance are untested. Directory transport still
+fails explicitly. Legacy indexed/pair-open scatter is rejected rather than
+reinterpreted as independent dispatch. Runtime blocked-action deadlines default
+to 60 seconds and can be set with `SWIRLC_RUNTIME_TIMEOUT`.
+
 ## Full-pipeline acceptance examples (2026-10-12)
 
 `examples/cwl/pipeline` adds eight workflows: scatter depths 0, 1, 2 and 3, each

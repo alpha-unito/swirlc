@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from collections.abc import MutableMapping, MutableSequence
 import os
+from collections.abc import MutableMapping, MutableSequence
 from typing import Optional, TextIO
 
 from swirlc.core.compiler import BaseCompiler
@@ -13,6 +13,8 @@ class TraceNode:
 
     def __init__(self, depth: int = 0, parent: Optional[TraceNode] = None, is_threaded: bool = True) -> None:
         self.children: MutableMapping[str, TraceNode] = {}
+        self.kind = "seq"
+        self.args = {}
         self.depth = depth
         self.parent = parent
         self.is_threaded = is_threaded
@@ -434,3 +436,103 @@ class StandardCompiler(BaseCompiler):
         trace = self._get_location_trace(self.current_location)
         node = self.current_node.add_child(trace, is_threaded=False)
         self.write_zero(node, node.depth, trace)
+
+
+class StructuredCompiler(StandardCompiler):
+    """Collect the shared trace nodes before rendering either backend."""
+
+    def begin_location(self, location):
+        self.current_location = location
+        self.current_node = TraceNode()
+        self._root = self.current_node
+        self._dataset = []
+
+    def begin_dataset(self, dataset):
+        self._dataset.extend(dataset)
+
+    def end_location(self):
+        self.render_location(self.current_location, self._dataset, self._root)
+        self.current_location = None
+        self.current_node = None
+
+    def _begin(self, kind, **args):
+        node = TraceNode(parent=self.current_node, depth=self.current_node.depth + 1)
+        node.kind, node.args = kind, args
+        self.current_node.children[node.id] = node
+        self.current_node = node
+
+    def _end(self):
+        self.current_node = self.current_node.parent
+
+    def _action(self, kind, **args):
+        self._begin(kind, **args)
+        self._end()
+
+    def begin_paren(self):
+        self._begin("seq")
+
+    def end_paren(self):
+        self._end()
+
+    def begin_seq(self):
+        self._begin("seq")
+
+    def seq(self):
+        pass
+
+    def end_seq(self):
+        self._end()
+
+    def begin_par(self):
+        self._begin("par")
+
+    def par(self):
+        pass
+
+    def end_par(self):
+        self._end()
+
+    def begin_choice(self, guard=None, eof_branch=None):
+        self._begin("choice", guard=guard)
+
+    def choice(self):
+        pass
+
+    def end_choice(self):
+        self._end()
+
+    def begin_repl(self):
+        self._begin("repl")
+
+    def end_repl(self):
+        self._end()
+
+    def zero(self):
+        self._action("zero")
+
+    def end(self):
+        self._action("end")
+
+    def exec(self, step, flow, mapping):
+        self._action("exec", tool=step.name, inputs=flow[0], outputs=flow[1], mapping=sorted(mapping))
+
+    def recv(self, port, data, data_type, src, dst):
+        self._action("recv", port=port, term=data, data_type=data_type, src=src, dst=dst)
+
+    def send(self, data, port, data_type, src, dst):
+        self._action("send", port=port, term=data, data_type=data_type, src=src, dst=dst)
+
+    def move(self, data, port, data_type, src, dst):
+        self._action("move", port=port, term=data, data_type=data_type, src=src, dst=dst)
+
+    @staticmethod
+    def serialize(node):
+        def value(item):
+            if hasattr(item, "to_dict"):
+                return item.to_dict()
+            if isinstance(item, (tuple, list)):
+                return [value(x) for x in item]
+            if isinstance(item, dict):
+                return {k: value(v) for k, v in item.items()}
+            return item
+        return {"kind": node.kind, **value(node.args), "children": [StructuredCompiler.serialize(x) for x in node.children.values()]}
