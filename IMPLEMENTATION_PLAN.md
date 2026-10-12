@@ -12,6 +12,45 @@ The three superseded implementation plans were removed on 2026-10-06.
 Earlier review records are historical evidence, not additional work queues.
 Do not recreate deleted plans or reviews.
 
+## Compiler planning update — 2026-10-12
+
+This is a source/artifact review and implementation roadmap, not authorization to
+resume compiler changes, automated tests or workflow execution. The existing
+translator acceptance and implementation-satisfaction gates still apply.
+The latest translator evidence is the 2026-10-09 section of
+`TRANSLATOR_REPAIR_PLAN.md`, not the historical status table below.
+
+- Translator repairs #1 (parallel invocation/publication groups), #2 (one tool
+  descriptor per emitted exec) and #4 (deployment/service identity and options)
+  are recorded as implemented. The current manifest lists 12 configurations;
+  current examples are under `build/cwl` and `build/1000genome`, with additional
+  three-/five-level and Cartesian probes under `build/repair-probes`. Recorded
+  repeatability and structural checks are translation evidence only. Acceptance
+  remains pending; historical `build/recursive-validation/final` coverage is
+  unavailable and must not be counted.
+- Metadata repairs #3 (argument expressions), #5 (stdout/output processing) and
+  #6 (inputBinding transformations) remain deferred until syntax freeze and
+  authorized complex-workflow testing. They are necessary before claiming
+  correct nested command outputs or 1000Genomes execution.
+- The CLI exposes `--target trace` and `--target default`; default generates
+  Python. Both use `CompileVisitor` and `StandardCompiler`. Trace is a static
+  per-location Markdown explanation, not a runtime simulator.
+- The grammar lacks variables, composed IDs, scoped U, guarded choice and
+  `end()`. Although ordinary `(payload, root)` tuples can parse, the visitor
+  treats their text as dependency names. Metadata v1.1 only inherits the old
+  schema; it does not implement the translator's new descriptor contract.
+  Neither target currently supports the complete newly emitted workflows.
+- The default backend already supplies deployment, transport, command/expression
+  execution and bundle generation. Its legacy scatter helpers, serial replication,
+  port-global state and heuristic gathers cannot establish the scoped contract.
+  Reuse the ordinary execution infrastructure and replace those semantics at
+  their shared responsibility points.
+
+Implementation proceeds through the expanded Part 2 roadmap below. Complete the
+trace backend after the shared frontend, before debugging Python execution. This
+provides a reviewable representation of scopes, matching, admission and joins
+without pretending that readable traces prove scheduling or output correctness.
+
 ## Goal and boundaries
 
 Complete the uniformly identified, independently dispatched CWL workflow model:
@@ -771,51 +810,227 @@ scope. Complete translator acceptance still precedes compiler/runtime work.
 
 ### 2. Implement parser, metadata and compiler structure (Part 2A)
 
-- Extend grammar/generated ANTLR for variables, tuple patterns, U, guards,
-  `end()`, root/composed IDs, begin/EOF envelopes and scoped guards/U. Define
-  matching/construction context, precedence and fresh-owner bindings. Decide
-  legacy syntax compatibility explicitly; ordinary output now also uses envelopes.
-- Regenerate with pinned ANTLR 4.13.2. Add the smallest structured representation
-  needed for bindings, explicit scope-opening receives, owner tracking and completion.
-- Update schemas, validation and entity registration for the accepted dynamic
-  descriptors and helpers. Decide metadata/old-scatter compatibility explicitly;
-  neither a version bump nor dual formats is automatically required.
-- Inspect accepted artifacts through parsing/validation, then present the result.
-  After satisfaction, add/run parser, metadata and structural compiler checks.
+#### 2A.1 Shared syntax, descriptors and binding contract
+
+Reach: `grammar/SWIRL.g4`, generated `swirlc/antlr/*`,
+`swirlc/core/parsing.py`, `core/utils.py`, `core/entity.py`, `core/compiler.py`,
+both config schemas and their validator. Both targets consume this same contract.
+
+- Freeze concrete syntax and operator precedence against accepted translator
+  artifacts and handwritten references. Cover payload/ID envelopes, literal root,
+  variable and tuple patterns, composed paths, U(port, collection, scope),
+  scoped guarded choices, begin/EOF and `end()` distinct from zero.
+- Regenerate with the already pinned ANTLR 4.13.2. Keep strict parse-error
+  rejection. The existing regeneration script downloads/builds Docker and removes
+  temporary files; invoking it must respect remote/destructive-operation rules.
+- Replace string interpretation at `get_pair`/`get_flow` and visitor boundaries
+  with the smallest structured terms for payloads, identities, patterns and
+  collections. Preserve declaration order where semantically required. Resolve
+  an ordinary envelope's underlying payload in `dependencies`; do not register
+  IDs, controls or identity expressions as file dependencies.
+- Register static dataName, dynamic binding and collection descriptors explicitly.
+  Validate exact exec port ownership and helper/shape/route references. Preserve
+  payload types instead of defaulting unknown dynamic/control terms to file.
+  Support the emitted scatter_dispatch and scatter_gather descriptor contracts.
+  Metadata v1.1 currently only inherits v1.0; decide schema ownership explicitly,
+  without adding a version solely to avoid fixing its loader.
+- Track lexical owners, definitely available payload/ID bindings, fresh pattern
+  bindings and inherited prefix matches. Receive matching, exec output production
+  and moves establish bindings according to their action semantics. Sequence can
+  use established bindings; independent parallel branches cannot silently export
+  variables to siblings. Give each replica a fresh child environment. Resolve
+  `end()` to its nearest replication owner and reject unbound construction terms.
+- Compatibility recommendation: retain ordinary legacy fixtures by normalizing
+  bare values to root at the shared boundary. Inventory supported legacy scatter
+  before changing it; retain or explicitly reject its distinct syntax/contracts.
+  Never silently reinterpret pair/open workflows as independent streams. Decide
+  this policy before editing grammar, descriptors or public compiler hooks.
+
+Exit artifact: accepted ordinary/scatter/deep examples parse, validate and register
+without missing metadata or unbound owner references. Invalid bindings/descriptors
+produce useful diagnostics. This proves frontend structure, not execution.
+After implementation satisfaction and test authorization, update focused parser
+and metadata checks; do not weaken validation to admit unsupported descriptors.
+
+#### 2A.2 Complete the trace target
+
+Reach: `BaseCompiler`/`CompileVisitor` hooks, `StandardCompiler`/`TraceNode`,
+`compiler/trace/compiler.py`, and trace assertions in `tests/test_compiler.py`.
+Change corresponding DefaultTarget signatures with the shared interface; no
+target-specific parser or second workflow IR.
+
+- Keep existing per-location Markdown files, thread blocks and waits. Print exec
+  input/output envelopes, U terms and mappings, not only the tool name.
+- Show begin/EOF patterns, bound versus fresh components, scoped guards, operation
+  and owner identity, replication admission and its completion join. Render
+  `end()` as closing/draining its owner; retain zero as the null process.
+- Make sequence/parallel joins readable inside replicated and nested bodies.
+  A closure branch must remain visibly separate from admitted work. Print dynamic
+  patterns symbolically; this backend does not execute helpers or enumerate tasks.
+- Hints must not supply required structure. Ignore unsupported legacy hints
+  safely or update their scanner; removing comments must preserve the same
+  semantic trace. Keep naming deterministic across repeated compilation.
+
+Exit artifact: trace output for ordinary, root scatter, nested and three-/five-level
+examples exposes every binding, boundary and join needed to review the contract.
+After satisfaction, authorize focused trace assertions and hint-free equivalence
+checks. Trace readability does not prove progress, atomicity or gather values.
 
 ### 3. Implement bindings, scoped state and communication (Part 2B)
 
-- Add local/inherited environments, atomic matching/collections, keyed message
-  selection, reusable values, scoped EOF and U snapshots.
-- Make send copy and move consume exactly the selected occurrence; acknowledge
-  only after recv commits. Detect missing closed-stream matches and propagate
-  failures. Reuse existing serialization/deployment support where correct.
-- Demonstrate ordinary and keyed communication manually; after satisfaction,
-  add/run focused behavioral checks.
+Reach: Python generation/runtime in `compiler/default/compiler.py`, shared action
+terms and entity data access. Reuse framing, location launch, SSH/SLURM integration,
+payload serialization, command execution and existing expression evaluation where
+their behavior matches the contract. Keep new matching/state logic in one cohesive
+runtime unit rather than scattering special cases through emitted strings.
+
+- First restore ordinary root-envelope execution: initialize envelope datasets,
+  resolve action inputs, unwrap payloads for commands/expressions/processors and
+  wrap outputs with the action's actual ID. Whole lists stay one payload.
+- Introduce occurrence storage and lookup isolated by logical operation/route,
+  port and full identity, plus per-owner binding environments. Separate controls
+  from data and retain per-source, per-scope lifecycle state. Location or depth
+  alone is not a state key. Reusable root/ancestor values retain their identity.
+- Match payload and ID patterns atomically; mismatch binds/consumes nothing.
+  Bound prefixes compare exactly and a fresh child coordinate adds one component.
+  A receive for one operation/parent cannot steal another's occurrence.
+- Send copies; move atomically claims/removes only its selected occurrence.
+  Replace destructive list-pop and per-port overwrite behavior. Acknowledge a
+  transfer after receive/collection commit, rather than on socket queue arrival.
+  Preserve local self-communication and the same protocol across remote routes.
+- Extend existing framing with identity/control information while keeping payload
+  serialization separate. Preserve declared scalar types across transport; the
+  current scalar decoder returns text. Directory transport is currently explicitly
+  unsupported: retain a clear rejection until separately implemented, rather than
+  claiming general File/Directory support from ordinary file transfer.
+- U snapshots contain only that operation's immediate-child data in the selected
+  scope; exclude begin/EOF. Closed-stream missing keys raise an error. Propagate
+  transport, exec and matching failures to waiting actions and the launcher so
+  they do not hang or report successful partial output.
+
+Exit artifacts: ordinary local and split-location examples execute unchanged in
+payload meaning; a small keyed exchange demonstrates exact selection, copy versus
+move, reusable invariants, scoped closure and missing-key failure. After satisfaction
+and test authorization, add focused behavioral checks. Do not start recursive
+scatter execution until these communication semantics hold.
 
 ### 4. Implement parallel replication and joins (Part 2C)
 
-- Implement committed admission, atomic choice/exhaustion, scoped idempotent
-  closure, draining and sequence/parallel descendant joins.
-- Implement explicit begin-driven scope owners, nested receiving loops and value
-  readiness without unbound variables or parent/child wait cycles.
-- Demonstrate delayed work, reversed completion, zero tasks and concurrent
-  nested parents sharing workers; after satisfaction, add/run timed checks.
+Reach: shared grouping/owner hooks and Python choice/repl/thread generation.
+Reuse the existing concurrency facilities; remove serial-loop/global-worker-state
+assumptions rather than layering another scheduler over them.
+
+- Commit an enabled admission/choice atomically, create an isolated replica
+  environment, then allow its continuation to run while subsequent admissions
+  proceed. A waiting offer is not admitted work. Multi-input receives match the
+  same full task ID; closure cannot consume data or strand required inputs.
+- Evaluate exhaustion against a completed finite dispatch collection. An empty
+  queue while production is still possible is not termination. Receive all input
+  EOFs in declaration order before `end()`; preserve all-input begin setup.
+- `end()` stops nearest-owner admissions, drains committed replicas and is scoped
+  and idempotent. Sequence waits for all activated descendants; parallel joins
+  both branches. Result EOF follows acknowledged publications, before downstream
+  final gather/exec whenever waiting for it would form a cycle.
+- Apply the same owner rule recursively. Bound-parent-plus-fresh-child admission
+  excludes other concurrent parents; zero-task owners still open/close services.
+  Parent waits must allow child services and sibling producers to progress.
+- Keep output/error propagation and work directories isolated by invocation ID;
+  cancellation on failure must wake blocked receives and completion joins.
+
+Exit artifacts: delayed tasks complete in reverse order, empty owners terminate,
+two parents with different cardinalities share workers safely, and a blocked
+publication does not stop an independent producer. After satisfaction and test
+authorization, add bounded-time progress/failure checks; syntax tests cannot prove
+these properties.
 
 ### 5. Execute dispatch/gather and prove end-to-end behavior (Part 2D)
 
-- Implement independent cardinality exchange, full-key routing, all methods,
-  expected-result validation and deterministic shape-preserving gathers.
-- Execute the acceptance matrix below with and without hints. Show generated
-  Python, outputs and remaining limitations for review; after satisfaction,
-  add/run end-to-end regressions and the relevant complete suite.
-- Replace/remove superseded runtime heuristics and stale compiler-dependent
-  scatter tests as their supported replacement becomes available. Update or
-  safely ignore legacy hint scanning; specialized optimization is deferred.
-- Refresh example/reference documentation so translation success is clearly
-  distinguished from parse, compile and execution success.
+#### 2D.1 Execute the emitted helper contracts
+
+Reach: step/helper registration and DefaultTarget helper execution. Replace the
+pair/open path for modern workflows; keep any explicitly supported legacy path
+bounded by the compatibility decision from 2A.
+
+- Implement scatter_dispatch independently at each actual dimension producer.
+  Publish each cardinality before waiting for peer lengths. Exchange shape/key
+  state by operation and invocation across locations without moving/bundling all
+  producers' payload lists onto a controller.
+- Support declaration-order dotproduct with dynamic equal-length validation,
+  flat Cartesian coordinates and tuple-valued nested Cartesian coordinates.
+  Route the same full task key to the same worker for all dimensions using the
+  accepted worker pool; worker hints cannot determine correctness.
+- Gather only after all relevant result sources close and committed receives
+  join. Validate expected keys and reject duplicates, missing or invalid keys.
+  Sort/reconstruct by coordinates and shape state, never filenames, payloads,
+  arrival order or list/string heuristics.
+- Retain cardinalities even with no child results: zero dotproduct gives [],
+  nested Cartesian [2, 0] gives [[], []]. List-valued worker output remains one
+  element. Materialize crossed boundaries inside-out at actual consumer routes;
+  fan-out collections stay independent. No special implementation for depth N.
+
+Exit artifacts: root dotproduct, both Cartesian methods and nested scatter produce
+exact expected values/shapes, including duplicates in payloads and empty branches.
+Three-/five-level examples traverse the same owner/helper implementation. After
+satisfaction and test authorization, add focused helper/end-to-end regressions.
+
+#### 2D.2 Finish deferred tool metadata and evaluation
+
+Resume translator repairs #3/#5/#6 together after syntax freeze and authorization
+for complex-workflow work. This can begin after 2A and overlap runtime development,
+but it must finish before nested-command/1000Genomes execution acceptance.
+
+Reach: CWL tool metadata emission, schemas, Step/Processor loading, Python command
+construction/output processing, relevant translator/runtime checks and examples.
+No additional SWIRL actions are needed for inputs already in an exec.
+
+- Preserve the selected tool-level named input map and explicit expression
+  arguments. Normalize inputBinding self references using their known input
+  context; retain ordering/prefix/quoting and explicit unsupported-form errors.
+- Preserve stdout destinations, dynamic glob, loadContents and outputEval.
+  Execute, locate outputs, load requested contents, evaluate output self context,
+  then wrap/publish. Reuse expression evaluation without confusing tool inputs
+  with output File objects. Remove heuristic stdout inference/automatic trimming
+  only where their explicit supported replacement is complete.
+
+Exit artifacts: ordinary nested trim/upper/annotate preserves its declared strings;
+echo creates its declared stdout file; population nameroot transformations and
+output glob contexts survive metadata loading and command construction. The trace
+backend continues to show the same actions while metadata semantics improve.
+
+#### 2D.3 Final acceptance and migration cleanup
+
+- Execute the acceptance matrix below with and without hints. Stage local/split
+  runs before available deployment runs; do not claim SSH/SLURM/genome execution
+  from generated bundles or local helper checks. Use small local inputs first;
+  downloads and actual cluster execution need their own authorization/resources.
+- Show trace output, generated Python, exact payload/shape results and failure
+  behavior for review. After satisfaction and test authorization, update stale
+  parser/compiler/translator assertions and run relevant complete checks. Existing
+  tests expecting pair/open, bare EOF or two-argument U are historical, not proof
+  of the new contract. Do not restore deleted fixtures.
+- Remove superseded port/EOF/gather heuristics only after the supported replacement
+  passes its acceptance checks. Preserve ordinary command/expression/list/default
+  behavior, deployment/service options and dependency bundling.
+- Refresh `examples/EXAMPLES_STATUS.md`, `SWIRL_AGENT_REFERENCE.md` and
+  `scratch/CURRENT_CONTEXT.md` to distinguish translate, parse, trace compile,
+  Python compile and execution. Keep hints advisory; optimization is deferred.
+
+Completion order: translator acceptance/syntax decisions -> shared frontend ->
+complete trace -> ordinary/keyed Python communication -> concurrent recursive
+owners -> dispatch/gather -> full acceptance. Deferred metadata can progress after
+syntax freeze, and is a prerequisite for complete command/workflow execution.
+Stop when the existing contract and acceptance matrix hold; public virtual syntax,
+new scheduling frameworks, broad CWL conformance and optimization remain deferred.
 
 ## Acceptance matrix and completion
+
+Start the small full-pipeline checks with `examples/cwl/pipeline`: eight local,
+distributed configurations covering depths 0/1/2/3 in plain and metadata-dependent
+versions. Its README and per-depth expected.json specify exact markers, order and
+empty nested shapes. The 2026-10-12 checks establish source loading and repeatable
+translation only; compiler/runtime checks remain pending. Plain cases avoid
+deferred tool metadata; metadata cases require repairs #3/#5/#6 before execution
+acceptance. These examples complement, rather than replace, the wider matrix.
 
 Cover ordinary basic/nested/expression/list workflows and deployment variants;
 simple scatter with zero/one/many/duplicate inputs; scalar and whole-list

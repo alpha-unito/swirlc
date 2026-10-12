@@ -1,5 +1,22 @@
 # Example status
 
+## Full-pipeline acceptance examples (2026-10-12)
+
+`examples/cwl/pipeline` adds eight workflows: scatter depths 0, 1, 2 and 3, each
+with a plain version avoiding deferred metadata features and a metadata version
+requiring argument expressions, input transformations and stdout/output processing.
+All are split across distinct local deployments. Shared dummy input files and
+per-depth expected marker JSON make values, order and empty nested shapes explicit.
+See [pipeline/README.md](pipeline/README.md) for placement, commands and checks.
+
+All eight configurations translated twice with identical SWIRL/metadata bytes;
+artifacts are under `build/pipeline-examples`. All CWL documents loaded, input
+files/expectations and emitted depths/location counts were checked. This is source
+and translation validation only. Current compiler support and metadata repairs
+remain incomplete; no workflow execution or automated tests were performed.
+These are new retained examples, not restored deleted fixtures. The older
+11-configuration inventory below predates their addition.
+
 ## Current CWL examples (2026-10-08)
 
 `examples/cwl` contains five basic workflows (`basic`, `nested`, `expressions`,

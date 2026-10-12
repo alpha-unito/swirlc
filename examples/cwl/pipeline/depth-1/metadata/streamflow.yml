@@ -1,0 +1,23 @@
+version: v1.0
+workflows:
+  pipeline:
+    type: cwl
+    config:
+      file: main.cwl
+      settings: inputs.yml
+    bindings:
+      - step: /
+        target:
+          deployment: source
+      - step: /process_items
+        target:
+          deployment: worker
+deployments:
+  source:
+    type: local
+    config: {}
+    port: 35630
+  worker:
+    type: local
+    config: {}
+    port: 35631

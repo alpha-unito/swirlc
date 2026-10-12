@@ -1,0 +1,4 @@
+samples:
+  - [{class: File, path: ../../data/alpha.txt}, {class: File, path: ../../data/beta.txt}]
+  - []
+  - [{class: File, path: ../../data/gamma.txt}]

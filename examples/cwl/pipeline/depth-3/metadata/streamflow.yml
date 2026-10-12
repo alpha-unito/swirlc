@@ -1,0 +1,37 @@
+version: v1.0
+workflows:
+  depth_3_metadata:
+    type: cwl
+    config:
+      file: main.cwl
+      settings: inputs.yml
+    bindings:
+      - step: /
+        target:
+          deployment: source
+      - step: /process_groups
+        target:
+          deployment: outer
+      - step: /process_groups/process_batches
+        target:
+          deployment: middle
+      - step: /process_groups/process_batches/process_items
+        target:
+          deployment: inner
+deployments:
+  source:
+    type: local
+    config: {}
+    port: 35670
+  outer:
+    type: local
+    config: {}
+    port: 35671
+  middle:
+    type: local
+    config: {}
+    port: 35672
+  inner:
+    type: local
+    config: {}
+    port: 35673

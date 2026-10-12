@@ -1,0 +1,30 @@
+version: v1.0
+workflows:
+  pipeline:
+    type: cwl
+    config:
+      file: main.cwl
+      settings: inputs.yml
+    bindings:
+      - step: /
+        target:
+          deployment: source
+      - step: /stage
+        target:
+          deployment: stage
+      - step: /finish
+        target:
+          deployment: finish
+deployments:
+  source:
+    type: local
+    config: {}
+    port: 35600
+  stage:
+    type: local
+    config: {}
+    port: 35601
+  finish:
+    type: local
+    config: {}
+    port: 35602
