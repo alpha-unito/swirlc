@@ -93,21 +93,33 @@ def replace_files(value):
     return text[:-1] if text.endswith("\n") else text
 
 
-def generated_trace(path):
+def generated_execs(path):
+    """Read direct operation calls without executing generated workflow code."""
     tree = ast.parse(path.read_text())
-    values = {}
-    for node in tree.body:
-        if isinstance(node, ast.Assign):
-            for target in node.targets:
-                if isinstance(target, ast.Name) and target.id in ("TRACE", "INITIAL"):
-                    values[target.id] = ast.literal_eval(node.value)
-    return values["TRACE"]
-
-
-def actions(node):
-    yield node
-    for child in node.get("children", []):
-        yield from actions(child)
+    assert not any(isinstance(node, ast.Name) and node.id == "TRACE" for node in ast.walk(tree))
+    runtime_classes = [node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == "Runtime"]
+    for runtime_class in runtime_classes:
+        assert not {"_run", "_first", "_branches", "run"} & {
+            node.name for node in runtime_class.body if isinstance(node, ast.FunctionDef)
+        }, "Generated runtime still contains workflow interpretation"
+    calls = [node for node in ast.walk(tree) if isinstance(node, ast.Call)
+             and isinstance(node.func, ast.Attribute)
+             and isinstance(node.func.value, ast.Name) and node.func.value.id == "runtime"]
+    assert not any(call.func.attr == "run" for call in calls)
+    result = []
+    for call in calls:
+        if call.func.attr != "execute_step":
+            continue
+        keywords = {keyword.arg: keyword.value for keyword in call.keywords}
+        def argument(name, index, call=call, keywords=keywords):
+            return keywords[name] if name in keywords else call.args[index]
+        def ports(name, index):
+            return [(ast.literal_eval(pair.elts[0]), ast.unparse(pair.elts[1]))
+                    for pair in argument(name, index).elts]
+        result.append({"tool": ast.literal_eval(argument("tool", 1)),
+                       "inputs": ports("inputs", 2), "outputs": ports("outputs", 3),
+                       "mapping": ast.literal_eval(argument("mapping", 4))})
+    return result
 
 
 def verify_bundle(directory, metadata, outputs, expected, example):
@@ -128,8 +140,7 @@ def verify_bundle(directory, metadata, outputs, expected, example):
     assert len(configuration["workflows"]) == 1
     bindings = next(iter(configuration["workflows"].values()))["bindings"]
     for location, records in manifests.items():
-        trace = generated_trace(directory / f"{location}.py")
-        execs = [node for node in actions(trace) if node["kind"] == "exec"]
+        execs = generated_execs(directory / f"{location}.py")
         for node in execs:
             tool = node["tool"]
             assert location in node["mapping"], (location, tool, node["mapping"])
@@ -186,7 +197,14 @@ def check_depth(depth, root, prepare_only=False):
                     assert "fresh=" in joined and "exact=" in joined and "close owner=" in joined
                     assert "drain admitted instances and descendants" in joined
                     assert "INVALID" not in joined
-            elif not prepare_only:
+            else:
+                compiled_tools = []
+                for location in metadata["locations"]:
+                    for call in generated_execs(bundle / f"{location}.py"):
+                        assert location in call["mapping"]
+                        compiled_tools.append(call["tool"])
+                assert sorted(compiled_tools) == sorted(metadata["steps"])
+            if target == "default" and not prepare_only:
                 run_command(["bash", "run.sh"], bundle / "execution.log", cwd=bundle, timeout=45)
                 actual, placements, isolated = verify_bundle(bundle, metadata, outputs, expected, example)
                 report["runs"][variant] = {"actual": actual, "placements": placements,

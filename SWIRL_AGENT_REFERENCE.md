@@ -1,5 +1,28 @@
 # SWIRL project reference
 
+## Direct Python compilation — 2026-10-13
+
+The default target lowers the shared structured frontend into ordinary Python
+`workflow` functions. Generated programs call scoped receive, step execution and
+send primitives directly; replication admission uses explicit `while`/`if`
+control flow, and parallel branches are generated functions with completion
+joins. Operand constructors describe payload/identity patterns only. The bundle
+contains no serialized `TRACE` program or generic workflow interpreter.
+Transport, occurrence storage, matching, cardinalities, gathers, deployment and
+command/expression execution remain shared runtime primitives.
+
+All four plain pipeline examples were translated, compiled with both targets
+and executed again with and without advisory hints. Exact final outputs,
+configured location ports, duplicate occurrences, nested empty branches and
+isolated task directories passed unchanged. Direct-compilation logs, traces,
+bundles and per-depth `acceptance.json` reports are under `build/compiler-direct`.
+Reproduce with `rtk .venv/bin/python tests/test_pipeline_contract.py --output build/compiler-direct`. The acceptance harness inspects native Python calls and
+literal input/output ports and placement; it no longer reads a runtime trace.
+
+Deferred metadata repairs #3/#5/#6 and SSH/SLURM execution remain outside this
+local evidence. The earlier compiler record below describes the original scoped
+implementation and is retained as historical evidence.
+
 ## Compiler execution evidence — 2026-10-12
 
 The accepted concrete contract now uses one ANTLR frontend, structured terms and

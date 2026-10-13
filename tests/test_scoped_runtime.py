@@ -43,7 +43,7 @@ class ScopedRuntimeTests(unittest.TestCase):
         pattern = envelope(term('variable', 'payload'), term('path', '', ROOT,
                            term('variable', 'parent'), term('variable', 'child')))
         env = {'parent': 1}
-        self.assertFalse(runtime._try({'kind': 'recv', 'src': 'other', 'port': 'p', 'term': pattern}, env))
+        self.assertFalse(runtime.try_receive(env, 'p', pattern, 'other'))
         self.assertEqual(env, {'parent': 1})
         self.assertEqual(len(runtime.offers), 1)
 
@@ -52,13 +52,12 @@ class ScopedRuntimeTests(unittest.TestCase):
         action = {'kind': 'send', 'src': 'local', 'dst': 'local', 'port': 'p',
                   'data_type': 'int', 'term': envelope(term('variable', 'value'), ROOT)}
         done = threading.Event()
-        worker = threading.Thread(target=lambda: (runtime._communication(action, {'value': 7}), done.set()))
+        worker = threading.Thread(target=lambda: (runtime.send({'value': 7}, 'p', action['term'], 'int', 'local', 'local'), done.set()))
         worker.start()
         runtime._wait(lambda: bool(runtime.offers), 'test offer')
         self.assertFalse(done.is_set())
         env = {}
-        runtime.run({'kind': 'recv', 'src': 'local', 'port': 'p',
-                     'term': envelope(term('variable', 'received'), ROOT)}, env)
+        runtime.recv(env, 'p', envelope(term('variable', 'received'), ROOT), 'local')
         worker.join(1)
         self.assertTrue(done.is_set())
         self.assertEqual(runtime.values[0]['payload'], 7)
@@ -69,8 +68,8 @@ class ScopedRuntimeTests(unittest.TestCase):
                 runtime = self.runtime()
                 sent = []
                 runtime._send_header = lambda dst, header, payload=None, sent=sent: sent.append((header, payload))
-                runtime._communication({'kind': 'send', 'src': 'local', 'dst': 'local', 'port': 'p',
-                    'data_type': 'string', 'term': envelope(term('variable', 'value'), ROOT)}, {'value': value, '_payload_types': {'value': ['string', 'string']} if isinstance(value, tuple) else {}})
+                runtime.send({'value': value, '_payload_types': {'value': ['string', 'string']} if isinstance(value, tuple) else {}},
+                             'p', envelope(term('variable', 'value'), ROOT), 'string', 'local', 'local')
                 header, payload = sent[0]
                 self.assertIsNone(header['control'])
                 self.assertEqual(payload, value)
@@ -80,14 +79,14 @@ class ScopedRuntimeTests(unittest.TestCase):
                 env = {}
                 action = {'kind': 'recv', 'src': 'local', 'port': 'p', 'term': envelope(pattern, ROOT)}
                 with runtime.condition:
-                    self.assertTrue(runtime._try(action, env))
+                    self.assertTrue(runtime.try_receive(env, action['port'], action['term'], action['src']))
                 self.assertEqual(runtime.values[-1]['payload'], value)
                 runtime.offers.append(dict(header, control='eof', value='eof', id=(), event=threading.Event()))
                 generic = dict(action, term=envelope(pattern, term('variable', 'scope')))
-                self.assertFalse(runtime._try(generic, {}))
+                self.assertFalse(runtime.try_receive({}, generic['port'], generic['term'], generic['src']))
                 control_receive = dict(action, term=envelope(term('literal', 'eof'), ROOT))
                 with runtime.condition:
-                    self.assertTrue(runtime._try(control_receive, {}))
+                    self.assertTrue(runtime.try_receive({}, control_receive['port'], control_receive['term'], control_receive['src']))
                 self.assertEqual(len(runtime.values), 1)
 
     def test_tuple_homogeneous_list_type_fallback_and_unknown_type_rejection(self):
@@ -117,12 +116,12 @@ class ScopedRuntimeTests(unittest.TestCase):
                        term('tuple', '', term('literal', 'file'), term('literal', 'tail')))
         action = {'kind': 'send', 'src': 'local', 'dst': 'local', 'port': 'p',
                   'data_type': 'string', 'term': envelope(payload, ROOT)}
-        sender = threading.Thread(target=runtime._communication, args=(action,
-                  {'text': 'begin', 'number': 42, 'file': str(source), 'tail': 'eof'}))
+        sender = threading.Thread(target=runtime.send, args=(
+                  {'text': 'begin', 'number': 42, 'file': str(source), 'tail': 'eof'}, 'p', action['term'], 'string', 'local', 'local'))
         sender.start()
         bindings = {}
         receive = {'kind': 'recv', 'src': 'local', 'port': 'p', 'term': envelope(term('variable', 'pair'), ROOT)}
-        runtime._wait(lambda: runtime._try(receive, bindings), 'tuple receive')
+        runtime.recv(bindings, 'p', receive['term'], 'local')
         sender.join(1)
         self.assertFalse(sender.is_alive())
         received = bindings['pair']
@@ -134,10 +133,10 @@ class ScopedRuntimeTests(unittest.TestCase):
         self.assertEqual(received[2][1], 'eof')
         self.assertEqual(bindings['_payload_types']['pair'], ['string', 'int', ['file', 'string']])
         forward = dict(action, port='q', data_type='dynamic', term=envelope(term('variable', 'pair'), ROOT))
-        sender = threading.Thread(target=runtime._communication, args=(forward, bindings))
+        sender = threading.Thread(target=runtime.send, args=(bindings, 'q', forward['term'], 'dynamic', 'local', 'local'))
         sender.start()
         rebound = {}
-        runtime._wait(lambda: runtime._try(dict(receive, port='q'), rebound), 'forwarded tuple receive')
+        runtime.recv(rebound, 'q', receive['term'], 'local')
         sender.join(1)
         self.assertFalse(sender.is_alive())
         self.assertEqual(rebound['pair'][:2], ('begin', 42))
@@ -158,15 +157,14 @@ class ScopedRuntimeTests(unittest.TestCase):
         action = {'kind': 'recv', 'src': 'source', 'port': 'p',
                   'term': envelope(term('variable', 'value'), term('path', '', ROOT, term('variable', 'i')))}
         with self.assertRaisesRegex(ValueError, 'missing required key'):
-            runtime._try(action, {'i': 2})
+            runtime.try_receive({'i': 2}, action['port'], action['term'], action['src'])
 
     def test_failure_wakes_blocked_receive(self):
         runtime = self.runtime()
         errors = []
         def receive():
             try:
-                runtime.run({'kind': 'recv', 'src': 'source', 'port': 'p',
-                             'term': envelope(term('variable', 'value'), ROOT)})
+                runtime.recv({}, 'p', envelope(term('variable', 'value'), ROOT), 'source')
             except Exception as exc:
                 errors.append(exc)
         worker = threading.Thread(target=receive)
@@ -199,21 +197,30 @@ class ScopedRuntimeTests(unittest.TestCase):
             return {}
         runtime.execute = execute
         data = envelope(term('variable', 'value'), term('path', '', ROOT, term('variable', 'i')))
-        receive = {'kind': 'recv', 'src': 'local', 'port': 'p', 'term': data}
-        close = {'kind': 'recv', 'src': 'local', 'port': 'p', 'term': envelope(term('literal', 'eof'), ROOT)}
-        trace = {'kind': 'repl', 'children': [{'kind': 'seq', 'children': [{'kind': 'choice', 'guard': None, 'children': [
-            {'kind': 'seq', 'children': [receive, {'kind': 'exec', 'tool': 'task', 'inputs': [['p', data]], 'outputs': []}]},
-            {'kind': 'seq', 'children': [close, {'kind': 'end'}]}
-        ]}]}]}
+        close = envelope(term('literal', 'eof'), ROOT)
+        owner = runtime.new_owner()
+        def selector(env):
+            if runtime.try_receive(env, 'p', data, 'local'):
+                return 0
+            if runtime.try_receive(env, 'p', close, 'local'):
+                return 1
+            return None
+        def task(env, owner):
+            runtime.execute_step(env, 'task', [['p', data]], [])
         def produce():
             for i in range(2):
-                runtime._communication({'kind': 'send', 'src': 'local', 'dst': 'local', 'port': 'p', 'data_type': 'int',
-                                        'term': envelope(term('variable', 'value'), term('path', '', ROOT, term('variable', 'i')))}, {'value': i, 'i': i})
-            runtime._communication({'kind': 'send', 'src': 'local', 'dst': 'local', 'port': 'p',
-                                    'term': envelope(term('literal', 'eof'), ROOT)}, {})
+                runtime.send({'value': i, 'i': i}, 'p', data, 'int', 'local', 'local')
+            runtime.send({}, 'p', close, None, 'local', 'local')
         producer = threading.Thread(target=produce)
         producer.start()
-        runtime.run(trace)
+        while not owner['closed']:
+            branch, candidate = runtime.admit({}, owner, selector)
+            if branch == 0:
+                runtime.spawn(owner, task, candidate)
+            elif branch == 1:
+                runtime.end(owner)
+        runtime.join(owner)
+        runtime.finish()
         producer.join(1)
         self.assertFalse(producer.is_alive())
         self.assertEqual(finished, [1, 0])
@@ -221,12 +228,54 @@ class ScopedRuntimeTests(unittest.TestCase):
     def test_scoped_failure_wakes_parallel_completion_join(self):
         runtime = self.runtime({'steps': {'failure': {}}, 'dependencies': {}})
         runtime.execute = lambda name, inputs: (_ for _ in ()).throw(ValueError('failed child'))
-        trace = {'kind': 'par', 'children': [
-            {'kind': 'recv', 'src': 'source', 'port': 'blocked', 'term': envelope(term('variable', 'v'), ROOT)},
-            {'kind': 'exec', 'tool': 'failure', 'inputs': [], 'outputs': []}
-        ]}
+        def blocked(env, owner):
+            runtime.recv(env, 'blocked', envelope(term('variable', 'v'), ROOT), 'source')
+        def failure(env, owner):
+            runtime.execute_step(env, 'failure', [], [])
         with self.assertRaisesRegex(Exception, 'failed child'):
-            runtime.run(trace)
+            runtime.parallel({}, None, blocked, failure)
+
+    def test_direct_parallel_join_merges_bindings_and_types(self):
+        runtime = self.runtime()
+        env = {'inherited': 1}
+        def left(local, owner):
+            self.assertNotIn('right', local)
+            local['left'] = 'a'
+            runtime._bind_types(term('variable', 'left'), 'string', local)
+        def right(local, owner):
+            self.assertNotIn('left', local)
+            local['right'] = 2
+            runtime._bind_types(term('variable', 'right'), 'int', local)
+        runtime.parallel(env, None, left, right)
+        self.assertEqual(env['left'], 'a')
+        self.assertEqual(env['right'], 2)
+        self.assertEqual(env['_payload_types'], {'left': 'string', 'right': 'int'})
+
+    def test_exhaustion_requires_finished_dispatch_and_closed_owner_stops_admission(self):
+        runtime = self.runtime()
+        self.assertFalse(runtime.has_data('p', ROOT, {}))
+        self.assertFalse(runtime.exhausted('p', ROOT, {}))
+        runtime.finite.add(('p', ()))
+        self.assertTrue(runtime.exhausted('p', ROOT, {}))
+        runtime._store('p', (0,), 'item', 'string')
+        self.assertTrue(runtime.has_data('p', ROOT, {}))
+        self.assertFalse(runtime.exhausted('p', ROOT, {}))
+        owner = runtime.new_owner()
+        runtime.end(owner)
+        def forbidden(env):
+            raise AssertionError('closed owner attempted admission')
+        self.assertEqual(runtime.admit({}, owner, forbidden), (None, None))
+        runtime.join(owner)
+
+    def test_direct_executor_preserves_mapping_and_initialization(self):
+        runtime = self.runtime({'steps': {'task': {}}, 'dependencies': {}})
+        env = runtime.initialize([{'port': 'p', 'name': 'input', 'payload': ['a', 'a'],
+                                  'type': 'list[string]', 'identity': ROOT}], {})
+        self.assertEqual(env['input'], ['a', 'a'])
+        self.assertEqual(runtime.values[0]['id'], ())
+        runtime.execute_step(env, 'task', [], [], mapping=['local'])
+        with self.assertRaisesRegex(ValueError, 'violates placement'):
+            runtime.execute_step(env, 'task', [], [], mapping=['other'])
 
     def test_nested_cartesian_empty_shape_is_retained(self):
         metadata = {'steps': {'gather': {'type': 'scatter_gather', 'shapeFrom': ['a', 'b'],
@@ -235,8 +284,8 @@ class ScopedRuntimeTests(unittest.TestCase):
                     'dependencies': {'result': {'type': 'list[list[string]]'}}}
         runtime = self.runtime(metadata)
         runtime.shapes.update({('a', ()): 2, ('b', ()): 0})
-        runtime._exec({'tool': 'gather', 'inputs': [['p', term('collection', 'p', term('literal', 'stream'), ROOT)]],
-                       'outputs': [['out', envelope(term('literal', 'result'), ROOT)]]}, {})
+        runtime.execute_step({}, 'gather', [['p', term('collection', 'p', term('literal', 'stream'), ROOT)]],
+                             [['out', envelope(term('literal', 'result'), ROOT)]])
         self.assertEqual(runtime.values[-1]['payload'], [[], []])
 
     def test_independent_producers_publish_dynamic_lengths_before_validation(self):
@@ -252,10 +301,10 @@ class ScopedRuntimeTests(unittest.TestCase):
         errors = []
         def dispatch(runtime, name, port, items):
             try:
-                runtime.run({'kind': 'exec', 'tool': name,
-                    'inputs': [['input', envelope(term('variable', 'items'), ROOT)]],
-                    'outputs': [[port, term('collection', port, term('literal', 'stream'), ROOT)]]}, {'items': items})
+                runtime.execute_step({'items': items}, name, [['input', envelope(term('variable', 'items'), ROOT)]],
+                                     [[port, term('collection', port, term('literal', 'stream'), ROOT)]])
             except Exception as exc:
+                runtime.fail(exc)
                 errors.append(exc)
         threads = [threading.Thread(target=dispatch, args=(left, 'a', 'pa', [1, 2])),
                    threading.Thread(target=dispatch, args=(right, 'b', 'pb', [3]))]
@@ -279,9 +328,9 @@ class ScopedRuntimeTests(unittest.TestCase):
         runtime._send_header = lambda dst, header, payload=None, sent=sent: sent.append((dst, header))
         for port in ['pa', 'pb']:
             for i in range(8):
-                runtime._communication({'kind': 'move', 'src': 'local', 'dst': ['w1', 'w2', 'w3'],
-                    'port': port, 'data_type': 'string',
-                    'term': envelope(term('variable', 'v'), term('path', '', ROOT, term('variable', 'i')))}, {'v': 'duplicate', 'i': i})
+                runtime._store(port, (i,), 'duplicate', 'string')
+                runtime.move({}, port, envelope(term('variable', 'v'), term('path', '', ROOT, term('variable', 'i'))),
+                             'string', 'local', ['w1', 'w2', 'w3'])
         routes = [{tuple(header['id']): dst for dst, header in sent if header['port'] == port} for port in ['pa', 'pb']]
         self.assertEqual(routes[0], routes[1])
         self.assertEqual(len(routes[0]), 8)
@@ -293,17 +342,17 @@ class ScopedRuntimeTests(unittest.TestCase):
         runtime.shapes['a', ()] = 1
         node = {'tool': 'gather', 'inputs': [['p', term('collection', 'p', term('literal', 'stream'), ROOT)]], 'outputs': []}
         with self.assertRaisesRegex(ValueError, 'missing gather keys'):
-            runtime._exec(node, {})
+            runtime.execute_step({}, node['tool'], node['inputs'], node['outputs'])
         runtime._store('p', (99,), 'invalid', 'string')
         with self.assertRaisesRegex(ValueError, 'invalid gather key'):
-            runtime._exec(node, {})
+            runtime.execute_step({}, node['tool'], node['inputs'], node['outputs'])
 
     def test_blocked_receive_has_bounded_deadline(self):
         runtime = self.runtime()
         runtime.timeout = .05
         start = time.monotonic()
         with self.assertRaisesRegex(TimeoutError, 'blocked receive'):
-            runtime.run({'kind': 'recv', 'src': 'missing', 'port': 'p', 'term': envelope(term('variable', 'v'), ROOT)})
+            runtime.recv({}, 'p', envelope(term('variable', 'v'), ROOT), 'missing')
         self.assertLess(time.monotonic() - start, .5)
 
     def test_gather_rejects_duplicate_key(self):
@@ -314,7 +363,7 @@ class ScopedRuntimeTests(unittest.TestCase):
         runtime._store('p', (0,), 'first', 'string')
         runtime._store('p', (0,), 'second', 'string')
         with self.assertRaisesRegex(ValueError, 'duplicate'):
-            runtime._exec({'tool': 'gather', 'inputs': [['p', term('collection', 'p', term('literal', 'stream'), ROOT)]], 'outputs': []}, {})
+            runtime.execute_step({}, 'gather', [['p', term('collection', 'p', term('literal', 'stream'), ROOT)]], [])
 
 
 if __name__ == '__main__':

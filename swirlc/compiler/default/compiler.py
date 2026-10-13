@@ -4,6 +4,7 @@ import base64
 import hashlib
 import io
 import os
+import pprint
 import stat
 import sys
 import zipfile
@@ -1482,12 +1483,14 @@ echo "Workflow execution terminated"
             trace.write("\n".join([python_header, imports, global_vars, file_rendezvous_helpers,
                                    list_helper, expression_function, framing_helpers, exec_function]))
             trace.write(runtime_source.replace("from __future__ import annotations", ""))
-            trace.write(f"\nMETADATA = {metadata!r}\nTRACE = {self.serialize(root)!r}\nINITIAL = {initial!r}\n")
+            trace.write(TERM_CONSTRUCTORS)
+            trace.write(f"\nMETADATA = {pprint.pformat(metadata, sort_dicts=False)}\nINITIAL = {pprint.pformat(initial, sort_dicts=False)}\n")
             trace.write(f"LOCATION_NAME = {location.name!r}\nLOCATION_PORT = {location.port or 0}\nBIND_HOST = {location.get_bind_host()!r}\nADVERTISE_COMMAND = {location.get_advertise_command()!r}\n")
             trace.write(f"SCRATCH_DIR = os.environ.get('SWIRLC_TMP_DIR', {os.path.abspath(scratch)!r})\nOUT_DIR = {os.path.abspath(location.outdir or self.outdir)!r}\n")
             trace.write("ADDRESS_FILE = f'{LOCATION_NAME}_address.json'\nADDRESS_BOOK_FILE = 'address_book.json'\nRUN_ID = ''\n")
             if dependency_archive := self._dependency_archive_for_location(location):
                 trace.write(_embedded_dependency_bootstrap(*dependency_archive))
+            trace.write(_PythonEmitter().generate(root))
             trace.write(SCOPED_MAIN)
 
 
@@ -1564,9 +1567,14 @@ def main():
     ACTIVE_RUNTIME = runtime
     runtime.start()
     try:
-        runtime.run(TRACE, initial=INITIAL)
+        env = runtime.initialize(INITIAL, {})
+        workflow(runtime, env)
+        runtime.finish()
         with open(os.path.join(OUT_DIR, f"{LOCATION_NAME}.outputs.json"), "w") as fd:
             json.dump(runtime.values, fd)
+    except BaseException as exc:
+        runtime.fail(exc)
+        raise
     finally:
         runtime.close()
 
@@ -1574,3 +1582,180 @@ def main():
 if __name__ == "__main__":
     main()
 """
+
+
+TERM_CONSTRUCTORS = """
+def literal(name):
+    return {"kind": "literal", "name": name, "items": []}
+
+
+def variable(name):
+    return {"kind": "variable", "name": name, "items": []}
+
+
+def tuple_term(*items):
+    return {"kind": "tuple", "name": "", "items": list(items)}
+
+
+def path(*components):
+    return {"kind": "path", "name": "", "items": list(components)}
+
+
+def collection(port, name, scope):
+    return {"kind": "collection", "name": port, "items": [literal(name), scope]}
+"""
+
+
+class _PythonEmitter:
+    """Lower shared trace nodes into Python control flow at compilation time."""
+
+    def __init__(self):
+        self.lines = []
+        self.counter = 0
+
+    def _write(self, depth, text=""):
+        self.lines.append("    " * depth + text)
+
+    def _name(self, prefix):
+        self.counter += 1
+        return f"{prefix}_{self.counter}"
+
+    def _term(self, term):
+        if term.kind in ("literal", "variable"):
+            return f"{term.kind}({term.name!r})"
+        if term.kind in ("tuple", "path"):
+            constructor = "tuple_term" if term.kind == "tuple" else "path"
+            return f"{constructor}({', '.join(self._term(item) for item in term.items)})"
+        if term.kind == "collection":
+            return f"collection({term.name!r}, {term.items[0].name!r}, {self._term(term.items[1])})"
+        raise ValueError(f"Unsupported Python term {term}")
+
+    @staticmethod
+    def _sequence(nodes):
+        result = []
+        for node in nodes:
+            if node.kind == "seq":
+                result.extend(_PythonEmitter._sequence(node.children.values()))
+            else:
+                result.append(node)
+        return result
+
+    def _alternatives(self, nodes, conditions=()):
+        nodes = self._sequence(nodes)
+        if nodes and nodes[0].kind == "choice":
+            choice = nodes[0]
+            guard = choice.args.get("guard")
+            result = []
+            for index, branch in enumerate(choice.children.values()):
+                predicates = conditions + (((guard, index == 0),) if guard else ())
+                result.extend(self._alternatives([branch] + nodes[1:], predicates))
+            return result
+        return [(nodes, conditions)]
+
+    def _try_action(self, node):
+        args = node.args
+        if node.kind == "recv":
+            return f"runtime.try_receive(env, {args['port']!r}, {self._term(args['term'])}, {args['src']!r})"
+        if node.kind == "move":
+            return f"runtime.try_move(env, {args['port']!r}, {self._term(args['term'])})"
+        return "True"
+
+    def _selector(self, alternatives, depth):
+        name = self._name("select")
+        self._write(depth, f"def {name}(env):")
+        for index, (nodes, conditions) in enumerate(alternatives):
+            predicates = []
+            for guard, has_data in conditions:
+                method = "has_data" if has_data else "exhausted"
+                predicates.append(f"runtime.{method}({guard['port']!r}, {self._term(guard['scope'])}, env)")
+            if nodes:
+                predicates.append(self._try_action(nodes[0]))
+            condition = " and ".join(predicates) or "True"
+            self._write(depth + 1, f"if {condition}:")
+            self._write(depth + 2, f"return {index}")
+        self._write(depth + 1, "return None")
+        return name
+
+    def _continuation(self, nodes):
+        # The admission receive has committed; a claimed move still sends.
+        return nodes[1:] if nodes and nodes[0].kind == "recv" else nodes
+
+    def _emit_nodes(self, nodes, depth):
+        nodes = self._sequence(nodes)
+        if not nodes:
+            self._write(depth, "pass")
+        for node in nodes:
+            self._emit(node, depth)
+
+    def _emit(self, node, depth):
+        kind, args = node.kind, node.args
+        if kind == "seq":
+            self._emit_nodes(node.children.values(), depth)
+        elif kind == "par":
+            branches = []
+            for branch in node.children.values():
+                name = self._name("parallel_branch")
+                self._write(depth, f"def {name}(env, owner):")
+                self._emit(branch, depth + 1)
+                branches.append(name)
+            self._write(depth, f"runtime.parallel(env, owner, {', '.join(branches)})")
+        elif kind == "repl":
+            alternatives = self._alternatives(node.children.values())
+            owner = self._name("replication_owner")
+            self._write(depth, f"{owner} = runtime.new_owner()")
+            selector = self._selector(alternatives, depth)
+            branches = []
+            for nodes, _conditions in alternatives:
+                name = self._name("replica")
+                self._write(depth, f"def {name}(env, owner):")
+                self._emit_nodes(self._continuation(nodes), depth + 1)
+                branches.append(name)
+            self._write(depth, "try:")
+            self._write(depth + 1, f"while not {owner}['closed']:")
+            self._write(depth + 2, f"selected, replica_env = runtime.admit(env, {owner}, {selector})")
+            self._write(depth + 2, "if selected is None:")
+            self._write(depth + 3, "break")
+            for index, ((nodes, _conditions), branch) in enumerate(zip(alternatives, branches, strict=True)):
+                self._write(depth + 2, f"{'if' if index == 0 else 'elif'} selected == {index}:")
+                if nodes and nodes[0].kind == "end":
+                    self._write(depth + 3, f"runtime.end({owner})")
+                    self._emit_nodes(nodes[1:], depth + 3)
+                else:
+                    self._write(depth + 3, f"runtime.spawn({owner}, {branch}, replica_env)")
+            self._write(depth, "finally:")
+            self._write(depth + 1, f"runtime.join({owner})")
+        elif kind == "choice":
+            alternatives = self._alternatives([node])
+            selector = self._selector(alternatives, depth)
+            self._write(depth, f"selected, choice_env = runtime.admit(env, None, {selector})")
+            self._write(depth, "env.update(choice_env)")
+            for index, (nodes, _conditions) in enumerate(alternatives):
+                self._write(depth, f"{'if' if index == 0 else 'elif'} selected == {index}:")
+                self._emit_nodes(self._continuation(nodes), depth + 1)
+        elif kind == "exec":
+            self._write(depth, f"# exec {args['tool']}")
+            self._write(depth, "runtime.execute_step(")
+            self._write(depth + 1, f"env, {args['tool']!r},")
+            for field in ("inputs", "outputs"):
+                self._write(depth + 1, f"[  # {field}")
+                for port, term in args[field]:
+                    self._write(depth + 2, f"({port!r}, {self._term(term)}),")
+                self._write(depth + 1, "],")
+            self._write(depth + 1, f"mapping={args['mapping']!r},")
+            self._write(depth, ")")
+        elif kind == "recv":
+            self._write(depth, f"runtime.recv(env, {args['port']!r}, {self._term(args['term'])}, {args['src']!r})")
+        elif kind in ("send", "move"):
+            self._write(depth, f"runtime.{kind}(env, {args['port']!r}, {self._term(args['term'])}, {args['data_type']!r}, {args['src']!r}, {args['dst']!r})")
+        elif kind == "end":
+            self._write(depth, "runtime.end(owner)")
+        elif kind == "zero":
+            self._write(depth, "pass  # zero")
+        else:
+            raise ValueError(f"Unsupported Python trace node {kind}")
+
+    def generate(self, root):
+        self._write(0, "")
+        self._write(0, "def workflow(runtime, env, owner=None):")
+        self._emit(root, 1)
+        return "\n".join(self.lines) + "\n"

@@ -127,9 +127,11 @@ class Runtime:
     def _wait(self, predicate, description):
         deadline = time.monotonic() + self.timeout
         with self.condition:
-            while not predicate():
+            while True:
                 if self.error:
                     raise RuntimeError(f'{description}: {self.error}') from self.error
+                if predicate():
+                    return
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     raise TimeoutError(f'{self.location}: blocked {description}')
@@ -286,24 +288,12 @@ class Runtime:
     def _snapshot(self, port, scope):
         return [v for v in self.values if v['port'] == port and v['id'][:-1] == scope and len(v['id']) == len(scope) + 1]
 
-    def _first(self, node):
-        while node['kind'] == 'seq' and len(node['children']) == 1:
-            node = node['children'][0]
-        if node['kind'] == 'seq':
-            first, rest = self._first(node['children'][0])
-            return first, rest + node['children'][1:]
-        return node, []
-
-    def _try(self, action, env):
-        kind = action['kind']
-        if kind in ('end', 'zero'):
-            return True
-        if kind == 'recv':
-            term = action['term']
+    def try_receive(self, env, port, term, src):
+        with self.condition:
             payload, identity = term['items']
             expected_control = payload['name'] if payload['kind'] == 'literal' and payload['name'] in ('begin', 'eof') else None
             for offer in self.offers:
-                if offer['src'] != action['src'] or offer['port'] != action['port']:
+                if offer['src'] != src or offer['port'] != port:
                     continue
                 if offer.get('control') != expected_control:
                     continue
@@ -314,9 +304,9 @@ class Runtime:
                     self.offers.remove(offer)
                     env.update(candidate)
                     if offer.get('control') == 'eof':
-                        self.closed.add((action['src'], action['port'], offer['id']))
+                        self.closed.add((src, port, offer['id']))
                     elif not offer.get('control'):
-                        self._store(action['port'], offer['id'], offer['value'], offer['type'])
+                        self._store(port, offer['id'], offer['value'], offer['type'])
                     offer['event'].set()
                     self.condition.notify_all()
                     return True
@@ -326,15 +316,17 @@ class Runtime:
                 except KeyError:
                     wanted = None
                 if wanted is not None:
-                    exhausted = (action['src'], action['port'], wanted[:-1]) in self.closed
-                    exhausted |= any(offer['src'] == action['src'] and offer['port'] == action['port'] and offer.get('control') == 'eof' and offer['id'] == wanted[:-1] for offer in self.offers)
+                    exhausted = (src, port, wanted[:-1]) in self.closed
+                    exhausted |= any(offer['src'] == src and offer['port'] == port and offer.get('control') == 'eof' and offer['id'] == wanted[:-1] for offer in self.offers)
                     if exhausted:
-                        raise ValueError(f"Closed stream {action['port']} is missing required key {wanted}")
+                        raise ValueError(f"Closed stream {port} is missing required key {wanted}")
             return False
-        if kind == 'move':
-            payload, identity = action['term']['items']
+
+    def try_move(self, env, port, term):
+        with self.condition:
+            payload, identity = term['items']
             for value in self.values:
-                if value['port'] != action['port']:
+                if value['port'] != port:
                     continue
                 candidate = dict(env)
                 if self._match_payload(payload, value['payload'], candidate) and self._match_id(identity, value['id'], candidate):
@@ -344,12 +336,24 @@ class Runtime:
                     env['_claimed'] = value
                     return True
             return False
-        return True
 
-    def _communication(self, action, env):
-        payload_term, id_term = action['term']['items']
+    def recv(self, env, port, term, src):
+        self._wait(lambda: self.try_receive(env, port, term, src), f'receive {port} from {src}')
+
+    def send(self, env, port, term, data_type, src, dst):
+        self._transfer(env, port, term, data_type, src, dst)
+
+    def move(self, env, port, term, data_type, src, dst):
+        if '_claimed' not in env:
+            self._wait(lambda: self.try_move(env, port, term), f'move {port}')
+        self._transfer(env, port, term, data_type, src, dst, moving=True)
+
+    def _transfer(self, env, port, term, data_type, src, dst, moving=False):
+        if self.error:
+            raise self.error
+        payload_term, id_term = term['items']
         value, identity = self._payload(payload_term, env), self._identity(id_term, env)
-        data_type = action.get('data_type') or env.get('_claimed', {}).get('type')
+        data_type = data_type or env.get('_claimed', {}).get('type')
         if payload_term['kind'] == 'literal' and payload_term['name'] in ('begin', 'eof'):
             control, data_type = value, 'control'
         else:
@@ -358,16 +362,16 @@ class Runtime:
                 claimed = env.get('_claimed')
                 data_type = claimed['type'] if claimed else env.get('_payload_types', {}).get(payload_term['name'])
                 if data_type is None and payload_term['kind'] != 'tuple':
-                    data_type = self._port_type(action['port'])
+                    data_type = self._port_type(port)
         if control is None:
             data_type = self._payload_type(payload_term, env, data_type, value)
-        destinations = action['dst'] if isinstance(action['dst'], list) else [action['dst']]
-        if action['kind'] == 'move' and len(destinations) > 1:
-            operation = self._operation_for_port(action['port'])
+        destinations = dst if isinstance(dst, list) else [dst]
+        if moving and len(destinations) > 1:
+            operation = self._operation_for_port(port)
             digest = hashlib.sha256(json.dumps([operation, identity], sort_keys=True).encode()).digest()
             destinations = [destinations[int.from_bytes(digest[:8], 'big') % len(destinations)]]
         for dst in destinations:
-            self._send_header(dst, {'kind': 'offer', 'src': action['src'], 'port': action['port'], 'id': identity, 'type': data_type, 'control': control}, None if control else value)
+            self._send_header(dst, {'kind': 'offer', 'src': src, 'port': port, 'id': identity, 'type': data_type, 'control': control}, None if control else value)
         env.pop('_claimed', None)
 
     @staticmethod
@@ -419,11 +423,14 @@ class Runtime:
         coordinates = list(itertools.product(*(range(length) for length in lengths)))
         return [(i,) for i in range(len(coordinates))] if method == 'flat_crossproduct' else [(c,) for c in coordinates]
 
-    def _exec(self, node, env):
-        name = node['tool']
+    def execute_step(self, env, name, input_flow, output_flow, mapping=None):
+        if self.error:
+            raise self.error
+        if mapping is not None and self.location not in mapping:
+            raise ValueError(f'{name}: execution at {self.location} violates placement {mapping}')
         step = self.metadata['steps'][name]
         inputs = {}
-        for port, term in node['inputs']:
+        for port, term in input_flow:
             if term['kind'] == 'collection':
                 scope = self._identity(term['items'][1], env)
                 inputs[port] = self._snapshot(port, scope)
@@ -431,9 +438,9 @@ class Runtime:
                 inputs[port] = self._payload(term['items'][0], env)
         helper = step.get('type')
         if helper == 'scatter_dispatch':
-            input_term = node['inputs'][0][1]
+            input_term = input_flow[0][1]
             scope = self._identity(input_term['items'][1], env)
-            items = inputs[node['inputs'][0][0]]
+            items = inputs[input_flow[0][0]]
             if not isinstance(items, list):
                 raise ValueError(f'{name}: scatter input must be a list')
             with self.condition:
@@ -445,7 +452,7 @@ class Runtime:
             lengths = self._shape(step, scope)
             dimension = step['dimensions'].index(step['dimension'])
             coordinates = list(itertools.product(*(range(length) for length in lengths))) if step['scatterMethod'] != 'dotproduct' else [(i,) * len(lengths) for i in range(lengths[0])]
-            for port, _term in node['outputs']:
+            for port, _term in output_flow:
                 output_type = step['outputs'][port]['collection']['type']
                 with self.condition:
                     for index, coordinate in enumerate(coordinates):
@@ -455,7 +462,7 @@ class Runtime:
                     self.condition.notify_all()
             return
         if helper == 'scatter_gather':
-            first = node['inputs'][0][1]
+            first = input_flow[0][1]
             scope = self._identity(first['items'][1], env)
             unclosed = [(route['source'], route['port'], scope) for route in step.get('routes', []) if (route['source'], route['port'], scope) not in self.closed]
             if unclosed:
@@ -478,10 +485,10 @@ class Runtime:
                 result = shape((), 0)
             else:
                 result = [by_key[scope + key] for key in self._keys(step['scatterMethod'], lengths)]
-            outputs = {port: result for port, _ in node['outputs']}
+            outputs = {port: result for port, _ in output_flow}
         else:
             outputs = self.execute(name, inputs)
-        for port, term in node['outputs']:
+        for port, term in output_flow:
             payload, identity = term['items']
             value = outputs[port]
             candidate = dict(env)
@@ -494,18 +501,20 @@ class Runtime:
                 self._store(port, self._identity(identity, env), value, output_type)
                 self.condition.notify_all()
 
-    def _branches(self, children, env, owner):
+    def parallel(self, env, owner, *branches):
+        if self.error:
+            raise self.error
         errors = []
         results = []
         def work(child):
             try:
                 local = dict(env)
-                self._run(child, local, owner)
+                child(local, owner)
                 results.append(local)
             except Exception as exc:
                 errors.append(exc)
                 self.fail(exc)
-        threads = [threading.Thread(target=work, args=(child,)) for child in children]
+        threads = [threading.Thread(target=work, args=(child,)) for child in branches]
         for thread in threads:
             thread.start()
         for thread in threads:
@@ -528,123 +537,73 @@ class Runtime:
                     changes[name] = value
         env.update(changes)
 
-    def _run(self, node, env, owner=None):
-        kind = node['kind']
+    @staticmethod
+    def new_owner():
+        return {'closed': False, 'threads': []}
+
+    def spawn(self, owner, body, env):
+        def instance():
+            try:
+                body(env, owner)
+            except Exception as exc:
+                self.fail(exc)
+            finally:
+                with self.condition:
+                    self.condition.notify_all()
+        thread = threading.Thread(target=instance)
+        owner['threads'].append(thread)
+        thread.start()
+
+    def join(self, owner):
+        for thread in owner['threads']:
+            thread.join()
         if self.error:
             raise self.error
-        if kind == 'seq':
-            for child in node['children']:
-                self._run(child, env, owner)
-        elif kind == 'par':
-            self._branches(node['children'], env, owner)
-        elif kind == 'repl':
-            state = {'closed': False}
-            threads = []
-            body = node['children'][0]
-            while body['kind'] == 'seq' and len(body['children']) == 1:
-                body = body['children'][0]
-            if body['kind'] == 'seq' and body['children'][0]['kind'] == 'choice':
-                choice = body['children'][0]
-                alternatives = [{'kind': 'seq', 'children': [branch] + body['children'][1:]} for branch in choice['children']]
-                guard = choice.get('guard')
-            else:
-                alternatives = body['children'] if body['kind'] == 'choice' else [body]
-                guard = body.get('guard')
-            while not state['closed']:
-                chosen = []
-                def admission(chosen=chosen):
-                    for index, branch in enumerate(alternatives):
-                        candidate = dict(env)
-                        if guard:
-                            scope = self._identity(guard['scope'], candidate)
-                            available = bool(self._snapshot(guard['port'], scope))
-                            if (index == 0) != available:
-                                continue
-                            if not available and (guard['port'], scope) not in self.finite:
-                                continue
-                        first, rest = self._first(branch)
-                        if self._try(first, candidate):
-                            chosen.append((first, rest, candidate))
-                            return True
-                    return state['closed']
-                self._wait(admission, 'replication admission')
-                if not chosen:
-                    break
-                first, rest, candidate = chosen[0]
-                if first['kind'] == 'end':
-                    state['closed'] = True
-                    break
-                def instance(first=first, rest=rest, candidate=candidate):
-                    try:
-                        if first['kind'] != 'recv':
-                            self._run(first, candidate, state)
-                        for child in rest:
-                            self._run(child, candidate, state)
-                    except Exception as exc:
-                        self.fail(exc)
-                    finally:
-                        with self.condition:
-                            self.condition.notify_all()
-                thread = threading.Thread(target=instance)
-                threads.append(thread)
-                thread.start()
-            for thread in threads:
-                thread.join()
-            if self.error:
-                raise self.error
-        elif kind == 'choice':
-            chosen = []
-            def select():
-                for branch in node['children']:
-                    candidate = dict(env)
-                    first, rest = self._first(branch)
-                    if self._try(first, candidate):
-                        chosen.append((first, rest, candidate))
-                        return True
-                return False
-            self._wait(select, 'choice')
-            first, rest, candidate = chosen[0]
-            env.update(candidate)
-            if first['kind'] != 'recv':
-                self._run(first, env, owner)
-            for child in rest:
-                self._run(child, env, owner)
-        elif kind == 'recv':
-            self._wait(lambda: self._try(node, env), f"receive {node['port']} from {node['src']}")
-        elif kind in ('send', 'move'):
-            if kind == 'move' and '_claimed' not in env:
-                self._wait(lambda: self._try(node, env), f"move {node['port']}")
-            self._communication(node, env)
-        elif kind == 'exec':
-            self._exec(node, env)
-        elif kind == 'end':
-            if owner is None:
-                raise ValueError('end() has no replication owner')
-            with self.condition:
-                owner['closed'] = True
-                self.condition.notify_all()
-        elif kind != 'zero':
-            raise ValueError(f'Unknown shared action {kind}')
 
-    def run(self, trace, env=None, initial=None):
-        bindings = dict(env or {})
-        if initial is not None:
-            self.initial = {entry['name']: entry['payload'] for entry in initial}
-            for entry in initial:
-                bindings[entry['name']] = entry['payload']
-                bindings['_payload_types'] = dict(bindings.get('_payload_types', {}), **{entry['name']: entry['type']})
-                identity = self._identity(entry['identity'], bindings)
-                self._store(entry['port'], identity, entry['payload'], entry['type'])
-        else:
-            bindings.update(self.initial)
-        try:
-            self._run(trace, bindings)
-            with self.condition:
-                self.completed.add(self.location)
-            for dst in self.addresses:
-                if dst != self.location:
-                    self._send_header(dst, {'kind': 'done', 'src': self.location})
-            self._wait(lambda: self.completed == set(self.addresses), 'location completion barrier')
-        except Exception as exc:
-            self.fail(exc)
-            raise
+    def end(self, owner):
+        if owner is None:
+            raise ValueError('end() has no replication owner')
+        with self.condition:
+            owner['closed'] = True
+            self.condition.notify_all()
+
+    def admit(self, env, owner, selector):
+        chosen = []
+        def select():
+            if owner is not None and owner['closed']:
+                return True
+            candidate = dict(env)
+            selection = selector(candidate)
+            if selection is not None:
+                chosen.append((selection, candidate))
+                return True
+            return False
+        self._wait(select, 'replication admission' if owner is not None else 'choice')
+        return chosen[0] if chosen else (None, None)
+
+    def has_data(self, port, scope, env):
+        identity = self._identity(scope, env)
+        with self.condition:
+            return bool(self._snapshot(port, identity))
+
+    def exhausted(self, port, scope, env):
+        identity = self._identity(scope, env)
+        with self.condition:
+            return (port, identity) in self.finite and not self._snapshot(port, identity)
+
+    def initialize(self, initial, env):
+        self.initial = {entry['name']: entry['payload'] for entry in initial}
+        for entry in initial:
+            env[entry['name']] = entry['payload']
+            env['_payload_types'] = dict(env.get('_payload_types', {}), **{entry['name']: entry['type']})
+            identity = self._identity(entry['identity'], env)
+            self._store(entry['port'], identity, entry['payload'], entry['type'])
+        return env
+
+    def finish(self):
+        with self.condition:
+            self.completed.add(self.location)
+        for dst in self.addresses:
+            if dst != self.location:
+                self._send_header(dst, {'kind': 'done', 'src': self.location})
+        self._wait(lambda: self.completed == set(self.addresses), 'location completion barrier')

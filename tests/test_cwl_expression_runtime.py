@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import base64
 import io
 import json
@@ -23,6 +24,7 @@ from swirlc.core.deployment import (
     SshDeployment,
 )
 from swirlc.main import main
+from tests.test_pipeline_contract import generated_execs
 
 
 def test_expression_tool_uses_self_bootstrapping_javascript_runtime(
@@ -59,9 +61,18 @@ def test_expression_tool_uses_self_bootstrapping_javascript_runtime(
     trace = (tmp_path / "l0.py").read_text()
     assert "import js2py_ as js2py" in trace
     assert "js2py.eval_js(invocation)" in trace
-    assert "function weightedScore(items, multiplier)" in trace
+    program = ast.parse(trace)
+    metadata = ast.literal_eval(next(
+        node.value for node in program.body if isinstance(node, ast.Assign)
+        and any(isinstance(target, ast.Name) and target.id == "METADATA" for target in node.targets)
+    ))
+    assert "function weightedScore(items, multiplier)" in metadata["steps"]["s_evaluate_0"]["expression"]["source"]
     assert "'displayName': 'evaluate'" in trace
-    assert "'kind': 'exec'" in trace and "'tool': 's_evaluate_0'" in trace
+    execs = generated_execs(tmp_path / "l0.py")
+    assert len(execs) == 1 and execs[0]["tool"] == "s_evaluate_0"
+    assert {port for port, _ in execs[0]["inputs"]} == {
+        "p_sample", "p_multiplier", "p_threshold",
+    }
     assert "def _expression_s0(inputs):" not in trace
 
     requirements = (tmp_path / "l0.requirements.txt").read_text()
