@@ -162,7 +162,8 @@ class TraceTarget(StructuredCompiler):
                 bound.update(set.intersection(*branch_bounds))
         elif kind == "exec":
             def flow(pairs):
-                return "{" + ", ".join(f"({p}, {t})" for p, t in pairs) + "}"
+                return "{" + ", ".join(str(t) if t.kind == "collection" else f"({p}, {t})"
+                                        for p, t in pairs) + "}"
             descriptor = self.metadata["steps"][args["tool"]]
             operation = f" operation={descriptor['operationId']} scope={descriptor['scope']}" if "operationId" in descriptor else ""
             trace.write(f"{prefix}{label}: exec {args['tool']} {flow(args['inputs'])} -> {flow(args['outputs'])} mapping={args['mapping']}{operation}\n")

@@ -90,3 +90,33 @@ def test_guarded_move_admission_sends_claim_and_closes_generated_owner(tmp_path)
     closures = [call for call in calls if call.func.attr == "end"]
     assert any(isinstance(call.args[0], ast.Name)
                and call.args[0].id.startswith("replication_owner_") for call in closures)
+
+
+def test_collection_codegen_uses_port_and_envelope(tmp_path) -> None:
+    from swirlc.compiler.default.compiler import TERM_CONSTRUCTORS
+    from swirlc.compiler.trace.compiler import TraceTarget
+
+    source = "<l0,{(p,(d,root))},exec(s,{(p,(d,root))}->{U(q,(stream,root))},{l0})>"
+    metadata = {
+        "locations": {"l0": {}},
+        "dependencies": {"d": {"type": "list[string]", "value": ["a", "a"]}},
+        "steps": {"s": {"displayName": "Dispatch", "inputPorts": ["p"],
+                        "outputs": {"q": {"collection": {
+                            "name": "stream", "scope": "root", "elementId": "root / ?i", "type": "string"}}}}},
+    }
+    for target in (DefaultTarget, TraceTarget):
+        CompileVisitor(target(str(tmp_path)), metadata).visit(parse_workflow(source))
+    assert " -> {U(q, (stream, root))}" in (tmp_path / "l0.md").read_text()
+    tree = ast.parse((tmp_path / "l0.py").read_text())
+    calls = [node for node in ast.walk(tree) if isinstance(node, ast.Call)
+             and isinstance(node.func, ast.Name) and node.func.id == "collection"]
+    assert len(calls) == 1 and len(calls[0].args) == 2
+    envelope = calls[0].args[1]
+    assert isinstance(envelope, ast.Call) and envelope.func.id == "tuple_term"
+    namespace = {}
+    exec(TERM_CONSTRUCTORS, namespace)
+    actual = eval(compile(ast.Expression(calls[0]), "generated collection", "eval"), namespace)
+    assert actual == {"kind": "collection", "name": "q", "items": [
+        {"kind": "literal", "name": "stream", "items": []},
+        {"kind": "literal", "name": "root", "items": []},
+    ]}

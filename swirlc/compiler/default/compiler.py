@@ -1601,8 +1601,8 @@ def path(*components):
     return {"kind": "path", "name": "", "items": list(components)}
 
 
-def collection(port, name, scope):
-    return {"kind": "collection", "name": port, "items": [literal(name), scope]}
+def collection(port, envelope):
+    return {"kind": "collection", "name": port, "items": envelope["items"]}
 """
 
 
@@ -1627,7 +1627,7 @@ class _PythonEmitter:
             constructor = "tuple_term" if term.kind == "tuple" else "path"
             return f"{constructor}({', '.join(self._term(item) for item in term.items)})"
         if term.kind == "collection":
-            return f"collection({term.name!r}, {term.items[0].name!r}, {self._term(term.items[1])})"
+            return f"collection({term.name!r}, tuple_term({self._term(term.items[0])}, {self._term(term.items[1])}))"
         raise ValueError(f"Unsupported Python term {term}")
 
     @staticmethod

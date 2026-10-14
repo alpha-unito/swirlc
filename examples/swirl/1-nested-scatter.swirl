@@ -10,7 +10,7 @@
 <source_a, {(p_list_a, (d_a, root))},
   send((begin, root) -> p_a, source_a, worker)
   .
-  exec(s_dispatch_a, {(p_list_a, (d_a, root))} -> {U(p_a, stream_a, root)}, {source_a})
+  exec(s_dispatch_a, {(p_list_a, (d_a, root))} -> {U(p_a, (stream_a, root))}, {source_a})
   .
   !(
     move((?a, root / ?iteration_1) -> p_a, source_a, worker)
@@ -24,7 +24,7 @@
 <source_b, {(p_list_b, (d_b, root))},
   send((begin, root) -> p_b, source_b, worker)
   .
-  exec(s_dispatch_b, {(p_list_b, (d_b, root))} -> {U(p_b, stream_b, root)}, {source_b})
+  exec(s_dispatch_b, {(p_list_b, (d_b, root))} -> {U(p_b, (stream_b, root))}, {source_b})
   .
   !(
     move((?b, root / ?iteration_1) -> p_b, source_b, worker)
@@ -79,5 +79,5 @@
     )
   )
   .
-  exec(s_gather, {U(p_results, results, ?scope_0)} -> {(p_output, (d_output, ?scope_0))}, {collector})
+  exec(s_gather, {U(p_results, (results, ?scope_0))} -> {(p_output, (d_output, ?scope_0))}, {collector})
 >

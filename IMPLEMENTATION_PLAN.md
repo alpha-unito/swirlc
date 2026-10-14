@@ -270,8 +270,8 @@ scatter task preserves that task's ID instead of resetting it to `root`.
 emitted traces. Ordinary one-shot communication does not require stream
 begin/EOF merely because its value now has an ID.
 
-`U(port, collection, scope)` denotes a scoped collection, not an unwrapped data
-message. Its elements are envelopes; gather produces `(list_payload, scope)`,
+`U(port, (collection, scope))` denotes a scoped collection with one paired
+data/identity operand. Its elements are envelopes; gather produces `(list_payload, scope)`,
 including `([], scope)`. The collection name is an identifier, not an additional
 payload requiring another envelope. Use this explicit scoped form in dispatch
 collection outputs as well as gather inputs.
@@ -304,7 +304,7 @@ collection outputs as well as gather inputs.
   inherits bindings, allocate distinct internal names rather than shadowing them.
   Operation/owner paths disambiguate ports and metadata; depth alone is not an
   operation identity.
-- `[port has data in scope]` and `U(port, collection, scope)` select only that
+- `[port has data in scope]` and `U(port, (collection, scope))` select only that
   operation's immediate-child data in that invocation. Controls are excluded.
   Independent operations may both have `root / 0` without sharing state.
 - Ports remain plain identifiers. Preserve `d_name`, `stream_d_name` and
@@ -818,7 +818,7 @@ both config schemas and their validator. Both targets consume this same contract
 
 - Freeze concrete syntax and operator precedence against accepted translator
   artifacts and handwritten references. Cover payload/ID envelopes, literal root,
-  variable and tuple patterns, composed paths, U(port, collection, scope),
+  variable and tuple patterns, composed paths, U(port, (collection, scope)),
   scoped guarded choices, begin/EOF and `end()` distinct from zero.
 - Regenerate with the already pinned ANTLR 4.13.2. Keep strict parse-error
   rejection. The existing regeneration script downloads/builds Docker and removes

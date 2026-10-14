@@ -36,8 +36,8 @@
       recv((begin, ?scope_0 / ?iteration_1) -> p_inner, outer, inner)
       .
       scatter_exec(s_work,
-        {U(p_inner, inner_stream, ?scope_0 / ?iteration_1)}
-        -> {U(p_inner_results, inner_results, ?scope_0 / ?iteration_1)}, {inner}, collector)
+        {U(p_inner, (inner_stream, ?scope_0 / ?iteration_1))}
+        -> {U(p_inner_results, (inner_results, ?scope_0 / ?iteration_1))}, {inner}, collector)
     )
     + (recv((eof, ?scope_0) -> p_inner_control, outer, inner) . end())
   )
@@ -54,7 +54,7 @@
         (
           recv((begin, ?scope_0 / ?iteration_1) -> p_inner_results, inner, collector)
           .
-          scatter_recv(U(p_inner_results, inner_results, ?scope_0 / ?iteration_1)
+          scatter_recv(U(p_inner_results, (inner_results, ?scope_0 / ?iteration_1))
             -> {(p_outer_results, (?results, ?scope_0 / ?iteration_1))}, inner, collector)
           .
           send((?results, ?scope_0 / ?iteration_1) -> p_outer_results, collector, collector)
@@ -68,7 +68,7 @@
     (
       recv((begin, ?scope_0) -> p_outer_results, collector, collector)
       .
-      scatter_recv(U(p_outer_results, outer_results, ?scope_0)
+      scatter_recv(U(p_outer_results, (outer_results, ?scope_0))
         -> {(p_output, (d_output, ?scope_0))}, collector, collector)
       .
       exec(s_consumer, {(p_output, (d_output, ?scope_0))}

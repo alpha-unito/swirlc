@@ -29,7 +29,7 @@ def test_structured_envelopes_scopes_collections_and_guard() -> None:
     from swirlc.core.utils import get_flow, get_term
     tree = parse_workflow(
         "<l0,{(p,(d,root))},exec(s,{(p,(d,root))}"
-        "->{U(q,stream,root)},{l0}) . "
+        "->{U(q,(stream,root))},{l0}) . "
         "!(move((?value,root / ?iteration)->q,l0,l1)"
         "+[q has data in root] end())>"
     )
@@ -70,3 +70,29 @@ def test_parallel_receive_bindings_available_after_join() -> None:
         "<l0,{},(recv((?a,root)->p,l1,l0) | recv((?b,root)->q,l1,l0))"
         " . send(((?a,?b),root)->r,l0,l1)>"
     ))
+
+
+@pytest.mark.parametrize("identity", ["root", "?scope", "?scope / ?iteration", "root / ?outer / ?inner"])
+def test_collection_pairs_preserve_identity_and_flow_order(identity: str) -> None:
+    from swirlc.core.utils import get_flow
+    source = f"<l0,{{}},exec(s,{{U(z,(last,{identity})),U(a,(first,{identity}))}}->{{}},{{l0}})>"
+    tree = parse_workflow(source)
+    inputs, outputs = get_flow(tree.location(0).trace().pred().exec())
+    assert [port for port, _ in inputs] == ["z", "a"]
+    assert outputs == []
+    for port, term in inputs:
+        assert term.kind == "collection"
+        assert term.name == port
+        assert str(term.items[1]).replace(" ", "") == identity.replace(" ", "")
+        assert str(term) == f"U({port}, ({term.items[0]}, {term.items[1]}))"
+        assert term.to_dict()["items"][1] == term.items[1].to_dict()
+
+
+@pytest.mark.parametrize("collection", [
+    "U(p,stream,root)", "U(p,stream)", "U(p,(stream))",
+    "U(p,(stream,))", "U(p,(,root))", "U(p,(stream,root,extra))",
+    "U(p,(stream,root /))", "U(p,(stream,?))",
+])
+def test_rejects_old_or_malformed_collection_pairs(collection: str) -> None:
+    with pytest.raises(ValueError, match="Invalid SWIRL"):
+        parse_workflow(f"<l0,{{}},exec(s,{{{collection}}}->{{}},{{l0}})>")

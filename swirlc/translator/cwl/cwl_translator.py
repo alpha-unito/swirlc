@@ -1329,7 +1329,7 @@ class CWLTranslator(AbstractTranslator):
             routes.append(result_route)
             worker.result_routes.setdefault(location, []).append(result_route)
         publisher = _parallel([])
-        gather_inputs = ", ".join(f"U({route['port']}, {collection}_{i}, {collector_scope})" for i, route in enumerate(routes))
+        gather_inputs = ", ".join(f"U({route['port']}, ({collection}_{i}, {collector_scope}))" for i, route in enumerate(routes))
         fragment = _sequence([
             begins[0],
             _parallel(begins[1:]),
@@ -1512,7 +1512,7 @@ class CWLTranslator(AbstractTranslator):
             fragment = _sequence([
                 *activation,
                 _parallel([f"send((begin, {dispatch_scope}) -> {port}, {producer}, {worker})" for worker in workers]),
-                f"exec({dispatch}, {{({source_port}, {source_data})}} -> {{U({port}, {collection}, {dispatch_scope})}}, {{{producer}}})",
+                f"exec({dispatch}, {{({source_port}, {source_data})}} -> {{U({port}, ({collection}, {dispatch_scope}))}}, {{{producer}}})",
                 _parallel(distributors),
             ])
             context.fragments[producer].append(fragment)

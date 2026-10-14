@@ -22,7 +22,7 @@ class Term:
         if self.kind == "path":
             return " / ".join(map(str, self.items))
         if self.kind == "collection":
-            return f"U({self.name}, {self.items[0]}, {self.items[1]})"
+            return f"U({self.name}, ({self.items[0]}, {self.items[1]}))"
         if self.kind == "indexed":
             return f"{self.name}[{self.items[0]}]"
         return self.name

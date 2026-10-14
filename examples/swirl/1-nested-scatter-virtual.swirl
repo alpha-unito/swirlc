@@ -21,14 +21,14 @@
   recv((begin, ?scope_0) -> p_b, source_b, worker)
   .
   scatter_exec(s_work,
-    {U(p_a, stream_a, ?scope_0), U(p_b, stream_b, ?scope_0)}
-    -> {U(p_results, results, ?scope_0)}, {worker}, collector)
+    {U(p_a, (stream_a, ?scope_0)), U(p_b, (stream_b, ?scope_0))}
+    -> {U(p_results, (results, ?scope_0))}, {worker}, collector)
 > |
 
 <collector, {},
   recv((begin, ?scope_0) -> p_results, worker, collector)
   .
-  scatter_recv(U(p_results, results, ?scope_0)
+  scatter_recv(U(p_results, (results, ?scope_0))
     -> {(p_output, (d_output, ?scope_0))}, worker, collector)
   .
   exec(s_consumer, {(p_output, (d_output, ?scope_0))}

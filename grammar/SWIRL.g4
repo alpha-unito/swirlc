@@ -30,7 +30,7 @@ guard       : '[' port 'has' 'data' IN data ']';
 
 // Sets
 dataPair    : '(' port ',' data ')' | '(' data ',' port ')' | collection;
-collection  : 'U(' port ',' name ',' data ')';
+collection  : 'U(' port ',' '(' name ',' data ')' ')';
 dataSet     : '{' dataPair? (',' dataPair)* '}';
 flow        : dataSet '->' dataSet;
 locationSet : '{' name? (',' name)* '}' | ID;

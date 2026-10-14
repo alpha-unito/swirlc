@@ -11,7 +11,7 @@
   send((begin, root) -> p_outer, source, outer)
   .
   exec(s_dispatch_outer, {(p_input, (d_cubes, root))}
-    -> {U(p_outer, matrix_stream, root)}, {source})
+    -> {U(p_outer, (matrix_stream, root))}, {source})
   .
   !(move((?matrix, root / ?iteration_1) -> p_outer, source, outer)
     +[p_outer has data in root] end())
@@ -33,7 +33,7 @@
       send((begin, ?scope_0 / ?iteration_1) -> p_middle, outer, middle)
       .
       exec(s_dispatch_middle, {(p_outer, (?matrix, ?scope_0 / ?iteration_1))}
-        -> {U(p_middle, list_stream, ?scope_0 / ?iteration_1)}, {outer})
+        -> {U(p_middle, (list_stream, ?scope_0 / ?iteration_1))}, {outer})
       .
       !(move((?items, ?scope_0 / ?iteration_1 / ?iteration_2) -> p_middle, outer, middle)
         +[p_middle has data in ?scope_0 / ?iteration_1] end())
@@ -65,7 +65,7 @@
           send((begin, ?scope_0 / ?iteration_1 / ?iteration_2) -> p_inner, middle, inner)
           .
           exec(s_dispatch_inner, {(p_middle, (?items, ?scope_0 / ?iteration_1 / ?iteration_2))}
-            -> {U(p_inner, item_stream, ?scope_0 / ?iteration_1 / ?iteration_2)}, {middle})
+            -> {U(p_inner, (item_stream, ?scope_0 / ?iteration_1 / ?iteration_2))}, {middle})
           .
           !(move((?item, ?scope_0 / ?iteration_1 / ?iteration_2 / ?iteration_3) -> p_inner, middle, inner)
             +[p_inner has data in ?scope_0 / ?iteration_1 / ?iteration_2] end())
@@ -140,7 +140,7 @@
                     + (recv((eof, ?scope_0 / ?iteration_1 / ?iteration_2) -> p_item_results, inner, collector) . end())
                   )
                   .
-                  exec(s_gather_inner, {U(p_item_results, item_results, ?scope_0 / ?iteration_1 / ?iteration_2)}
+                  exec(s_gather_inner, {U(p_item_results, (item_results, ?scope_0 / ?iteration_1 / ?iteration_2))}
                     -> {(p_list_results, (?list_results, ?scope_0 / ?iteration_1 / ?iteration_2))}, {collector})
                   .
                   send((?list_results, ?scope_0 / ?iteration_1 / ?iteration_2) -> p_list_results, collector, collector)
@@ -159,7 +159,7 @@
                 + (recv((eof, ?scope_0 / ?iteration_1) -> p_list_results, collector, collector) . end())
               )
               .
-              exec(s_gather_middle, {U(p_list_results, list_results, ?scope_0 / ?iteration_1)}
+              exec(s_gather_middle, {U(p_list_results, (list_results, ?scope_0 / ?iteration_1))}
                 -> {(p_matrix_results, (?matrix_results, ?scope_0 / ?iteration_1))}, {collector})
               .
               send((?matrix_results, ?scope_0 / ?iteration_1) -> p_matrix_results, collector, collector)
@@ -180,7 +180,7 @@
         + (recv((eof, ?scope_0) -> p_matrix_results, collector, collector) . end())
       )
       .
-      exec(s_gather_outer, {U(p_matrix_results, matrix_results, ?scope_0)}
+      exec(s_gather_outer, {U(p_matrix_results, (matrix_results, ?scope_0))}
         -> {(p_output, (d_output, ?scope_0))}, {collector})
       .
       exec(s_consumer, {(p_output, (d_output, ?scope_0))}
