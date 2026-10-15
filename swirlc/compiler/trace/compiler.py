@@ -143,7 +143,10 @@ class TraceTarget(StructuredCompiler):
             annotation = f" owner={owner}; fresh environment; concurrent admission" if owner else ""
             if kind == "choice":
                 guard = args.get("guard")
-                annotation = f" guard=[{guard['port']} has data in {guard['scope']}]" if guard else " guard=atomic enabled branch"
+                if guard and "id" in guard:
+                    annotation = f" guard=[{guard['id']}]"
+                else:
+                    annotation = f" guard=[{guard['port']} has data in {guard['scope']}]" if guard else " guard=atomic enabled branch"
             trace.write(f"{prefix}{label}: {kind}{annotation} {{\n")
             child_bound = set(bound)
             branch_bounds = []

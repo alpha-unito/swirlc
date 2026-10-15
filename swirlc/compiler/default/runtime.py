@@ -37,9 +37,12 @@ class Scope(tuple):
 
 
 class Runtime:
-    def __init__(self, metadata, location, addresses, listener, send_value, recv_value, execute):
+    def __init__(self, metadata, location, addresses, listener, send_value, recv_value, execute, evaluate_condition=None):
         self.metadata, self.location, self.addresses = metadata, location, addresses
         self.listener, self.send_value, self.recv_value, self.execute = listener, send_value, recv_value, execute
+        self.evaluate_condition = evaluate_condition
+        self.condition_ports = {port for spec in metadata.get('conditions', {}).values()
+                                if spec['type'] == 'expression' for port in spec['inputs']}
         self.condition = threading.Condition(threading.RLock())
         self.values = []
         self.offers = []
@@ -47,6 +50,7 @@ class Runtime:
         self.shapes = {}
         self.completed = set()
         self.finite = set()
+        self.routing = {}
         self.error = None
         self.stopping = False
         self.timeout = float(__import__('os').environ.get('SWIRLC_RUNTIME_TIMEOUT', '60'))
@@ -288,6 +292,10 @@ class Runtime:
     def _snapshot(self, port, scope):
         return [v for v in self.values if v['port'] == port and v['id'][:-1] == scope and len(v['id']) == len(scope) + 1]
 
+    def _bind_condition_input(self, env, port, value):
+        if port in self.condition_ports:
+            env['_condition_inputs'] = dict(env.get('_condition_inputs', {}), **{port: value})
+
     def try_receive(self, env, port, term, src):
         with self.condition:
             payload, identity = term['items']
@@ -301,6 +309,7 @@ class Runtime:
                 if self._match_payload(payload, offer['value'], candidate) and self._match_id(identity, offer['id'], candidate):
                     if expected_control is None:
                         self._bind_types(payload, offer['type'], candidate)
+                        self._bind_condition_input(candidate, port, offer['value'])
                     self.offers.remove(offer)
                     env.update(candidate)
                     if offer.get('control') == 'eof':
@@ -322,15 +331,24 @@ class Runtime:
                         raise ValueError(f"Closed stream {port} is missing required key {wanted}")
             return False
 
-    def try_move(self, env, port, term):
+    def try_move(self, env, port, term, dst=None):
         with self.condition:
             payload, identity = term['items']
+            workers = self._dispatch_workers(port) if dst is not None else []
             for value in self.values:
                 if value['port'] != port:
                     continue
                 candidate = dict(env)
                 if self._match_payload(payload, value['payload'], candidate) and self._match_id(identity, value['id'], candidate):
+                    selected = self.routing.get((port, value['id'])) if dst is not None else None
+                    if selected is None and workers:
+                        selected = self._route_worker(port, value['id'], workers)
+                    if selected is not None:
+                        destinations = dst if isinstance(dst, list) else [dst]
+                        if selected not in destinations:
+                            continue
                     self._bind_types(payload, value['type'], candidate)
+                    self._bind_condition_input(candidate, port, value['payload'])
                     self.values.remove(value)
                     env.update(candidate)
                     env['_claimed'] = value
@@ -345,7 +363,7 @@ class Runtime:
 
     def move(self, env, port, term, data_type, src, dst):
         if '_claimed' not in env:
-            self._wait(lambda: self.try_move(env, port, term), f'move {port}')
+            self._wait(lambda: self.try_move(env, port, term, dst), f'move {port}')
         self._transfer(env, port, term, data_type, src, dst, moving=True)
 
     def _transfer(self, env, port, term, data_type, src, dst, moving=False):
@@ -367,9 +385,8 @@ class Runtime:
             data_type = self._payload_type(payload_term, env, data_type, value)
         destinations = dst if isinstance(dst, list) else [dst]
         if moving and len(destinations) > 1:
-            operation = self._operation_for_port(port)
-            digest = hashlib.sha256(json.dumps([operation, identity], sort_keys=True).encode()).digest()
-            destinations = [destinations[int.from_bytes(digest[:8], 'big') % len(destinations)]]
+            workers = self._dispatch_workers(port) or destinations
+            destinations = [self.routing.get((port, identity)) or self._route_worker(port, identity, workers)]
         for dst in destinations:
             self._send_header(dst, {'kind': 'offer', 'src': src, 'port': port, 'id': identity, 'type': data_type, 'control': control}, None if control else value)
         env.pop('_claimed', None)
@@ -400,6 +417,10 @@ class Runtime:
             descriptor = step.get('collections', {}).get(port)
             if descriptor:
                 return descriptor['type']
+        for step in self.metadata['steps'].values():
+            descriptor = step.get('inputs', {}).get(port)
+            if descriptor:
+                return descriptor['type']
         raise ValueError(f'No payload type for port {port}')
 
     def _operation_for_port(self, port):
@@ -407,6 +428,19 @@ class Runtime:
             if port in step.get('outputs', {}) and step.get('type') == 'scatter_dispatch':
                 return step['operationId']
         return port
+
+    def _dispatch_workers(self, port):
+        for step in self.metadata['steps'].values():
+            if step.get('type') == 'scatter_dispatch' and port in step.get('outputs', {}):
+                for route in step.get('routes', []):
+                    if route.get('producers', {}).get(step.get('dimension'), route['controller']) == self.location:
+                        return route['workers']
+        return []
+
+    def _route_worker(self, port, identity, workers):
+        operation = self._operation_for_port(port)
+        digest = hashlib.sha256(json.dumps([operation, identity], sort_keys=True).encode()).digest()
+        return workers[int.from_bytes(digest[:8], 'big') % len(workers)]
 
     def _shape(self, step, scope):
         names = step.get('shapeFrom') or step['keySpace']['dispatches']
@@ -436,10 +470,11 @@ class Runtime:
                 inputs[port] = self._snapshot(port, scope)
             else:
                 inputs[port] = self._payload(term['items'][0], env)
+            self._bind_condition_input(env, port, inputs[port])
         helper = step.get('type')
         if helper == 'scatter_dispatch':
-            input_term = input_flow[0][1]
-            scope = self._identity(input_term['items'][1], env)
+            # A reusable ancestor input keeps its ID; tasks use the invocation's scope.
+            scope = self._identity(output_flow[0][1]['items'][1], env)
             items = inputs[input_flow[0][0]]
             if not isinstance(items, list):
                 raise ValueError(f'{name}: scatter input must be a list')
@@ -454,10 +489,15 @@ class Runtime:
             coordinates = list(itertools.product(*(range(length) for length in lengths))) if step['scatterMethod'] != 'dotproduct' else [(i,) * len(lengths) for i in range(lengths[0])]
             for port, _term in output_flow:
                 output_type = step['outputs'][port]['collection']['type']
+                workers = next((route['workers'] for route in step.get('routes', [])
+                                if route.get('producers', {}).get(step['dimension'], route['controller']) == self.location), [])
                 with self.condition:
                     for index, coordinate in enumerate(coordinates):
                         key = coordinate if step['scatterMethod'] == 'nested_crossproduct' else index
                         self._store(port, scope + (key,), items[coordinate[dimension]], output_type)
+                        if workers:
+                            # Shared ports can serve invocations with different reserved pools.
+                            self.routing[port, scope + (key,)] = self._route_worker(port, scope + (key,), workers)
                     self.finite.add((port, scope))
                     self.condition.notify_all()
             return
@@ -496,6 +536,7 @@ class Runtime:
                 raise ValueError(f'{name}: output payload does not match its binding pattern')
             output_type = self._payload_type(payload, candidate, self._port_type(port), value)
             self._bind_types(payload, output_type, candidate)
+            self._bind_condition_input(candidate, port, value)
             env.update(candidate)
             with self.condition:
                 self._store(port, self._identity(identity, env), value, output_type)
@@ -524,6 +565,16 @@ class Runtime:
         changes = {}
         for local in results:
             for name, value in local.items():
+                if name == '_condition_inputs':
+                    original = env.get(name, {})
+                    merged = changes.setdefault(name, dict(original))
+                    for port, payload in value.items():
+                        if port in original and original[port] == payload:
+                            continue
+                        if port in merged and (port not in original or merged[port] != original[port]) and merged[port] != payload:
+                            raise ValueError(f'Parallel branches bind conflicting condition inputs for {port}')
+                        merged[port] = payload
+                    continue
                 if name == '_payload_types':
                     merged = changes.setdefault(name, dict(env.get(name, {})))
                     for symbol, data_type in value.items():
@@ -581,6 +632,24 @@ class Runtime:
         self._wait(select, 'replication admission' if owner is not None else 'choice')
         return chosen[0] if chosen else (None, None)
 
+    def condition_value(self, name, env, scope=None):
+        descriptor = self.metadata['conditions'][name]
+        if descriptor['type'] == 'has_data':
+            with self.condition:
+                if self.has_data(descriptor['port'], scope, env):
+                    return True
+                return False if self.exhausted(descriptor['port'], scope, env) else None
+        bound = env.get('_condition_inputs', {})
+        missing = set(descriptor['inputs']) - bound.keys()
+        if missing:
+            raise ValueError(f'Condition {name} requires already-bound inputs: {sorted(missing)}')
+        if self.evaluate_condition is None:
+            raise ValueError(f'Condition {name} has no expression evaluator')
+        value = self.evaluate_condition(descriptor, bound)
+        if type(value) is not bool:
+            raise TypeError(f'Condition {name} must return a boolean, got {type(value).__name__}')
+        return value
+
     def has_data(self, port, scope, env):
         identity = self._identity(scope, env)
         with self.condition:
@@ -595,6 +664,7 @@ class Runtime:
         self.initial = {entry['name']: entry['payload'] for entry in initial}
         for entry in initial:
             env[entry['name']] = entry['payload']
+            self._bind_condition_input(env, entry['port'], entry['payload'])
             env['_payload_types'] = dict(env.get('_payload_types', {}), **{entry['name']: entry['type']})
             identity = self._identity(entry['identity'], env)
             self._store(entry['port'], identity, entry['payload'], entry['type'])

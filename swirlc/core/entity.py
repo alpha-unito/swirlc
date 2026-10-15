@@ -106,11 +106,13 @@ class Port:
 
 
 class Processor:
-    __slots__ = ("type", "glob")
+    __slots__ = ("type", "glob", "read_contents", "evaluate")
 
-    def __init__(self, type: str, glob: str | None):
+    def __init__(self, type: str, glob: str | list | dict | None, read_contents: bool = False, evaluate: dict | None = None):
         self.type: str = type
-        self.glob: str | None = glob
+        self.glob = glob
+        self.read_contents = read_contents
+        self.evaluate = evaluate
 
 
 class Step:
@@ -137,7 +139,7 @@ class Step:
         command: str | None = None,
         arguments: MutableSequence[str | Port] | None = None,
         processors: MutableMapping[str, Processor] | None = None,
-        expression: str | None = None,
+        expression: MutableMapping[str, Any] | None = None,
         expression_inputs: MutableMapping[str, Port] | None = None,
         expression_input_types: MutableMapping[str, str] | None = None,
         expression_outputs: MutableMapping[str, Port] | None = None,

@@ -86,14 +86,33 @@ class SwirlValidator:
     def _validate_references(config):
         steps = config.get("steps", {})
         dependencies = config.get("dependencies", {})
-        for name, step in steps.items():
-            inputs = step.get("inputPorts")
-            if inputs is not None:
-                referenced = [argument["valueFrom"] for argument in step.get("arguments", [])
-                              if "valueFrom" in argument]
-                referenced += [value["port"] for value in step.get("expression", {}).get("inputs", {}).values()]
-                if any(port not in inputs for port in referenced):
-                    raise ValueError(f"Step {name} references an input outside its inputPorts.")
+        descriptors = list(steps.items()) + [(f"condition {name}", spec) for name, spec in config.get("conditions", {}).items() if spec.get("type") == "expression"]
+        for name, step in descriptors:
+            inputs = step.get("inputs")
+            referenced = [argument["valueFrom"] for argument in step.get("arguments", [])
+                          if "valueFrom" in argument]
+            def binding_ports(value):
+                if isinstance(value, dict):
+                    for field, item in value.items():
+                        if field == "bindings":
+                            yield from ports_in_bindings(item)
+                        else:
+                            yield from binding_ports(item)
+                elif isinstance(value, list):
+                    for item in value:
+                        yield from binding_ports(item)
+            def ports_in_bindings(bindings):
+                for spec in bindings.values():
+                    if "port" in spec:
+                        yield spec["port"]
+                    elif "object" in spec:
+                        yield from ports_in_bindings(spec["object"])
+            binding_references = list(binding_ports(step))
+            if binding_references and inputs is None and config.get("version") == "v1.1":
+                raise ValueError(f"Step {name} expression bindings require typed inputs declarations.")
+            referenced += binding_references
+            if inputs is not None and any(port not in inputs for port in referenced):
+                raise ValueError(f"Step {name} references an input outside its inputs.")
             for output in step.get("outputs", {}).values():
                 if "dataName" in output and output["dataName"] not in dependencies:
                     raise ValueError(f"Step {name} references unknown dependency {output['dataName']}.")

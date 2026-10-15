@@ -1095,14 +1095,17 @@ class SWIRLParser ( Parser ):
             self.match(SWIRLParser.T__11)
             self.state = 138
             self.port()
-            self.state = 139
-            self.match(SWIRLParser.T__12)
-            self.state = 140
-            self.match(SWIRLParser.T__13)
-            self.state = 141
-            self.match(SWIRLParser.IN)
-            self.state = 142
-            self.data(0)
+            # Named guards share the existing identifier token and rule context.
+            # Keep the legacy inline form accepted for existing source programs.
+            if self._input.LA(1) == SWIRLParser.T__12:
+                self.state = 139
+                self.match(SWIRLParser.T__12)
+                self.state = 140
+                self.match(SWIRLParser.T__13)
+                self.state = 141
+                self.match(SWIRLParser.IN)
+                self.state = 142
+                self.data(0)
             self.state = 143
             self.match(SWIRLParser.T__14)
         except RecognitionException as re:

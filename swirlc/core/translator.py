@@ -5,7 +5,6 @@ from abc import abstractmethod
 from typing import TextIO
 
 from ruamel.yaml import YAML
-from ruamel.yaml.scalarstring import LiteralScalarString
 
 from swirlc.core.entity import Port, Workflow
 
@@ -47,7 +46,7 @@ def _add_step(step, steps, workflow, dependencies):
     else:
         steps[step.name]["command"] = step.command
         steps[step.name]["arguments"] = [
-            {
+            arg if isinstance(arg, dict) else {
                 "valueFrom" if isinstance(arg, Port) else "value": (
                     arg.name if isinstance(arg, Port) else arg
                 )
@@ -55,20 +54,12 @@ def _add_step(step, steps, workflow, dependencies):
             for arg in (step.arguments or [])
         ]
     if step.expression is not None:
-        steps[step.name]["expression"] = {
-            "source": LiteralScalarString(step.expression),
-            "inputs": {
-                name: {
-                    "port": port.name,
-                    "type": step.expression_input_types[name],
-                }
-                for name, port in (step.expression_inputs or {}).items()
-            },
-            "outputs": {
-                name: port.name
-                for name, port in (step.expression_outputs or {}).items()
-            },
-        }
+        if not isinstance(step.expression, dict):
+            raise ValueError("Expression steps require a generic language/source descriptor")
+        steps[step.name]["expression"] = step.expression
+    for field in ("inputs", "bindings", "stdout"):
+        if field in step.metadata:
+            steps[step.name][field] = step.metadata[field]
     if step.processors:
         steps[step.name]["outputs"] = {}
         for port_name, processor in step.processors.items():
@@ -77,6 +68,10 @@ def _add_step(step, steps, workflow, dependencies):
             dependencies[data_name] = {"type": processor.type}
             if processor.glob:
                 steps[step.name]["outputs"][port_name]["glob"] = processor.glob
+            if processor.read_contents:
+                steps[step.name]["outputs"][port_name]["readContents"] = True
+            if processor.evaluate is not None:
+                steps[step.name]["outputs"][port_name]["evaluate"] = processor.evaluate
 
 
 class AbstractTranslator:

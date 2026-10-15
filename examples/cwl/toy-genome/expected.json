@@ -1,0 +1,53 @@
+{
+  "overlap_files": [
+    [
+      "overlap chrA AFR: 2,6,10",
+      "overlap chrA EUR: ",
+      "overlap chrA AFR: 2,6,10"
+    ],
+    [
+      "overlap chrB AFR: 6",
+      "overlap chrB EUR: ",
+      "overlap chrB AFR: 6"
+    ],
+    [
+      "overlap chrEmpty AFR: ",
+      "overlap chrEmpty EUR: ",
+      "overlap chrEmpty AFR: "
+    ]
+  ],
+  "freq_files": [
+    [
+      "frequency chrA AFR: 3/5;sum=18",
+      "frequency chrA EUR: 0/5;sum=0",
+      "frequency chrA AFR: 3/5;sum=18"
+    ],
+    [
+      "frequency chrB AFR: 1/3;sum=6",
+      "frequency chrB EUR: 0/3;sum=0",
+      "frequency chrB AFR: 1/3;sum=6"
+    ],
+    [
+      "frequency chrEmpty AFR: 0/0;sum=0",
+      "frequency chrEmpty EUR: 0/0;sum=0",
+      "frequency chrEmpty AFR: 0/0;sum=0"
+    ]
+  ],
+  "freq_summaries": [
+    [
+      "frequency chrA AFR: 3/5;sum=18",
+      "frequency chrA EUR: 0/5;sum=0",
+      "frequency chrA AFR: 3/5;sum=18"
+    ],
+    [
+      "frequency chrB AFR: 1/3;sum=6",
+      "frequency chrB EUR: 0/3;sum=0",
+      "frequency chrB AFR: 1/3;sum=6"
+    ],
+    [
+      "frequency chrEmpty AFR: 0/0;sum=0",
+      "frequency chrEmpty EUR: 0/0;sum=0",
+      "frequency chrEmpty AFR: 0/0;sum=0"
+    ]
+  ]
+}

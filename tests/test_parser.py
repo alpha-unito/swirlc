@@ -52,6 +52,36 @@ def test_sequence_binds_more_tightly_than_parallel() -> None:
     assert trace.trace(0).op.text == "."
 
 
+def test_named_guard_preserves_identifier_and_choice_structure() -> None:
+    tree = parse_workflow("<l0,{},0 . 0 +[items_available] 0>")
+    trace = tree.location(0).trace()
+    assert trace.op.text == "+"
+    assert trace.guard().port().getText() == "items_available"
+    assert trace.guard().data() is None
+    assert trace.trace(0).op.text == "."
+
+
+def test_named_guard_validates_descriptor_scope_bindings() -> None:
+    from swirlc.core.parsing import validate_bindings
+
+    tree = parse_workflow("<l0,{},0 +[items_available] 0>")
+    with pytest.raises(ValueError, match="Unknown condition items_available"):
+        validate_bindings(tree, {})
+    with pytest.raises(ValueError, match="Unbound variables.*parent"):
+        validate_bindings(tree, {"items_available": {
+            "type": "has_data", "port": "p", "scope": "?parent",
+        }})
+    validate_bindings(tree, {"items_available": {
+        "type": "has_data", "port": "p", "scope": "root",
+    }})
+
+
+@pytest.mark.parametrize("guard", ["[]", "[ready extra]", "[?ready]", "[ready has data]"])
+def test_rejects_malformed_named_guards(guard: str) -> None:
+    with pytest.raises(ValueError, match="Invalid SWIRL"):
+        parse_workflow(f"<l0,{{}},0 +{guard} 0>")
+
+
 @pytest.mark.parametrize("source", [
     "<l0,{},end()>",
     "<l0,{},recv((?payload,?scope / ?iteration)->p,l1,l0)>",

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 # python tmp_main.py translate --language cwl /home/tommo/Coding/ALPHA/swirlc/examples/cwl/basic/main.cwl --outdir /home/tommo/Coding/ALPHA/swirlc/build
 import re
+import json
 import sys
 from collections import Counter
 from collections.abc import MutableMapping
@@ -139,7 +140,6 @@ class ScatterWorker:
     result_begins: EmittedFragment
     result_eofs: EmittedFragment
     remote_controls: dict[str, tuple[list[str], list[str]]] = field(default_factory=dict)
-    result_routes: dict[str, list[dict]] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -221,12 +221,12 @@ class LoweringContext:
     value_locations: dict[str, str] = field(default_factory=dict)
     fragments: dict[str, list[str | EmittedFragment]] = field(default_factory=dict)
     steps: dict[str, dict] = field(default_factory=dict)
+    conditions: dict[str, dict] = field(default_factory=dict)
     dependencies: dict[str, dict] = field(default_factory=dict)
     locations: dict[str, dict] = field(default_factory=dict)
     location_by_deployment: dict[DeploymentTarget, str] = field(default_factory=dict)
     datasets: dict[str, list[tuple[str, DataReference]]] = field(default_factory=dict)
     scatter_regions: list[Invocation] = field(default_factory=list)
-    scatter_scopes: dict[str, dict] = field(default_factory=dict)
     bound_path: tuple[str, ...] = ()
     pending: dict[str, PendingGather] = field(default_factory=dict)
     publishers: dict[str, EmittedFragment] = field(default_factory=dict)
@@ -250,12 +250,12 @@ class LoweringContext:
             value_locations=self.value_locations.copy(),
             fragments=self.fragments if fragments is None else fragments,
             steps=self.steps,
+            conditions=self.conditions,
             dependencies=self.dependencies,
             locations=self.locations,
             location_by_deployment=self.location_by_deployment,
             datasets=self.datasets,
             scatter_regions=self.scatter_regions,
-            scatter_scopes=self.scatter_scopes,
             bound_path=self.bound_path,
             pending=self.pending.copy(),
             publishers=self.publishers.copy(),
@@ -494,14 +494,82 @@ def _resolve_token(token: str, base_dir: Path) -> str:
 
 
 def _resolve_glob(tool: object, pattern: str | None) -> str | None:
-    if not pattern or "$(" not in pattern:
-        return pattern
-    for tool_input in getattr(tool, "inputs", []):
-        name = _local_name(tool_input.id).split("/")[-1]
-        default = getattr(tool_input, "default", None)
-        if f"inputs.{name}" in pattern and default is not None:
-            return str(default)
+    # Dynamic globs are evaluated with invocation inputs, never tool defaults.
     return pattern
+
+
+def _lower_expression(source: str, bindings: dict | None = None) -> dict:
+    """Translate CWL substitutions to an ordinary JavaScript function body."""
+    pieces = []
+    literal = []
+    index = 0
+    while index < len(source):
+        if source[index] == "\\" and index + 1 < len(source) and source[index + 1] in "\\$":
+            literal.append(source[index + 1])
+            index += 2
+            continue
+        if source[index:index + 2] not in ("$(", "${"):
+            literal.append(source[index])
+            index += 1
+            continue
+        if literal:
+            pieces.append((False, "".join(literal)))
+            literal = []
+        start = index
+        stack = [")" if source[index + 1] == "(" else "}"]
+        index += 2
+        quote = None
+        while index < len(source) and stack:
+            char = source[index]
+            if quote:
+                if char == "\\":
+                    index += 2
+                    continue
+                if char == quote:
+                    quote = None
+            elif char in "\"'":
+                quote = char
+            elif char in "([{":
+                stack.append({"(": ")", "[": "]", "{": "}"}[char])
+            elif char in ")]}":
+                if char != stack.pop():
+                    raise ValueError("Malformed CWL expression: mismatched delimiter")
+            index += 1
+        if stack or quote:
+            raise ValueError("Malformed CWL expression: unterminated substitution")
+        body = source[start + 2:index - 1]
+        body = "return (" + body + ");" if source[start + 1] == "(" else body
+        pieces.append((True, body))
+    if literal:
+        pieces.append((False, "".join(literal)))
+    if len(pieces) == 1 and pieces[0][0]:
+        body = pieces[0][1]
+    else:
+        terms = ["_text((function(){" + value + "})())" if expression else json.dumps(value)
+                 for expression, value in pieces]
+        body = ("function _text(value){return typeof value === 'string' ? value : "
+                "JSON.stringify(value);} return " + (" + ".join(terms) or "''") + ";")
+    result = {"language": "javascript", "source": body}
+    if bindings is not None:
+        result["bindings"] = bindings
+    return result
+
+
+def _lower_value(value):
+    if isinstance(value, list):
+        return [_lower_value(item) for item in value]
+    if isinstance(value, str) and ("$(" in value or "${" in value):
+        return _lower_expression(value)
+    return value
+
+
+def _argument_descriptor(binding: object, value: dict, position: int) -> dict:
+    descriptor = {**value, "position": position}
+    for field_name in ("prefix", "separate", "shellQuote", "itemSeparator"):
+        field_value = getattr(binding, field_name, None)
+        if field_value is not None:
+            descriptor[field_name] = field_value
+    return descriptor
 
 
 def _local_name(uri: str) -> str:
@@ -883,6 +951,8 @@ class CWLTranslator(AbstractTranslator):
                             invocation_inputs,
                             region,
                         )
+                    if getattr(step, "when", None) is not None:
+                        raise NotImplementedError(f"CWL when is not supported at {invocation_path}; conditional skipped outputs require nullable payload support")
                     region.invocations.append(
                         Invocation(
                             invocation_path,
@@ -1090,8 +1160,9 @@ class CWLTranslator(AbstractTranslator):
         local = invocation.path.rsplit("/", 1)[-1]
         step_name = self._exec_name(context, f"s_{_generated_name(invocation.path.strip('/'))}")
         input_flow: list[str] = []
-        input_ports: list[str] = []
         arguments: list[tuple[int, str, dict]] = []
+        named_inputs = {}
+        input_types = {}
         expression_inputs = {}
         for tool_input in getattr(tool, "inputs", []):
             name = _local_name(tool_input.id).split("/")[-1]
@@ -1113,18 +1184,43 @@ class CWLTranslator(AbstractTranslator):
                 )]
             for port, data, _ in values:
                 input_flow.append(f"({port}, {data})")
-                input_ports.append(port)
             if not values:
                 continue
             port, _, data_type = values[0]
+            named_inputs[name] = port
+            input_types[name] = data_type
             binding = getattr(tool_input, "inputBinding", None)
             if getattr(tool, "expression", None) is not None:
-                expression_inputs[name] = {"port": port, "type": data_type}
+                expression_inputs[name] = {"port": port}
             if binding is not None:
-                position = binding.position if binding.position is not None else 999
-                if binding.prefix:
-                    arguments.append((position, name, {"value": binding.prefix}))
-                arguments.append((position, name, {"valueFrom": port}))
+                position = binding.position if binding.position is not None else 0
+                if not isinstance(position, int):
+                    raise ValueError(f"Expression argument positions are unsupported at {invocation.path}/{name}")
+                transformation = getattr(binding, "valueFrom", None)
+                value = (
+                    {"expression": _lower_expression(transformation, {"self": {"port": port}})}
+                    if isinstance(transformation, str) and ("$(" in transformation or "${" in transformation)
+                    else {"value": transformation} if transformation is not None
+                    else {"valueFrom": port}
+                )
+                arguments.append((position, name, _argument_descriptor(binding, value, position)))
+
+        for index, argument in enumerate(getattr(tool, "arguments", None) or []):
+            if isinstance(argument, str):
+                position = 0
+                value = {"expression": _lower_expression(argument)} if "$(" in argument or "${" in argument else {"value": argument}
+                descriptor = {**value, "position": position}
+            else:
+                position = getattr(argument, "position", None)
+                position = 0 if position is None else position
+                if not isinstance(position, int):
+                    raise ValueError(f"Expression argument positions are unsupported at {invocation.path}")
+                source = getattr(argument, "valueFrom", None)
+                if source is None:
+                    raise ValueError(f"Command argument requires valueFrom at {invocation.path}")
+                value = {"expression": _lower_expression(source)} if isinstance(source, str) and ("$(" in source or "${" in source) else {"value": source}
+                descriptor = _argument_descriptor(argument, value, position)
+            arguments.append((position, f"{index:09d}", descriptor))
 
         outputs = {}
         output_flow = []
@@ -1143,7 +1239,15 @@ class CWLTranslator(AbstractTranslator):
             output = _output_descriptor(data, data_type)
             glob = _resolve_glob(tool, binding.glob if binding else None)
             if glob:
-                output["glob"] = glob
+                output["glob"] = _lower_value(glob)
+            if binding is not None:
+                for field_name in ("loadContents", "outputEval"):
+                    field_value = getattr(binding, field_name, None)
+                    if field_value is not None:
+                        output["readContents" if field_name == "loadContents" else "evaluate"] = (
+                            field_value if field_name == "loadContents" else
+                            _lower_expression(field_value, {"self": {"context": "matchedFiles"}})
+                        )
             outputs[port] = output
             if not context.task_id:
                 context.dependencies[data.payload] = {"type": data_type}
@@ -1155,7 +1259,11 @@ class CWLTranslator(AbstractTranslator):
         command, extras = _command(tool)
         step = {
             "displayName": local,
-            "inputPorts": list(dict.fromkeys(input_ports)),
+            "inputs": {port: {"type": input_types[name]} for name, port in named_inputs.items()},
+            "bindings": {"inputs": {"object": {
+                name: {"port": port}
+                for name, port in named_inputs.items()
+            }}},
             "command": command,
             "arguments": [
                 {"value": _resolve_token(extra, self.cwl_file.parent)} for extra in extras
@@ -1167,11 +1275,13 @@ class CWLTranslator(AbstractTranslator):
         if expression is not None:
             step.pop("command")
             step.pop("arguments")
+            step.pop("bindings")
             step["expression"] = {
-                "source": expression,
-                "inputs": expression_inputs,
+                **_lower_expression(expression, {"inputs": {"object": expression_inputs}}),
                 "outputs": expression_outputs,
             }
+        elif getattr(tool, "stdout", None) is not None:
+            step["stdout"] = _lower_value(tool.stdout)
         context.steps[step_name] = step
         return (
             f"exec({step_name}, {{{', '.join(input_flow)}}} -> "
@@ -1225,10 +1335,14 @@ class CWLTranslator(AbstractTranslator):
                 if producer == location and source not in child.publishers:
                     continue
                 port, data, data_type = self._value(child, source)
-                if source in context.publishers:
-                    port = _generated_name("p_input", invocation.path.strip("/"), source.strip("/"), location)
-                    child.available[source] = (port, data, data_type)
-                receive = f"recv({data} -> {port}, {producer}, {location})"
+                port = _generated_name("p_input", invocation.path.strip("/"), source.strip("/"), location)
+                # Each consumer binds its own transported File path, even for a shared source.
+                received = DataReference(
+                    _generated_name("input_d", invocation.path.strip("/"), source.strip("/"), location),
+                    data.identity, True,
+                )
+                child.available[source] = (port, received, data_type)
+                receive = f"recv({received} -> {port}, {producer}, {location})"
                 if receive not in receives:
                     send = f"send({data} -> {port}, {producer}, {location})"
                     if source in context.publishers:
@@ -1324,10 +1438,8 @@ class CWLTranslator(AbstractTranslator):
             ]))
             result_route = {"port": route_port, "source": location, "receiver": destination,
                             "scope": scope, "operation": stage.invocation.scatter.region_id,
-                            "output": stage.name, "elementId": actual.value[1].identity,
-                            "eofOwner": "actual_sender_after_publication_join"}
+                            "output": stage.name, "elementId": actual.value[1].identity}
             routes.append(result_route)
-            worker.result_routes.setdefault(location, []).append(result_route)
         publisher = _parallel([])
         gather_inputs = ", ".join(f"U({route['port']}, ({collection}_{i}, {collector_scope}))" for i, route in enumerate(routes))
         fragment = _sequence([
@@ -1345,16 +1457,12 @@ class CWLTranslator(AbstractTranslator):
         context.steps[gather] = {
             "displayName": f"{stage.invocation.path}/{stage.name} ScatterGather",
             "type": "scatter_gather",
-            "inputPorts": [route["port"] for route in routes],
+            "inputs": {route["port"]: {"type": stage.sources[0].value[2]} for route in routes},
             "operationId": stage.invocation.scatter.region_id,
             "scope": scope,
             "scatterMethod": stage.invocation.scatter.method,
-            "order": "declaration_order_coordinates",
             "shapeFrom": stage.dispatches,
-            "validation": "expected_keys_without_duplicates",
-            "emptyShape": "retain_all_dimension_cardinalities",
             "routes": routes,
-            "completion": "all_source_eofs_then_gather_then_acknowledged_publications",
             "collections": {
                 route["port"]: {"name": f"{collection}_{i}", "scope": collector_scope,
                                 "output": port, "type": stage.sources[0].value[2], "read": "snapshot"}
@@ -1362,10 +1470,6 @@ class CWLTranslator(AbstractTranslator):
             },
             "outputs": {port: _output_descriptor(data, value[2])},
         }
-        context.scatter_scopes[str(stage.index)].setdefault("materializations", []).append(
-            {"output": stage.name, "receiver": destination, "scope": scope,
-             "sources": routes, "helper": gather, "stages": "innermost_first"}
-        )
         if not data.bound:
             context.dependencies[data.payload] = {"type": value[2]}
         return output
@@ -1380,8 +1484,12 @@ class CWLTranslator(AbstractTranslator):
                 output = self._materialize(context.pending[source], location)
                 port = _generated_name("p_ready", invocation.path.strip("/"), source.strip("/"), location)
                 output.publisher.parts.append(f"send({output.value[1]} -> {port}, {location}, {location})")
-                receives.append(f"recv({output.value[1]} -> {port}, {location}, {location})")
-                context.available[source] = (port, output.value[1], output.value[2])
+                received = DataReference(
+                    _generated_name("ready_d", invocation.path.strip("/"), source.strip("/"), location),
+                    output.value[1].identity, True,
+                )
+                receives.append(f"recv({received} -> {port}, {location}, {location})")
+                context.available[source] = (port, received, output.value[2])
                 context.value_locations[source] = location
                 context.publishers[source] = output.publisher
                 del context.pending[source]
@@ -1445,20 +1553,8 @@ class CWLTranslator(AbstractTranslator):
         workers = [worker for worker in workers if worker not in descendants] or workers
         if not workers:
             raise ValueError(f"Scatter step {invocation.path} requires deployment targets")
-        scope = context.scatter_scopes.setdefault(str(index), {
-            "operation": invocation.scatter.region_id, "invocationId": scope_id,
-            "workerScope": " / ".join(worker_prefix), "iteration": coordinate,
-            "taskId": worker_id, "boundPrefix": list(worker_prefix),
-            "admission": "bound_enclosing_path_plus_one_fresh_coordinate",
-            "activation": "input_begin", "routing": "synchronized_moves_by_operation_and_full_id",
-            "missingKey": "error_when_input_closed", "routes": [], "inputChannels": {}, "owners": [],
-            "lifecycle": {"begin": "exact_scope", "eof": "all_inputs_in_declaration_order",
-                          "resultEof": "actual_sender_after_acknowledged_occurrence_sends"},
-        })
         route = {"controller": context.controller, "workers": workers,
                  "producers": {name: producers[name] for name, _ in inputs}}
-        if route not in scope["routes"]:
-            scope["routes"].append(route)
         streams = []
         dispatch_names = [self._exec_name(context, f"_s_dispatch_{i}_{index}") for i in range(len(inputs))]
         counts = Counter(value[1] for _, value in inputs)
@@ -1482,20 +1578,19 @@ class CWLTranslator(AbstractTranslator):
             dispatch_id = f"{dispatch_scope} / {coordinate}"
             context.steps[dispatch] = {
                 "displayName": f"{invocation.path}/{name} ScatterDispatch", "type": "scatter_dispatch",
-                "inputPorts": [source_port],
+                "inputs": {source_port: {"type": value[2]}},
                 "operationId": invocation.scatter.region_id, "dimension": name,
                 "dimensions": list(invocation.scatter.inputs), "scatterMethod": invocation.scatter.method,
                 "routes": [route], "scope": dispatch_scope,
                 "key": {"operation": invocation.scatter.region_id, "scope": dispatch_scope,
-                        "id": dispatch_id, "coordinates": "declaration_order"},
-                "keySpace": {"dispatches": dispatch_names,
-                             "cardinalities": "publish_before_peer_wait",
-                             "validation": "equal_lengths" if invocation.scatter.method == "dotproduct" else "cartesian_shape",
-                             "routing": "synchronized_moves_by_operation_and_full_id"},
+                        "id": dispatch_id},
+                "keySpace": {"dispatches": dispatch_names},
                 "outputs": {port: {"collection": {"name": collection, "scope": dispatch_scope,
                                                   "elementId": dispatch_id, "type": fields[name]}}},
             }
             streams.append((name, dispatch, port, element, producer))
+            condition = f"condition_{dispatch}"
+            context.conditions[condition] = {"type": "has_data", "port": port, "scope": dispatch_scope}
             distributors = []
             for worker in workers:
                 distributors.append(EmittedFragment("marked", [
@@ -1503,7 +1598,7 @@ class CWLTranslator(AbstractTranslator):
                     _sequence([
                         EmittedFragment("distribution", [
                             f"move({DataReference(element, dispatch_id, True)} -> {port}, {producer}, {worker})",
-                            f"{port} has data in {dispatch_scope}",
+                            condition,
                         ]),
                         f"send((eof, {dispatch_scope}) -> {port}, {producer}, {worker})",
                     ]),
@@ -1516,7 +1611,6 @@ class CWLTranslator(AbstractTranslator):
                 _parallel(distributors),
             ])
             context.fragments[producer].append(fragment)
-            scope["inputChannels"][name] = port
         outputs = {name: [] for name in invocation.outputs}
         for worker in workers:
             child = context.child(invocation.process if isinstance(invocation.process, WorkflowRegion) else context.region,
@@ -1542,12 +1636,12 @@ class CWLTranslator(AbstractTranslator):
                         input_publishers[name].parts.append(send)
                     else:
                         context.fragments[producer].append(send)
-                    invariant_receives.append(f"recv({data} -> {transfer}, {producer}, {worker})")
-                    value = (transfer, data, data_type)
-                invariant_route = {"input": name, "source": producer, "receiver": worker,
-                                   "port": value[0], "id": data.identity, "reusable": True}
-                if invariant_route not in scope.setdefault("invariants", []):
-                    scope["invariants"].append(invariant_route)
+                    received = DataReference(
+                        _generated_name("invariant_d", name, str(index), worker, producer),
+                        data.identity, True,
+                    )
+                    invariant_receives.append(f"recv({received} -> {transfer}, {producer}, {worker})")
+                    value = (transfer, received, data_type)
                 values[name] = value
             if isinstance(invocation.process, WorkflowRegion):
                 for name, value in values.items():
@@ -1574,10 +1668,11 @@ class CWLTranslator(AbstractTranslator):
                     publish = self._exec_name(context, _generated_name("_s_publish", invocation.path.strip("/"), name))
                     context.steps[publish] = {
                         "displayName": f"{invocation.path}/{name} OutputOccurrence",
-                        "inputPorts": [source_port],
+                        "inputs": {source_port: {"type": data_type}},
                         "expression": {
-                            "source": "${ return {value: inputs.value}; }",
-                            "inputs": {"value": {"port": source_port, "type": data_type}},
+                            **_lower_expression("${ return {value: inputs.value}; }", {
+                                "inputs": {"object": {"value": {"port": source_port}}}
+                            }),
                             "outputs": {"value": output_port},
                         },
                         "outputs": {output_port: _output_descriptor(output_data, data_type)},
@@ -1622,12 +1717,6 @@ class CWLTranslator(AbstractTranslator):
             context.value_locations[path] = context.controller
             context.pending[path] = PendingGather(invocation, index, name, output_index, prefix, coordinate,
                                                   [stream[1] for stream in streams], occurrences, value)
-            scope.setdefault("outputBoundaries", {})[name] = {
-                "path": path, "scope": scope_id, "elementId": worker_id,
-                "payloadType": item_type, "outputType": data_type,
-                "materialization": "dependency_consumer_innermost_first",
-                "ordinaryAliases": "preserve_identity_and_shape",
-            }
         return []
 
     def _finish_owners(self, context: LoweringContext) -> None:
@@ -1662,13 +1751,6 @@ class CWLTranslator(AbstractTranslator):
                     ]), _parallel(eofs),
                 ])
                 parent.fragments[location].append(service)
-                context.scatter_scopes[str(owner.index)]["owners"].append({
-                    "port": control, "source": worker, "receiver": location,
-                    "scope": prefix, "binding": list(owner.prefix),
-                    "admission": "bound_prefix_plus_one_coordinate", "close": "after_owner_publications_join",
-                    "resultSources": owner.result_routes.get(location, []), "invocationPort": invocation_control,
-                    "childId": child_id, "freshCoordinate": owner.scope[-1],
-                })
 
     def translate(
         self, workflow_output: TextIO = sys.stdout, metadata_output: TextIO = sys.stdout
@@ -1729,17 +1811,9 @@ class CWLTranslator(AbstractTranslator):
             {
                 "version": "v1.1",
                 "steps": context.steps,
+                "conditions": context.conditions,
                 "locations": context.locations,
                 "dependencies": context.dependencies,
-                "scatterRegions": {
-                    str(index): {
-                        "name": item.path,
-                        "method": item.scatter.method,
-                        "scatterPorts": list(item.scatter.inputs),
-                        "scope": context.scatter_scopes[str(index)],
-                    }
-                    for index, item in enumerate(context.scatter_regions)
-                },
             },
             metadata_output,
         )

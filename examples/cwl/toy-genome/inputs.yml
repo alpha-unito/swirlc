@@ -1,0 +1,25 @@
+script:
+  class: File
+  path: toy.py
+snp_files:
+- class: File
+  path: data/chrA_5.txt
+- class: File
+  path: data/chrB_3.txt
+- class: File
+  path: data/chrEmpty_0.txt
+sift_files:
+- class: File
+  path: data/siftA.txt
+- class: File
+  path: data/siftB.txt
+- class: File
+  path: data/siftEmpty.txt
+populations:
+- class: File
+  path: data/AFR.txt
+- class: File
+  path: data/EUR.txt
+- class: File
+  path: data/AFR.txt
+step: 2

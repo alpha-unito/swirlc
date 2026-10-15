@@ -87,7 +87,6 @@ def test_simple_scatter_preserves_inputs_and_collection_contract(case, items):
     }
     assert dispatch["key"] == {
         "operation": "scatter:/process", "parentKeys": [],
-        "coordinates": "declaration_order",
     }
     assert "exec(_s_dispatch_0_0, {(p_items, d_items)} -> {U(p_scatter_0_0, stream_d_items)}" in trace
     assert trace.count("+[p_scatter_0_0 has data]") == 2
@@ -113,7 +112,7 @@ def test_simple_scatter_preserves_inputs_and_collection_contract(case, items):
     assert len(gathers) == 2
     assert {next(iter(step["collections"].values()))["type"] for step in gathers} == {"string", "int"}
     for output_index, gather in enumerate(gathers):
-        assert gather["order"] == "declaration_order_coordinates"
+        assert "order" not in gather
         assert gather["shapeFrom"] == ["_s_dispatch_0_0"]
         assert len(gather["outputs"]) == len(gather["collections"]) == 1
         port, collection = next(iter(gather["collections"].items()))

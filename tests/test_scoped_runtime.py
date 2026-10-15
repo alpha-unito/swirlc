@@ -335,6 +335,82 @@ class ScopedRuntimeTests(unittest.TestCase):
         self.assertEqual(routes[0], routes[1])
         self.assertEqual(len(routes[0]), 8)
 
+    def test_independent_single_destination_distributors_pair_all_dimensions(self):
+        workers = ['w1', 'w2', 'w3']
+        metadata = {'steps': {
+            name: {'type': 'scatter_dispatch', 'operationId': 'same-operation',
+                   'outputs': {port: {}}, 'routes': [{'controller': 'local', 'workers': workers}]}
+            for name, port in [('a', 'pa'), ('b', 'pb')]
+        }, 'dependencies': {}}
+        runtime = self.runtime(metadata)
+        sent = []
+        runtime._send_header = lambda dst, header, payload=None: sent.append((dst, header))
+        pattern = envelope(term('variable', 'v'), term('path', '', ROOT,
+                           term('variable', 'parent'), term('variable', 'child')))
+        for port, order in [('pa', workers), ('pb', list(reversed(workers)))]:
+            for parent, length in [(0, 3), (1, 2), (2, 0)]:
+                for child in range(length):
+                    runtime._store(port, (parent, child), 'duplicate', 'string')
+            for worker in order:
+                for parent in range(3):
+                    while True:
+                        env = {'parent': parent}
+                        if not runtime.try_move(env, port, pattern, worker):
+                            self.assertEqual(env, {'parent': parent})
+                            break
+                        runtime.move(env, port, pattern, 'string', 'local', worker)
+        routes = [{tuple(header['id']): dst for dst, header in sent if header['port'] == port}
+                  for port in ['pa', 'pb']]
+        self.assertEqual(routes[0], routes[1])
+        self.assertEqual(len(routes[0]), 5)
+        self.assertEqual(runtime.values, [])
+
+    def test_nested_dispatch_of_root_invariant_uses_collection_scope(self):
+        metadata = {'steps': {'dispatch': {
+            'type': 'scatter_dispatch', 'operationId': 'nested',
+            'scatterMethod': 'dotproduct', 'dimensions': ['items'], 'dimension': 'items',
+            'keySpace': {'dispatches': ['dispatch']},
+            'outputs': {'stream': {'collection': {'type': 'string'}}},
+        }}, 'dependencies': {}}
+        runtime = self.runtime(metadata)
+        collection_scope = term('path', '', ROOT, term('variable', 'parent'))
+        for parent in [7, 8]:
+            runtime.execute_step({'items': ['same', 'same'], 'parent': parent}, 'dispatch',
+                                 [['input', envelope(term('variable', 'items'), ROOT)]],
+                                 [['stream', term('collection', 'stream',
+                                                  term('literal', 'occurrences'), collection_scope)]])
+            self.assertEqual(runtime.shapes['dispatch', (parent,)], 2)
+            self.assertIn(('stream', (parent,)), runtime.finite)
+            self.assertEqual([value['id'] for value in runtime._snapshot('stream', (parent,))],
+                             [(parent, 0), (parent, 1)])
+        self.assertNotIn(('stream', ()), runtime.finite)
+
+    def test_dispatch_routing_retains_each_invocations_reserved_worker_pool(self):
+        metadata = {'steps': {}, 'dependencies': {}}
+        for name, workers in [('a', ['w1', 'w2']), ('b', ['w3', 'w4'])]:
+            metadata['steps'][name] = {
+                'type': 'scatter_dispatch', 'operationId': 'nested',
+                'scatterMethod': 'dotproduct', 'dimensions': ['items'], 'dimension': 'items',
+                'keySpace': {'dispatches': [name]},
+                'routes': [{'controller': 'outer', 'producers': {'items': 'local'}, 'workers': workers}],
+                'outputs': {'stream': {'collection': {'type': 'string'}}},
+            }
+        runtime = self.runtime(metadata)
+        scope = term('path', '', ROOT, term('variable', 'parent'))
+        for parent, name in enumerate(['a', 'b']):
+            runtime.execute_step({'items': ['same'], 'parent': parent}, name,
+                                 [['input', envelope(term('variable', 'items'), ROOT)]],
+                                 [['stream', term('collection', 'stream', term('literal', 'values'), scope)]])
+        pattern = envelope(term('variable', 'value'), term('path', '', scope, term('variable', 'child')))
+        for parent, allowed in [(0, ['w1', 'w2']), (1, ['w3', 'w4'])]:
+            claimed = []
+            for worker in ['w1', 'w2', 'w3', 'w4']:
+                env = {'parent': parent}
+                if runtime.try_move(env, 'stream', pattern, worker):
+                    claimed.append(worker)
+            self.assertEqual(len(claimed), 1)
+            self.assertIn(claimed[0], allowed)
+
     def test_gather_rejects_missing_and_invalid_keys(self):
         metadata = {'steps': {'gather': {'type': 'scatter_gather', 'shapeFrom': ['a'],
                     'operationId': 'op', 'scatterMethod': 'dotproduct', 'outputs': {}}}, 'dependencies': {}}

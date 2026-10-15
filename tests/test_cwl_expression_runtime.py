@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ast
 import base64
+import hashlib
 import io
 import json
 import os
@@ -14,6 +15,7 @@ import pytest
 
 from swirlc.compiler.default.compiler import (
     _build_dependency_archive,
+    _embedded_dependency_bootstrap,
     _parallel_shell_block,
     _start_background_shell_commands,
 )
@@ -98,7 +100,8 @@ def test_expression_tool_uses_self_bootstrapping_javascript_runtime(
     ]) == 0
     subprocess.run(
         ["bash", "run.sh"], cwd=tmp_path, check=True, timeout=30,
-        env=dict(os.environ, SWIRLC_PYTHON=sys.executable, SWIRLC_RUNTIME_TIMEOUT="10"),
+        env=dict(os.environ, SWIRLC_PYTHON=sys.executable, SWIRLC_RUNTIME_TIMEOUT="10",
+                 PIP_NO_INDEX="1", PIP_DISABLE_PIP_VERSION_CHECK="1"),
         capture_output=True,
     )
     actual = {
@@ -196,6 +199,51 @@ def test_dependency_archive_includes_transitive_pure_python_packages() -> None:
 def test_dependency_archive_rejects_native_extensions() -> None:
     with pytest.raises(RuntimeError, match="compiled native extension"):
         _build_dependency_archive(("rpds-py",))
+
+
+def test_bundled_dependency_bootstrap_concurrent_startup(tmp_path: Path) -> None:
+    archive_buffer = io.BytesIO()
+    with zipfile.ZipFile(archive_buffer, "w") as archive:
+        archive.writestr("bootstrap_probe.py", "VALUE = 'available'\n")
+    archive_bytes = archive_buffer.getvalue()
+    digest = hashlib.sha256(archive_bytes).hexdigest()
+    bootstrap = _embedded_dependency_bootstrap(
+        base64.b85encode(archive_bytes).decode("ascii"), digest,
+    )
+    # Both writers stop after writing their temporary archive. A shared .tmp
+    # name would then deterministically leave one writer without a file to rename.
+    barrier = """
+import base64, hashlib, os, sys, time
+from pathlib import Path
+write_bytes = Path.write_bytes
+def synchronized_write(path, data):
+    result = write_bytes(path, data)
+    if path.suffix == '.tmp':
+        write_bytes(Path(__file__).with_name(f'ready.{os.getpid()}'), b'ready')
+        deadline = time.monotonic() + 5
+        while len(list(Path(__file__).parent.glob('ready.*'))) < 2:
+            if time.monotonic() > deadline:
+                raise TimeoutError('dependency bootstrap barrier')
+            time.sleep(.01)
+    return result
+Path.write_bytes = synchronized_write
+"""
+    scripts = [tmp_path / f"location_{index}.py" for index in range(2)]
+    for script in scripts:
+        script.write_text(barrier + bootstrap + "\nfrom bootstrap_probe import VALUE\nassert VALUE == 'available'\n")
+    processes = [subprocess.Popen([sys.executable, str(script)],
+                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                 for script in scripts]
+    try:
+        for process in processes:
+            stdout, stderr = process.communicate(timeout=10)
+            assert process.returncode == 0, (stdout, stderr)
+    finally:
+        for process in processes:
+            if process.poll() is None:
+                process.terminate()
+                process.communicate(timeout=2)
+    assert (tmp_path / f".swirlc-dependencies-{digest}.zip").read_bytes() == archive_bytes
 
 
 def test_auxiliary_wait_does_not_reap_workflow_process() -> None:

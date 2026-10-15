@@ -26,7 +26,7 @@ move        : 'move(' data '->' port ',' src ',' dst ')';
 
 
 end         : 'end()';
-guard       : '[' port 'has' 'data' IN data ']';
+guard       : '[' port ('has' 'data' IN data)? ']';
 
 // Sets
 dataPair    : '(' port ',' data ')' | '(' data ',' port ')' | collection;

@@ -252,12 +252,54 @@
           "type": "array",
           "items": {
             "type": "object",
-            "patternProperties": {
-              "^value(From)?$": {
+            "properties": {
+              "value": {
+                "type": [
+                  "string",
+                  "number",
+                  "boolean",
+                  "null"
+                ]
+              },
+              "valueFrom": {
+                "type": "string"
+              },
+              "expression": {
+                "$ref": "#/$defs/evaluation"
+              },
+              "position": {
+                "type": "integer"
+              },
+              "prefix": {
+                "type": "string"
+              },
+              "separate": {
+                "type": "boolean"
+              },
+              "shellQuote": {
+                "type": "boolean"
+              },
+              "itemSeparator": {
                 "type": "string"
               }
             },
-            "description": "Arguments. If it is static use 'value' keyword. If it is a data of a previous step use 'valueFrom' and the port name",
+            "oneOf": [
+              {
+                "required": [
+                  "value"
+                ]
+              },
+              {
+                "required": [
+                  "valueFrom"
+                ]
+              },
+              {
+                "required": [
+                  "expression"
+                ]
+              }
+            ],
             "additionalProperties": false
           }
         },
@@ -273,49 +315,30 @@
         "expression": {
           "type": "object",
           "properties": {
-            "source": {
-              "type": "string"
+            "language": {
+              "const": "javascript"
             },
-            "inputs": {
-              "type": "object",
-              "additionalProperties": {
-                "type": "object",
-                "properties": {
-                  "port": {
-                    "type": "string"
-                  },
-                  "type": {
-                    "type": "string"
-                  }
-                },
-                "required": [
-                  "port",
-                  "type"
-                ],
-                "additionalProperties": false
-              }
+            "source": {
+              "type": "string",
+              "minLength": 1
+            },
+            "bindings": {
+              "$ref": "#/$defs/expressionBindings"
             },
             "outputs": {
               "type": "object",
               "additionalProperties": {
-                "type": "string"
+                "type": "string",
+                "minLength": 1
               }
             }
           },
           "required": [
+            "language",
             "source",
-            "inputs",
             "outputs"
           ],
           "additionalProperties": false
-        },
-        "inputPorts": {
-          "type": "array",
-          "items": {
-            "type": "string",
-            "minLength": 1
-          },
-          "uniqueItems": true
         },
         "operationId": {
           "type": "string",
@@ -328,18 +351,6 @@
         "dimension": {
           "type": "string",
           "minLength": 1
-        },
-        "order": {
-          "const": "declaration_order_coordinates"
-        },
-        "validation": {
-          "const": "expected_keys_without_duplicates"
-        },
-        "emptyShape": {
-          "const": "retain_all_dimension_cardinalities"
-        },
-        "completion": {
-          "const": "all_source_eofs_then_gather_then_acknowledged_publications"
         },
         "dimensions": {
           "type": "array",
@@ -386,34 +397,18 @@
             "id": {
               "type": "string",
               "minLength": 1
-            },
-            "coordinates": {
-              "const": "declaration_order"
             }
           },
           "required": [
             "operation",
             "scope",
-            "id",
-            "coordinates"
+            "id"
           ],
           "additionalProperties": false
         },
         "keySpace": {
           "type": "object",
           "properties": {
-            "cardinalities": {
-              "const": "publish_before_peer_wait"
-            },
-            "validation": {
-              "enum": [
-                "equal_lengths",
-                "cartesian_shape"
-              ]
-            },
-            "routing": {
-              "const": "synchronized_moves_by_operation_and_full_id"
-            },
             "dispatches": {
               "type": "array",
               "items": {
@@ -425,10 +420,7 @@
             }
           },
           "required": [
-            "dispatches",
-            "cardinalities",
-            "validation",
-            "routing"
+            "dispatches"
           ],
           "additionalProperties": false
         },
@@ -468,6 +460,38 @@
             ],
             "additionalProperties": false
           }
+        },
+        "stdout": {
+          "oneOf": [
+            {
+              "type": "string"
+            },
+            {
+              "$ref": "#/$defs/evaluation"
+            }
+          ]
+        },
+        "bindings": {
+          "$ref": "#/$defs/expressionBindings"
+        },
+        "inputs": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "pattern": "^(string|int|bool|file|stdout|directory)$|^list\\[.+\\]$"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "additionalProperties": false
+          },
+          "propertyNames": {
+            "pattern": "^[a-zA-Z_][a-zA-Z0-9_]*$"
+          }
         }
       },
       "anyOf": [
@@ -502,7 +526,7 @@
           },
           "then": {
             "required": [
-              "inputPorts",
+              "inputs",
               "operationId",
               "scope",
               "dimension",
@@ -528,17 +552,13 @@
           },
           "then": {
             "required": [
-              "inputPorts",
+              "inputs",
               "outputs",
               "operationId",
               "scope",
               "scatterMethod",
-              "order",
               "shapeFrom",
-              "validation",
-              "emptyShape",
               "routes",
-              "completion",
               "collections"
             ]
           }
@@ -606,9 +626,6 @@
         "elementId": {
           "type": "string",
           "minLength": 1
-        },
-        "eofOwner": {
-          "const": "actual_sender_after_publication_join"
         }
       },
       "required": [
@@ -618,8 +635,7 @@
         "scope",
         "operation",
         "output",
-        "elementId",
-        "eofOwner"
+        "elementId"
       ],
       "additionalProperties": false
     },
@@ -637,8 +653,33 @@
               "minLength": 1
             },
             "glob": {
-              "type": "string",
-              "minLength": 1
+              "oneOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "$ref": "#/$defs/evaluation"
+                },
+                {
+                  "type": "array",
+                  "items": {
+                    "oneOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "$ref": "#/$defs/evaluation"
+                      }
+                    ]
+                  }
+                }
+              ]
+            },
+            "readContents": {
+              "type": "boolean"
+            },
+            "evaluate": {
+              "$ref": "#/$defs/evaluation"
             }
           },
           "required": [
@@ -674,8 +715,33 @@
               "additionalProperties": false
             },
             "glob": {
-              "type": "string",
-              "minLength": 1
+              "oneOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "$ref": "#/$defs/evaluation"
+                },
+                {
+                  "type": "array",
+                  "items": {
+                    "oneOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "$ref": "#/$defs/evaluation"
+                      }
+                    ]
+                  }
+                }
+              ]
+            },
+            "readContents": {
+              "type": "boolean"
+            },
+            "evaluate": {
+              "$ref": "#/$defs/evaluation"
             }
           },
           "required": [
@@ -722,6 +788,80 @@
           "additionalProperties": false
         }
       ]
+    },
+    "expressionBinding": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "port": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "required": [
+            "port"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "object": {
+              "type": "object",
+              "additionalProperties": {
+                "$ref": "#/$defs/expressionBinding"
+              }
+            }
+          },
+          "required": [
+            "object"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "context": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "required": [
+            "context"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "expressionBindings": {
+      "type": "object",
+      "propertyNames": {
+        "pattern": "^[A-Za-z_$][\\w$]*$"
+      },
+      "additionalProperties": {
+        "$ref": "#/$defs/expressionBinding"
+      }
+    },
+    "evaluation": {
+      "type": "object",
+      "properties": {
+        "language": {
+          "const": "javascript"
+        },
+        "source": {
+          "type": "string",
+          "minLength": 1
+        },
+        "bindings": {
+          "$ref": "#/$defs/expressionBindings"
+        }
+      },
+      "required": [
+        "language",
+        "source"
+      ],
+      "additionalProperties": false
     }
   },
   "properties": {
@@ -761,330 +901,75 @@
     "workdir": {
       "type": "string"
     },
-    "scatterRegions": {
+    "conditions": {
       "type": "object",
+      "propertyNames": {
+        "pattern": "^[a-zA-Z_][a-zA-Z0-9_]*$"
+      },
       "additionalProperties": {
-        "type": "object",
-        "properties": {
-          "name": {
-            "type": "string"
-          },
-          "parentRegion": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "method": {
-            "type": "string",
-            "enum": [
-              "dotproduct",
-              "flat_crossproduct",
-              "nested_crossproduct"
-            ],
-            "description": "Scatter pairing method for scatter_pairer"
-          },
-          "scatterPorts": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            }
-          },
-          "scope": {
+        "oneOf": [
+          {
             "type": "object",
             "properties": {
-              "operation": {
+              "type": {
+                "const": "has_data"
+              },
+              "port": {
+                "type": "string",
+                "pattern": "^[a-zA-Z_][a-zA-Z0-9_]*$"
+              },
+              "scope": {
                 "type": "string",
                 "minLength": 1
-              },
-              "invocationId": {
-                "type": "string",
-                "minLength": 1
-              },
-              "workerScope": {
-                "type": "string",
-                "minLength": 1
-              },
-              "iteration": {
-                "type": "string",
-                "minLength": 1
-              },
-              "taskId": {
-                "type": "string",
-                "minLength": 1
-              },
-              "admission": {
-                "const": "bound_enclosing_path_plus_one_fresh_coordinate"
-              },
-              "activation": {
-                "const": "input_begin"
-              },
-              "routing": {
-                "const": "synchronized_moves_by_operation_and_full_id"
-              },
-              "missingKey": {
-                "const": "error_when_input_closed"
-              },
-              "boundPrefix": {
-                "type": "array",
-                "items": {
-                  "type": "string",
-                  "minLength": 1
-                }
-              },
-              "routes": {
-                "type": "array",
-                "items": {
-                  "$ref": "#/$defs/dispatchRoute"
-                }
-              },
-              "inputChannels": {
-                "type": "object",
-                "additionalProperties": {
-                  "type": "string",
-                  "minLength": 1
-                }
-              },
-              "owners": {
-                "type": "array",
-                "items": {
-                  "type": "object",
-                  "properties": {
-                    "port": {
-                      "type": "string",
-                      "minLength": 1
-                    },
-                    "source": {
-                      "type": "string",
-                      "minLength": 1
-                    },
-                    "receiver": {
-                      "type": "string",
-                      "minLength": 1
-                    },
-                    "scope": {
-                      "type": "string",
-                      "minLength": 1
-                    },
-                    "admission": {
-                      "type": "string",
-                      "minLength": 1
-                    },
-                    "close": {
-                      "type": "string",
-                      "minLength": 1
-                    },
-                    "invocationPort": {
-                      "type": "string",
-                      "minLength": 1
-                    },
-                    "childId": {
-                      "type": "string",
-                      "minLength": 1
-                    },
-                    "freshCoordinate": {
-                      "type": "string",
-                      "minLength": 1
-                    },
-                    "binding": {
-                      "type": "array",
-                      "items": {
-                        "type": "string",
-                        "minLength": 1
-                      }
-                    },
-                    "resultSources": {
-                      "type": "array",
-                      "items": {
-                        "$ref": "#/$defs/resultRoute"
-                      }
-                    }
-                  },
-                  "required": [
-                    "port",
-                    "source",
-                    "receiver",
-                    "scope",
-                    "binding",
-                    "admission",
-                    "close",
-                    "resultSources",
-                    "invocationPort",
-                    "childId",
-                    "freshCoordinate"
-                  ],
-                  "additionalProperties": false
-                }
-              },
-              "lifecycle": {
-                "type": "object",
-                "properties": {
-                  "begin": {
-                    "const": "exact_scope"
-                  },
-                  "eof": {
-                    "const": "all_inputs_in_declaration_order"
-                  },
-                  "resultEof": {
-                    "const": "actual_sender_after_acknowledged_occurrence_sends"
-                  }
-                },
-                "required": [
-                  "begin",
-                  "eof",
-                  "resultEof"
-                ],
-                "additionalProperties": false
-              },
-              "outputBoundaries": {
-                "type": "object",
-                "additionalProperties": {
-                  "type": "object",
-                  "properties": {
-                    "path": {
-                      "type": "string",
-                      "minLength": 1
-                    },
-                    "scope": {
-                      "type": "string",
-                      "minLength": 1
-                    },
-                    "elementId": {
-                      "type": "string",
-                      "minLength": 1
-                    },
-                    "payloadType": {
-                      "type": "string",
-                      "minLength": 1
-                    },
-                    "outputType": {
-                      "type": "string",
-                      "minLength": 1
-                    },
-                    "materialization": {
-                      "type": "string",
-                      "minLength": 1
-                    },
-                    "ordinaryAliases": {
-                      "type": "string",
-                      "minLength": 1
-                    }
-                  },
-                  "required": [
-                    "path",
-                    "scope",
-                    "elementId",
-                    "payloadType",
-                    "outputType",
-                    "materialization",
-                    "ordinaryAliases"
-                  ],
-                  "additionalProperties": false
-                }
-              },
-              "materializations": {
-                "type": "array",
-                "items": {
-                  "type": "object",
-                  "properties": {
-                    "output": {
-                      "type": "string",
-                      "minLength": 1
-                    },
-                    "receiver": {
-                      "type": "string",
-                      "minLength": 1
-                    },
-                    "scope": {
-                      "type": "string",
-                      "minLength": 1
-                    },
-                    "helper": {
-                      "type": "string",
-                      "minLength": 1
-                    },
-                    "stages": {
-                      "type": "string",
-                      "minLength": 1
-                    },
-                    "sources": {
-                      "type": "array",
-                      "items": {
-                        "$ref": "#/$defs/resultRoute"
-                      }
-                    }
-                  },
-                  "required": [
-                    "output",
-                    "receiver",
-                    "scope",
-                    "sources",
-                    "helper",
-                    "stages"
-                  ],
-                  "additionalProperties": false
-                }
-              },
-              "invariants": {
-                "type": "array",
-                "items": {
-                  "type": "object",
-                  "properties": {
-                    "input": {
-                      "type": "string"
-                    },
-                    "source": {
-                      "type": "string"
-                    },
-                    "receiver": {
-                      "type": "string"
-                    },
-                    "port": {
-                      "type": "string"
-                    },
-                    "id": {
-                      "type": "string"
-                    },
-                    "reusable": {
-                      "type": "boolean"
-                    }
-                  },
-                  "required": [
-                    "input",
-                    "source",
-                    "receiver",
-                    "port",
-                    "id",
-                    "reusable"
-                  ],
-                  "additionalProperties": false
-                }
               }
             },
             "required": [
-              "operation",
-              "invocationId",
-              "workerScope",
-              "iteration",
-              "taskId",
-              "boundPrefix",
-              "admission",
-              "activation",
-              "routing",
-              "missingKey",
-              "routes",
-              "inputChannels",
-              "owners",
-              "lifecycle"
+              "type",
+              "port",
+              "scope"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "type": {
+                "const": "expression"
+              },
+              "inputs": {
+                "type": "object",
+                "additionalProperties": {
+                  "type": "object",
+                  "properties": {
+                    "type": {
+                      "type": "string",
+                      "pattern": "^(string|int|bool|file|stdout|directory)$|^list\\[.+\\]$"
+                    }
+                  },
+                  "required": [
+                    "type"
+                  ],
+                  "additionalProperties": false
+                },
+                "propertyNames": {
+                  "pattern": "^[a-zA-Z_][a-zA-Z0-9_]*$"
+                }
+              },
+              "bindings": {
+                "$ref": "#/$defs/expressionBindings"
+              },
+              "expression": {
+                "$ref": "#/$defs/evaluation"
+              }
+            },
+            "required": [
+              "type",
+              "inputs",
+              "expression"
             ],
             "additionalProperties": false
           }
-        },
-        "required": [
-          "method",
-          "scatterPorts"
-        ],
-        "additionalProperties": false
+        ]
       }
     }
   },

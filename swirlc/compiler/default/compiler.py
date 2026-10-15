@@ -117,7 +117,7 @@ def _activate_bundled_dependencies():
         or hashlib.sha256(archive_path.read_bytes()).hexdigest()
         != _BUNDLED_DEPENDENCIES_SHA256
     ):
-        temporary_path = archive_path.with_suffix(".tmp")
+        temporary_path = archive_path.with_suffix(f".{{os.getpid()}}.tmp")
         temporary_path.write_bytes(archive_bytes)
         os.replace(temporary_path, archive_path)
     sys.path.insert(0, str(archive_path))
@@ -191,7 +191,7 @@ import zipfile
 
 from pathlib import Path
 from io import BytesIO
-from threading import Condition, Event, Thread
+from threading import Condition, Event, RLock, Thread
 from typing import Any, MutableMapping, MutableSequence
 """
 
@@ -374,10 +374,15 @@ list_helper = """def _list_inner(data_type: str) -> str | None:
     return None
 """
 
-expression_function = r"""def _js_file_object(value: Any, data_type: str) -> Any:
+expression_function = r"""_javascript_lock = RLock()
+
+
+def _expression_value(value: Any, data_type: str) -> Any:
+    if value is None:
+        return None
     inner = _list_inner(data_type)
     if inner is not None:
-        return [_js_file_object(item, inner) for item in value]
+        return [_expression_value(item, inner) for item in value]
     if data_type == "int":
         return int(value)
     if data_type == "bool":
@@ -407,7 +412,9 @@ expression_function = r"""def _js_file_object(value: Any, data_type: str) -> Any
 
 
 def _to_python(value: Any) -> Any:
-    if hasattr(value, "to_dict"):
+    if getattr(getattr(value, "_obj", None), "Class", None) == "Array":
+        value = value.to_list()
+    elif hasattr(value, "to_dict"):
         value = value.to_dict()
     elif hasattr(value, "to_list"):
         value = value.to_list()
@@ -418,30 +425,21 @@ def _to_python(value: Any) -> Any:
     return value
 
 
-def _run_javascript_expression(expression: str, inputs: MutableMapping[str, Any]) -> Any:
+def _run_javascript_expression(source: str, bindings: MutableMapping[str, Any]) -> Any:
     try:
         import js2py
     except ImportError:
-        # Js2Py-3.14 uses a distinct import name so it can coexist with the
-        # original distribution while retaining the same public API.
+        # Python 3.14 distribution retains the same API under a separate name.
         import js2py_ as js2py
-
-    js2py.disable_pyimport()
-    source = expression.strip()
-    if source.startswith("${") and source.endswith("}"):
-        body = source[2:-1]
-    elif source.startswith("$(") and source.endswith(")"):
-        body = f"return ({source[2:-1]});"
-    else:
-        raise ValueError("CWL JavaScript expression must use $(...) or ${...} syntax")
-    invocation = (
-        "(function(inputs) {\n"
-        + body
-        + "\n})("
-        + json.dumps(inputs)
-        + ");"
-    )
-    return _to_python(js2py.eval_js(invocation))
+    names = list(bindings)
+    if any(not re.fullmatch(r"[A-Za-z_$][\w$]*", name) for name in names):
+        raise ValueError("Invalid JavaScript binding name")
+    invocation = ("(function(" + ",".join(names) + ") {\n" + source
+                  + "\n})(" + ",".join(json.dumps(bindings[name]) for name in names) + ");")
+    # Js2Py code generation shares mutable translator state across contexts.
+    with _javascript_lock:
+        js2py.disable_pyimport()
+        return _to_python(js2py.eval_js(invocation))
 
 
 def _coerce_expression_output(value: Any, data_type: str) -> Any:
@@ -458,30 +456,6 @@ def _coerce_expression_output(value: Any, data_type: str) -> Any:
         return str(value)
     return value
 
-
-def _expression(step_display_name: str, expression: str, input_specs: MutableMapping[str, tuple[str, str]], output_specs: MutableMapping[str, tuple[str, str]]):
-    for port_name, _ in input_specs.values():
-        available_port_data[port_name].wait()
-    inputs = {
-        name: _js_file_object(ports[port_name], data_type)
-        for name, (port_name, data_type) in input_specs.items()
-    }
-    result = _run_javascript_expression(expression, inputs)
-    if not isinstance(result, dict):
-        raise TypeError(f"ExpressionTool {step_display_name} must return an object")
-    for output_name, (port_name, data_type) in output_specs.items():
-        if output_name not in result:
-            raise KeyError(f"ExpressionTool {step_display_name} did not return output {output_name}")
-        ports[port_name] = _coerce_expression_output(result[output_name], data_type)
-        if logger.isEnabledFor(logging.INFO):
-            logger.info(
-                "ExpressionTool %s result %s (%s): %r",
-                step_display_name,
-                output_name,
-                data_type,
-                ports[port_name],
-            )
-        available_port_data[port_name].set()
 """
 
 framing_helpers = """def _send_len(sock: socket.socket, n: int):
@@ -1089,6 +1063,154 @@ wait_function = """def _wait(threads: MutableSequence[Thread]):
         t.join()
 """
 
+command_tool_function = r'''def _resolve_bindings(specifications, bound, context=None, input_types=None):
+    context = context or {}
+    def resolve(spec):
+        if "object" in spec:
+            return {name: resolve(value) for name, value in spec["object"].items()}
+        if "port" in spec:
+            return _expression_value(bound[spec["port"]], input_types[spec["port"]]["type"])
+        if "context" in spec:
+            return context[spec["context"]]
+        raise ValueError("Unsupported expression binding")
+    return {name: resolve(spec) for name, spec in specifications.items()}
+
+
+def _evaluate_expression(expression, bindings):
+    if expression.get("language") != "javascript":
+        raise ValueError(f"Unsupported expression language: {expression.get('language')!r}")
+    try:
+        return _run_javascript_expression(expression["source"], bindings)
+    except Exception as exc:
+        raise ValueError(f"Invalid JavaScript expression: {exc}") from exc
+
+
+def _evaluate_value(value, bindings, bound, context=None, input_types=None):
+    if not isinstance(value, dict):
+        return value
+    variables = dict(bindings)
+    variables.update(_resolve_bindings(value.get("bindings", {}), bound, context, input_types))
+    return _evaluate_expression(value, variables)
+
+
+def _evaluate_condition(descriptor, bound):
+    bindings = _resolve_bindings(descriptor.get("bindings", {}), bound, input_types=descriptor["inputs"])
+    return _evaluate_value(descriptor["expression"], bindings, bound, input_types=descriptor["inputs"])
+
+
+def _execute_command(tool, descriptor, bound):
+    """Execute a bound command with explicit expression and output descriptors."""
+    bindings = _resolve_bindings(descriptor.get("bindings", {}), bound, input_types=descriptor.get("inputs", {}))
+    workdir = os.path.join(SCRATCH_DIR, f"exec_{tool}_{uuid.uuid4()}")
+    os.makedirs(workdir, exist_ok=True)
+    # Retain ordinary file availability for tools that refer to input basenames.
+    def stage(item):
+        if isinstance(item, list):
+            for child in item:
+                stage(child)
+        elif isinstance(item, dict) and item.get("class") in ("File", "Directory"):
+            destination = os.path.join(workdir, item["basename"])
+            if not os.path.lexists(destination):
+                os.symlink(os.path.abspath(item["path"]), destination)
+    for port, spec in descriptor.get("inputs", {}).items():
+        if "file" in spec["type"] or "directory" in spec["type"]:
+            stage(_expression_value(bound[port], spec["type"]))
+    def scalar(value):
+        if isinstance(value, dict):
+            if value.get("class") in ("File", "Directory"):
+                return value["path"]
+            raise TypeError("Command arguments cannot contain arbitrary objects")
+        return str(value)
+    command = [descriptor["command"]]
+    for arg in descriptor.get("arguments", []):
+        if "expression" in arg:
+            value = _evaluate_value(arg["expression"], bindings, bound, input_types=descriptor.get("inputs", {}))
+        elif "valueFrom" in arg:
+            value = bound[arg["valueFrom"]]
+        else:
+            value = arg["value"]
+        if value is None or value is False:
+            continue
+        prefix = arg.get("prefix")
+        if value is True:
+            values = [] if prefix else ["true"]
+        elif isinstance(value, list):
+            values = [scalar(item) for item in value]
+            if "itemSeparator" in arg:
+                values = [arg["itemSeparator"].join(values)]
+        else:
+            values = [scalar(value)]
+        if prefix is not None:
+            if arg.get("separate", True):
+                values.insert(0, prefix)
+            elif values:
+                values[0] = prefix + values[0]
+            else:
+                values = [prefix]
+        quote = shlex.quote if arg.get("shellQuote", True) else str
+        command.extend(quote(value) for value in values)
+    cmd = " ".join(command)
+    stdout = descriptor.get("stdout")
+    if stdout is not None:
+        stdout = _evaluate_value(stdout, bindings, bound, input_types=descriptor.get("inputs", {}))
+        if not isinstance(stdout, str) or not stdout or os.path.isabs(stdout) or ".." in stdout.split("/"):
+            raise ValueError(f"Invalid stdout destination: {stdout!r}")
+        cmd += " > " + shlex.quote(stdout)
+    logger.info("Step %s executes command %r", tool, cmd)
+    result = _run_command(cmd, cwd=workdir)
+    if result.returncode:
+        raise RuntimeError(f"Step {tool} failed with exit status {result.returncode}: {result.stderr.decode('utf-8')}")
+    outputs = {}
+    for port, spec in descriptor["runtimeOutputs"].items():
+        patterns = spec.get("glob")
+        patterns = [] if patterns is None else patterns if isinstance(patterns, list) else [patterns]
+        matched = []
+        for pattern in patterns:
+            resolved = _evaluate_value(pattern, bindings, bound, input_types=descriptor.get("inputs", {}))
+            for glob_pattern in resolved if isinstance(resolved, list) else [resolved]:
+                if not isinstance(glob_pattern, str):
+                    raise TypeError("Command output glob must evaluate to a string or string array")
+                absolute = os.path.abspath(os.path.join(workdir, glob_pattern))
+                if os.path.commonpath([workdir, absolute]) != workdir:
+                    raise ValueError("Command output glob escapes invocation directory")
+                matched.extend(sorted(glob.glob(absolute)))
+        matched = list(dict.fromkeys(matched))
+        files = [_expression_value(path, "file") for path in matched]
+        if spec.get("readContents"):
+            for file in files:
+                with open(file["path"], "rb") as stream:
+                    contents = stream.read(65537)
+                if len(contents) > 65536:
+                    raise ValueError("Output content loading exceeds 64 KiB")
+                file["contents"] = contents.decode("utf-8")
+        if spec.get("evaluate") is not None:
+            value = _evaluate_value(spec["evaluate"], bindings, bound, {"matchedFiles": files}, descriptor.get("inputs", {}))
+            def payload(item, data_type):
+                inner = _list_inner(data_type)
+                if inner is not None:
+                    if not isinstance(item, list):
+                        raise TypeError(f"Command output {port} expected {data_type}")
+                    return [payload(child, inner) for child in item]
+                if data_type == "file":
+                    if isinstance(item, dict) and item.get("class") == "File":
+                        return item["path"]
+                    raise TypeError(f"Command output {port} expected a File object")
+                expected = {"string": str, "int": int, "bool": bool}.get(data_type)
+                if expected is None or type(item) is not expected:
+                    raise TypeError(f"Command output {port} expected {data_type}, received {type(item).__name__}")
+                return item
+            outputs[port] = payload(value, spec["type"])
+        elif _list_inner(spec["type"]) == "file":
+            outputs[port] = matched
+        elif spec["type"] == "file":
+            if len(matched) != 1:
+                raise FileNotFoundError(f"Step {tool} output {port} expected one File, matched {len(matched)}")
+            outputs[port] = matched[0]
+        else:
+            raise NotImplementedError(f"Step {tool} output {port}: {spec['type']} requires an explicit evaluator")
+    return outputs
+'''
+
 preamble = "\n".join(
     [
         python_header,
@@ -1111,6 +1233,14 @@ preamble = "\n".join(
 )
 
 
+def _contains_expression(value):
+    if isinstance(value, dict):
+        return value.get("language") == "javascript" or any(_contains_expression(item) for item in value.values())
+    if isinstance(value, list):
+        return any(_contains_expression(item) for item in value)
+    return False
+
+
 class DefaultTarget(StructuredCompiler):
     def __init__(
         self,
@@ -1130,7 +1260,7 @@ class DefaultTarget(StructuredCompiler):
         assert self.current_workflow is not None
         roots = list(self.additional_dependencies)
         if any(
-            step.expression is not None
+            (step.expression is not None or _contains_expression(step.metadata))
             for step in self.current_workflow.get_location_steps(location)
         ):
             roots.append("Js2Py-3.14")
@@ -1156,7 +1286,7 @@ class DefaultTarget(StructuredCompiler):
         assert self.current_workflow is not None
 
         has_expressions = any(
-            step.expression is not None
+            (step.expression is not None or _contains_expression(step.metadata))
             for step in self.current_workflow.get_location_steps(location)
         )
         requirements_name = f"{location.name}.requirements.txt"
@@ -1471,7 +1601,8 @@ echo "Workflow execution terminated"
         metadata = json.loads(json.dumps(self.metadata))
         for name, step in self.current_workflow.steps.items():
             metadata["steps"][name]["runtimeOutputs"] = {
-                port: {"type": processor.type, "glob": processor.glob}
+                port: {"type": processor.type, "glob": processor.glob,
+                       "readContents": processor.read_contents, "evaluate": processor.evaluate}
                 for port, processor in (step.processors or {}).items()
             }
         initial = [{"port": port, "payload": data.value,
@@ -1481,7 +1612,7 @@ echo "Workflow execution terminated"
         scratch = self.tmpdir or location.workdir or self.outdir
         with Path(self.outdir, f"{location.name}.py").open("w") as trace:
             trace.write("\n".join([python_header, imports, global_vars, file_rendezvous_helpers,
-                                   list_helper, expression_function, framing_helpers, exec_function]))
+                                   list_helper, expression_function, framing_helpers, exec_function, command_tool_function]))
             trace.write(runtime_source.replace("from __future__ import annotations", ""))
             trace.write(TERM_CONSTRUCTORS)
             trace.write(f"\nMETADATA = {pprint.pformat(metadata, sort_dicts=False)}\nINITIAL = {pprint.pformat(initial, sort_dicts=False)}\n")
@@ -1533,11 +1664,19 @@ def _execute_bound(tool, inputs):
         events[port] = Event()
     scope_globals.update(ports=local_ports, available_port_data=events)
     if descriptor.get("expression"):
-        expr = descriptor["expression"]
-        fn = types.FunctionType(_expression.__code__, scope_globals)
-        fn(descriptor["displayName"], expr["source"],
-           {name: (spec["port"], spec["type"]) for name, spec in expr.get("inputs", {}).items()},
-           {name: (port, descriptor["runtimeOutputs"][port]["type"]) for name, port in expr.get("outputs", {}).items()})
+        expression = descriptor["expression"]
+        bindings = _resolve_bindings(descriptor.get("bindings", {}), inputs, input_types=descriptor.get("inputs", {}))
+        result = _evaluate_value(expression, bindings, inputs, input_types=descriptor.get("inputs", {}))
+        if not isinstance(result, dict):
+            raise TypeError(f"Expression step {tool} must return an object")
+        return {port: _coerce_expression_output(result[name], descriptor["runtimeOutputs"][port]["type"])
+                for name, port in expression["outputs"].items()}
+    elif ("bindings" in descriptor or "inputs" in descriptor or "stdout" in descriptor
+          or any("expression" in arg for arg in descriptor.get("arguments", []))
+          or any("evaluate" in output or "readContents" in output
+                 or isinstance(output.get("glob"), (dict, list))
+                 for output in descriptor.get("outputs", {}).values())):
+        return _execute_command(tool, descriptor, inputs)
     else:
         fn = types.FunctionType(_exec.__code__, scope_globals)
         arguments = [(arg.get("value", arg.get("valueFrom")), "valueFrom" in arg)
@@ -1563,7 +1702,7 @@ def main():
     _write_address_file(listener.getsockname()[1])
     _load_address_book()
     runtime = Runtime(METADATA, LOCATION_NAME, locations, listener,
-                      _send_value, _recv_value, _execute_bound)
+                      _send_value, _recv_value, _execute_bound, _evaluate_condition)
     ACTIVE_RUNTIME = runtime
     runtime.start()
     try:
@@ -1657,17 +1796,28 @@ class _PythonEmitter:
         if node.kind == "recv":
             return f"runtime.try_receive(env, {args['port']!r}, {self._term(args['term'])}, {args['src']!r})"
         if node.kind == "move":
-            return f"runtime.try_move(env, {args['port']!r}, {self._term(args['term'])})"
+            return f"runtime.try_move(env, {args['port']!r}, {self._term(args['term'])}, {args['dst']!r})"
         return "True"
 
     def _selector(self, alternatives, depth):
         name = self._name("select")
         self._write(depth, f"def {name}(env):")
+        has_named = any("id" in guard for _nodes, conditions in alternatives for guard, _expected in conditions)
+        if has_named:
+            self._write(depth + 1, "evaluated = {}")
+            self._write(depth + 1, "def condition_value(name, scope):")
+            self._write(depth + 2, "if name not in evaluated:")
+            self._write(depth + 3, "evaluated[name] = runtime.condition_value(name, env, scope)")
+            self._write(depth + 2, "return evaluated[name]")
         for index, (nodes, conditions) in enumerate(alternatives):
             predicates = []
             for guard, has_data in conditions:
-                method = "has_data" if has_data else "exhausted"
-                predicates.append(f"runtime.{method}({guard['port']!r}, {self._term(guard['scope'])}, env)")
+                if "id" in guard:
+                    scope = self._term(guard["scope"]) if guard.get("scope") is not None else "None"
+                    predicates.append(f"condition_value({guard['id']!r}, {scope}) is {has_data!r}")
+                else:
+                    method = "has_data" if has_data else "exhausted"
+                    predicates.append(f"runtime.{method}({guard['port']!r}, {self._term(guard['scope'])}, env)")
             if nodes:
                 predicates.append(self._try_action(nodes[0]))
             condition = " and ".join(predicates) or "True"

@@ -247,9 +247,26 @@ class CompileVisitor(SWIRLVisitor, ABC):
         if unknown_locations:
             raise ValueError(f"Step {name}: unknown mapped locations {sorted(unknown_locations)}")
         step_metadata = self.metadata["steps"][name]
-        declared_inputs = step_metadata.get("inputPorts")
+        declared_inputs = step_metadata.get("inputs")
         if declared_inputs is not None and set(declared_inputs) != {p for p, _ in inputs}:
-            raise ValueError(f"Step {name}: exec inputs do not match metadata inputPorts")
+            raise ValueError(f"Step {name}: exec inputs do not match metadata inputs")
+        if declared_inputs is not None:
+            for port, term in inputs:
+                actual_type = self._get_data_type(term, port)
+                expected_type = declared_inputs[port]["type"]
+                if actual_type != "dynamic" and actual_type != expected_type:
+                    raise ValueError(f"Step {name}: input {port} type {actual_type} does not match declared type {expected_type}")
+        def referenced_ports(value):
+            if isinstance(value, dict):
+                if "port" in value:
+                    yield value["port"]
+                for item in value.values():
+                    yield from referenced_ports(item)
+            elif isinstance(value, list):
+                for item in value:
+                    yield from referenced_ports(item)
+        if any(port not in {p for p, _ in inputs} for port in referenced_ports(step_metadata)):
+            raise ValueError(f"Step {name}: expression binding references a port outside exec inputs")
         if set(step_metadata.get("outputs", {})) != {p for p, _ in outputs}:
             raise ValueError(f"Step {name}: exec outputs do not match metadata outputs")
         def same_identity(left, right):
@@ -277,7 +294,8 @@ class CompileVisitor(SWIRLVisitor, ABC):
             data_port = {d: p for p, d in list(inputs) + list(outputs)}
             outdata_patterns = step_metadata.get("outputs", {})
             expression = step_metadata.get("expression", {})
-            expression_source = expression.get("source")
+            if expression and "language" not in expression:
+                raise ValueError(f"Step {name}: legacy expression metadata requires retranslating to a language/source descriptor")
             step_type = step_metadata.get("type")
 
             step = Step(
@@ -288,10 +306,12 @@ class CompileVisitor(SWIRLVisitor, ABC):
                     port_name: Processor(
                         self._descriptor_type(value),
                         value.get("glob", None),
+                        value.get("readContents", False),
+                        value.get("evaluate"),
                     )
                     for port_name, value in outdata_patterns.items()
                 },
-                expression=expression_source,
+                expression=expression or None,
                 step_type=step_type,
                 scatter_method=step_metadata.get("scatterMethod"),
                 scatter=step_metadata.get("scatter") or step_metadata.get("scatterPorts"),
@@ -344,19 +364,10 @@ class CompileVisitor(SWIRLVisitor, ABC):
                 (
                     arg["value"]
                     if "value" in arg
-                    else self.workflow.ports[arg["valueFrom"]]
+                    else (arg if "expression" in arg else self.workflow.ports[arg["valueFrom"]])
                 )
                 for arg in step_args
             ]
-            expression_inputs = expression.get("inputs", {})
-            step.expression_inputs = {
-                input_name: self.workflow.ports[value["port"]]
-                for input_name, value in expression_inputs.items()
-            }
-            step.expression_input_types = {
-                input_name: value["type"]
-                for input_name, value in expression_inputs.items()
-            }
             step.expression_outputs = {
                 output_name: self.workflow.ports[port_name]
                 for output_name, port_name in expression.get("outputs", {}).items()
@@ -416,6 +427,11 @@ class CompileVisitor(SWIRLVisitor, ABC):
                 collection = descriptor.get("collections", {}).get(port)
                 if collection:
                     return collection["type"]
+        if port is not None:
+            for step in self.metadata["steps"].values():
+                descriptor = step.get("inputs", {}).get(port)
+                if descriptor:
+                    return descriptor["type"]
         types = set()
         for step in self.metadata["steps"].values():
             for descriptor in step.get("outputs", {}).values():
@@ -468,9 +484,21 @@ class CompileVisitor(SWIRLVisitor, ABC):
             self.visit(ctx.trace(1))
             self.compiler.end_seq()
         elif ctx.op.type == SWIRLParser.CHOICE:
+            guard = None
+            if ctx.guard():
+                name = utils.get_name(ctx.guard().port())
+                if ctx.guard().data():
+                    guard = {"port": name, "scope": utils.get_term(ctx.guard().data())}
+                else:
+                    if name not in self.metadata.get("conditions", {}):
+                        raise ValueError(f"Unknown condition {name}")
+                    guard = {"id": name}
+                    descriptor = self.metadata["conditions"][name]
+                    if descriptor["type"] == "has_data":
+                        from swirlc.core.parsing import parse_term
+                        guard["scope"] = parse_term(descriptor["scope"])
             self.compiler.begin_choice(
-                {"port": utils.get_name(ctx.guard().port()), "scope": utils.get_term(ctx.guard().data())}
-                if ctx.guard() else None
+                guard
             )
             self.visit(ctx.trace(0))
             self.compiler.choice()
@@ -511,7 +539,7 @@ class CompileVisitor(SWIRLVisitor, ABC):
     def visitWorkflow(self, ctx: SWIRLParser.WorkflowContext):
         from swirlc.core.parsing import validate_bindings
 
-        validate_bindings(ctx)
+        validate_bindings(ctx, self.metadata.get("conditions", {}))
         self._pre_scan_execs(ctx)
         self.compiler.begin_workflow(self.workflow)
         val = self.visitChildren(ctx)

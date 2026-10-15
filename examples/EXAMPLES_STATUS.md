@@ -1,6 +1,214 @@
+## Named condition validation (2026-10-15)
+
+Named-condition validation evidence:
+- Focused regressions: 180 tests plus 3 subtests; includes 23 condition checks
+  covering both targets, both Boolean branches, native stream pending/exhausted
+  states, strict Boolean results, evaluator errors, short-circuiting, concurrent
+  task isolation and parallel input merges. Generated tests bundle installed
+  dependencies offline and use bounded deadlines.
+- Toy: `build/named-conditions-toy/acceptance.json`, six locations, both compiler
+  targets and hints modes, exact expected results, 29 isolated commands each.
+- Eight pipelines: `build/named-conditions-pipelines/`, 32 trace/default compiles
+  and 16 local runs, with/without hints, exact ordered outputs and termination.
+- Ordinary examples: 4 passed (`tests/test_pipeline_contract.py -k ordinary`),
+  including the supplied nested split configuration executed as a local mirror.
+Expected results, source examples and comparison rules were unchanged.
+
+## Single typed input declaration (2026-10-15)
+
+The active v1.1 step contract is `inputs: {port: {type: TYPE}}`. It replaces
+`inputPorts` and `fileInputs`; both old fields are rejected by the strict schema.
+Expression port bindings contain only `port`, and obtain their types from the
+step's input declarations. File/Directory staging, including nested arrays,
+also derives from those declarations independently of expression variable names.
+Object and execution-context bindings are unchanged. Tool, expression, dispatch,
+gather and occurrence-publisher descriptors use this contract. Ordinary legacy
+literal/direct-port descriptors without bindings remain supported.
+
+The compiler verifies exact exec input-port ownership and rejects known payload
+types that conflict with declared input types. The shared serializer preserves
+typed declarations. Generated Python remains direct and source-language-neutral;
+no CWL/Node runtime dependency, additional communication or exec action is added.
+Regenerate older v1.1 metadata rather than mixing the two contracts.
+
+Validation evidence for typed inputs:
+- Eight depth/variant pipelines: `build/typed-inputs/pipelines-final/`, 32 trace/default
+  compilations and 16 local executions, with/without hints, exact expected values,
+  configured placement, isolated task directories and successful termination.
+- Toy genome: `build/typed-inputs-toy/acceptance.json`, both targets/modes, six
+  locations and 29 isolated command tasks per execution.
+- Focused descriptor/schema/expression/codegen/trace tests: 87 passed; scoped
+  runtime/compiler/parser/collections/cancellation/hints: 60 passed plus 3 subtests;
+  ordinary lists/lists-input/nested/nested-split local mirror: 4 passed.
+- Real 1000Genomes translated and strict metadata validated only:
+  `build/typed-inputs-genome/translation.log`, 44 descriptors and 12 population
+  File port contexts. No data downloads or real genome execution.
+- A simultaneous duplicate toy validation attempt hit occupied local ports; the
+  final toy and pipeline evidence above comes from separate, successful runs.
+
+## Production metadata excludes scatterRegions (2026-10-15)
+
+Removed `scatterRegions` from CWL translator output and the strict v1.1 schema,
+and deleted internal bookkeeping used solely to construct that diagnostic block.
+Execution retains scatter methods, routes, types and dispatch/gather descriptors;
+SWIRL retains scope, ownership, placements and closure actions. No runtime change.
+Legacy v1.0 schema/hint handling is unchanged. Retranslate previous v1.1 artifacts.
+
+Acceptance checks now inspect participating dispatch operation IDs and routes,
+and resolve declared final outputs through root gather output descriptors instead
+of diagnostic region records. Expected outputs and comparison rules are unchanged.
+Evidence: `build/scatter-regions-cleanup/acceptance.json` passes toy genome with
+six locations, both targets/hints modes and 29 isolated commands per execution.
+All eight pipelines pass in `build/scatter-regions-pipelines/`: 32 compilations,
+16 executions, exact outputs including nested empty branches and duplicates.
+Focused checks: 70 tests plus 3 subtests (metadata, CWL descriptors, scoped runtime,
+Python codegen, trace and hints). Historical deleted-fixture/checksum failures
+remain outside this cleanup; fixtures were not restored.
+
 # Example status
 
-## Direct Python compilation — 2026-10-13
+## Toy genome — 2026-10-15
+
+`examples/cwl/toy-genome` is a retained local analogue of the 1000Genomes graph:
+paired outer File scatter, ordinary chromosome subworkflow, two independent
+ExpressionTools, paired interval scatter/gather, parallel sifting, sibling
+population scatters over a reusable root File array, repeated populations and
+File[][]/string[][] final aliases. Three tiny chromosomes have 3/2/0 intervals;
+all fake commands use Python's standard library. Six configured local locations
+reuse the same inner worker pool, with no data downloads or genomic dependencies.
+
+Both trace/default compilation and hints/no-hints execution pass exact expected
+values, types, task IDs, configured placement and 29 isolated command directories
+per run. Four compilations and two executions are retained in `build/toy-genome`,
+with full logs, manifests and `acceptance.json`. Run:
+`rtk .venv/bin/python -m tests.test_toy_genome --output build/toy-genome`.
+See [toy-genome/README.md](cwl/toy-genome/README.md) for fake processing and outputs.
+All eight earlier pipelines pass again (32 compilations, 16 executions), with
+four ordinary local list/nested checks, under `build/toy-genome-regressions`.
+
+## Generic expression execution — 2026-10-14
+
+CWL syntax and context interpretation now belong to the CWL translator. It emits
+source-language-independent JavaScript function-body descriptors (`language`,
+`source`, optional `bindings`). Sole expressions retain their value type;
+interpolation is lowered into JavaScript string-building code. InputBinding
+`self` is an explicit local port binding, not rewritten source text. Output
+processors explicitly bind `self` to the generic `matchedFiles` execution context.
+The runtime never parses CWL `$()`/`${}` syntax or imports `cwl_utils`.
+
+Generic bindings may reference typed ports, nested objects or named execution
+contexts; variable names are chosen by the translator. `fileInputs` requests file
+staging independently of expression variable names. Output descriptors use
+`readContents` and `evaluate`; dynamic stdout/globs carry generic expression
+objects. `_evaluate_expression` executes bodies through the existing pure-Python
+Js2Py engine, and `_execute_command` performs generic command/output operations.
+The compiler/schema/shared serializer preserve these descriptors. Node is neither
+required nor invoked; installed Python dependencies can still be bundled offline.
+Literal/direct-port legacy commands retain their existing execution path.
+
+The previous CWL-specific expression metadata must be regenerated by translating
+its source; raw expression wrappers and the former inputs/inputTypes/outputEval/
+loadContents fields are not the new v1.1 descriptor contract. This ownership
+refactor adds no SWIRL actions and does not expand CWL feature coverage. Earlier
+runtime-context/expressionLib, JS scanner/conformance, Directory transport and
+remote/genome execution limits remain. The earlier tool-metadata implementation
+and its incident report are historical records below.
+
+Final verification: all eight pipelines pass **8 translations, 32 compilations
+and 16 executions**, with both targets and hints modes. **67 focused tests,
+66 core regressions, four ordinary local examples and three subtests pass**.
+Every pipeline SWIRL action body is unchanged from the completed metadata stage;
+only its generated command header differs. Generated Python AST inspection finds
+no CWL parser/helper/import and retains direct workflow control flow. See
+`build/compiler-generic-expressions/summary.json`. Depth-3 validation required a
+retry while an unrelated desktop outbound socket occupied configured port 35662;
+the original ports/examples passed after it cleared. No process was killed,
+source example modified, expected value changed or dependency downloaded.
+
+This generic contract supersedes the earlier CWL-specific metadata descriptor
+fields while retaining their validated semantics. Reproduce the matrix with
+`rtk .venv/bin/python tests/test_pipeline_contract.py --output build/compiler-generic-expressions`.
+
+Current validation artifacts are under `build/compiler-generic-expressions`,
+with per-depth/variant reports and generic generated Python. The same eight-case
+acceptance harness checks both targets and hints modes, exact values/types/IDs,
+placements, isolated task directories, scopes and successful termination.
+1000Genomes was translated and inspected only: 44 matching exec descriptors and
+12 population nameroot/glob binding contexts, in `genome/inspection.json`.
+
+## Historical tool metadata acceptance — 2026-10-14
+
+Repairs #3/#5/#6 are implemented across CWL emission, strict v1.1 metadata,
+loading and directly compiled Python execution. Each command descriptor has one
+`inputs` name-to-port map and matching `inputTypes`. Arguments retain literal
+`value`, direct-port `valueFrom` or `expression` (exactly one), their source
+position and prefix/separate/shellQuote/itemSeparator options. InputBinding
+`self` is normalized within expression tokens to its named input; quoted/escaped
+literal text and output `self` are preserved. Base-command tokens precede the
+CWL-position-ordered bindings. No extra exec or communication actions are added.
+
+The existing JavaScript evaluator handles typed File fields, interpolation and
+output `self`. Explicit stdout is written in each isolated invocation directory;
+dynamic globs use named inputs. Matched File objects gain contents only when
+requested (UTF-8, at most 64 KiB), then outputEval runs before publication.
+Declared output types are checked; raw strings are never implicitly trimmed.
+Legacy descriptors without the new input map retain their prior command path.
+JavaScript array conversion now retains lists rather than numbered dictionaries.
+Concurrent dependency bootstrap uses process-specific temporary archive paths.
+
+All eight `examples/cwl/pipeline/depth-{0,1,2,3}/{plain,metadata}` configurations
+passed translation, trace/default compilation and bounded execution at their
+configured distinct local locations, both with and without advisory hints:
+**8 translations, 32 compilations, 16 executions**. Complete logs, SWIRL,
+metadata, traces, direct Python and final output manifests are retained under
+`build/compiler-tool-metadata/depth-N/VARIANT/{hints,no-hints}/{trace,default}`;
+per-case `acceptance.json` records exact expected outputs, placement and isolated
+command-task counts **2/3/3/4** at depths 0/1/2/3 in both variants and modes.
+Plain File contents lose only their final newline for comparison; metadata
+strings are compared unchanged. Ordering, duplicates, nested arrays, empty
+branches, exec port ownership, scope bindings and joined termination pass.
+The plain SWIRL action bodies match the completed paired-collections baseline;
+only the generated command comment differs with the new output directory.
+
+Reproduce the retained matrix with:
+`rtk .venv/bin/python tests/test_pipeline_contract.py --output build/compiler-tool-metadata`.
+Default acceptance bundles installed dependencies; tests disable pip indexes.
+The focused/parser/schema/trace/codegen/scoped-runtime/expression/cancellation/
+hints suite passed **119 tests and 3 subtests**; `test_compiler.py` passed **4**;
+the complete pipeline/list/nested suite passed **12**. Focused tests include
+argument ordering/options, nameroot, dynamic scalar/list globs, loaded File self,
+exact string/list/type/ID preservation, malformed/unsupported expressions,
+command/output failure wakeup and a deterministic concurrent bootstrap race.
+
+Ordinary `nested/streamflow.yml` returns `[processed] HELLO WORLD`. The split
+configuration retains its original SSH metadata and was executed only via a
+separate explicitly local metadata mirror with two locations; it returns the
+same string. Retained evidence is in `build/compiler-tool-metadata/nested`.
+1000Genomes was translated and inspected, never executed: all **44** exec
+metadata entries are unique/matching and **12** population-tool descriptors
+retain `-pop $(inputs.population.nameroot)` and the same named input in output
+globs. See `build/compiler-tool-metadata/genome/inspection.json`.
+
+Limits: expression positions are rejected; supported expressions use the existing
+Js2Py JavaScript engine (not full modern JavaScript/CWL conformance). Runtime and
+expressionLib contexts, secondary-file/staging requirements and broader optional/
+union/output schemas remain unverified; Directory transport and legacy pair/open
+scatter remain explicitly unsupported. SSH/SLURM/Docker and genome execution are
+not established by this local evidence. The historical `test_cwl_new_syntax.py`
+run still has 15 failures due to deleted fixtures and one obsolete SWIRL assertion;
+fixtures were not restored and validation/source expectations were not weakened.
+The full failure log is `build/compiler-tool-metadata/legacy-cwl-syntax.log`.
+
+Validation incident: an initial nested split launcher unintentionally attempted
+SSH/SCP to `hpc.example.org` and failed DNS/key lookup (exit 255). Earlier list
+launchers installed cached wheels; no download was observed, but index access
+cannot be excluded. These attempts violated the requested no-remote boundary.
+They were stopped; subsequent tests inspect deployments, mirror split metadata
+locally and bundle dependencies. Exact evidence and limitations are recorded in
+`build/compiler-tool-metadata/nested/streamflow-split/remote-attempt.md`.
+No commits, pushes, binary inspection, destructive operations or fixture restoration.
+
+## Historical direct Python compilation — 2026-10-13
 
 The default target lowers the shared structured frontend into ordinary Python
 `workflow` functions. Generated programs call scoped receive, step execution and
@@ -23,7 +231,7 @@ Deferred metadata repairs #3/#5/#6 and SSH/SLURM execution remain outside this
 local evidence. The earlier compiler record below describes the original scoped
 implementation and is retained as historical evidence.
 
-## Compiler execution evidence — 2026-10-12
+## Historical compiler execution evidence — 2026-10-12
 
 The accepted concrete contract now uses one ANTLR frontend, structured terms and
 strict v1.1 metadata for both targets. Trace output includes envelopes, scoped

@@ -31,7 +31,25 @@ def parse_workflow(source: str) -> SWIRLParser.WorkflowContext:
     return tree
 
 
-def validate_bindings(tree: SWIRLParser.WorkflowContext) -> None:
+def parse_term(source: str):
+    """Parse a metadata identity with the same syntax and errors as SWIRL."""
+    from swirlc.core.utils import get_term
+
+    errors = _Errors()
+    lexer = SWIRLLexer(antlr4.InputStream(source))
+    lexer.removeErrorListeners()
+    lexer.addErrorListener(errors)
+    tokens = antlr4.CommonTokenStream(lexer)
+    parser = SWIRLParser(tokens)
+    parser.removeErrorListeners()
+    parser.addErrorListener(errors)
+    term = parser.data(0)
+    if errors.messages or tokens.LA(1) != antlr4.Token.EOF:
+        raise ValueError(f"Invalid SWIRL identity: {source}")
+    return get_term(term)
+
+
+def validate_bindings(tree: SWIRLParser.WorkflowContext, conditions: dict | None = None) -> None:
     """Check lexical construction and nearest replication ownership."""
     from swirlc.core.utils import get_flow, get_term, normalize_envelope
 
@@ -57,8 +75,15 @@ def validate_bindings(tree: SWIRLParser.WorkflowContext) -> None:
         if isinstance(ctx, SWIRLParser.TraceOpContext):
             if ctx.op.type == SWIRLParser.SEQ:
                 return walk(ctx.trace(1), walk(ctx.trace(0), bound, replicated), replicated)
-            if ctx.guard():
+            if ctx.guard() and ctx.guard().data():
                 require(get_term(ctx.guard().data()), bound, "choice guard")
+            elif ctx.guard() and conditions is not None:
+                name = ctx.guard().port().getText()
+                if name not in conditions:
+                    raise ValueError(f"Unknown condition {name}")
+                descriptor = conditions[name]
+                if descriptor["type"] == "has_data":
+                    require(parse_term(descriptor["scope"]), bound, f"condition {name}")
             left = walk(ctx.trace(0), bound, replicated)
             right = walk(ctx.trace(1), bound, replicated)
             return left & right if ctx.op.type == SWIRLParser.CHOICE else left | right

@@ -11,7 +11,7 @@ Each `depth-N` directory contains two independently configured workflows:
   literal output globs. No deferred metadata features are required. Outputs are
   Files whose contents are `item=NAME` followed by one newline.
 - `metadata`: prints the same markers and returns strings without the newline.
-  These versions require all three deferred repairs: argument expressions (#3),
+  These versions exercise all three metadata repairs: argument expressions (#3),
   stdout plus loadContents/outputEval (#5), and inputBinding.valueFrom (#6).
 
 The output types intentionally differ: copying a File exercises the existing
@@ -64,7 +64,7 @@ The depth-0 dependency requires transport between stage and finish; nested
 variants require transport between scatter owners. Locations all run on the same
 machine. These examples do not require multiple workers at the same level.
 
-## Translate now; compile and execute after compiler implementation
+## Translate, compile and execute locally
 
 From the repository root, select a depth and variant:
 
@@ -77,23 +77,51 @@ rtk mkdir -p "$output"
 rtk .venv/bin/swirlc translate -l cwl "$example/streamflow.yml" -o "$output"
 ```
 
-After the shared frontend and the corresponding backend support these artifacts:
+Compile both targets and bundle the installed evaluator dependencies for execution:
 
 ```sh
 rtk mkdir -p "$output/trace" "$output/python"
 rtk .venv/bin/swirlc compile "$output/workflow.swirl" "$output/metadata.yml" \
   --target trace -o "$output/trace"
 rtk .venv/bin/swirlc compile "$output/workflow.swirl" "$output/metadata.yml" \
-  --target default -o "$output/python"
+  --target default --bundle-dependencies -o "$output/python"
 rtk sh -c 'cd "$1" && ./run.sh' sh "$output/python"
 ```
 
-The current compilers do not support the full emitted envelope/scoped syntax,
-including the plain variants. Metadata variants additionally retain intentionally
-unsupported source features: `render.cwl` uses an expression for the printf format,
-transforms the File input with `self.nameroot`, redirects stdout, loads the result
-and evaluates `self[0].contents.trim()`. Missing descriptors are a failure to
-preserve the source contract, even if translation returns zero.
+Both variants now pass the complete local contract. Metadata tools preserve and
+evaluate printf format expressions, File nameroot transformations, explicit
+stdout and loaded output File self. Translation, both-target compilation and
+execution fail validation if descriptors or expected values are missing.
+
+## Generic expression boundary — 2026-10-14
+
+These examples now translate expressions into generic JavaScript function bodies
+and explicit bindings; CWL syntax is interpreted only during translation.
+Generated runtime code uses a pure-Python JavaScript engine, without Node or
+`cwl_utils`. The refactor acceptance artifacts are in
+`build/compiler-generic-expressions/depth-N/VARIANT`.
+All eight cases pass both targets and both hint modes: 32 compilations and
+16 executions, with unchanged SWIRL action bodies and exact expected outputs.
+See `build/compiler-generic-expressions/summary.json`.
+
+## Validation record — 2026-10-14
+
+All eight cases passed 32 trace/default compilations and 16 bounded executions
+with/without hints at their distinct configured local locations. Values match
+`expected.json` exactly, with unchanged strings, ordered duplicate occurrences,
+nested empty branches and 2/3/3/4 isolated command tasks by depth. Full artifacts
+and per-case `acceptance.json` are in `build/compiler-tool-metadata/depth-N/VARIANT`.
+The acceptance harness checks descriptor ownership, trace scopes/closure/joins,
+direct Python execution calls, placement, task isolation and successful termination.
+
+Run the retained matrix with:
+
+```sh
+rtk .venv/bin/python tests/test_pipeline_contract.py --output build/compiler-tool-metadata
+```
+
+This uses installed dependency bundles and disables pip indexes. Broader CWL
+conformance and remote/genome execution remain outside this local evidence.
 
 ## Validation record — 2026-10-12
 

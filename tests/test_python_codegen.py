@@ -100,7 +100,7 @@ def test_collection_codegen_uses_port_and_envelope(tmp_path) -> None:
     metadata = {
         "locations": {"l0": {}},
         "dependencies": {"d": {"type": "list[string]", "value": ["a", "a"]}},
-        "steps": {"s": {"displayName": "Dispatch", "inputPorts": ["p"],
+        "steps": {"s": {"displayName": "Dispatch", "inputs": {"p": {"type": "list[string]"}},
                         "outputs": {"q": {"collection": {
                             "name": "stream", "scope": "root", "elementId": "root / ?i", "type": "string"}}}}},
     }
