@@ -1,0 +1,35 @@
+version: v1.0
+workflows:
+  depth_1_round_trip:
+    type: cwl
+    config:
+      file: main.cwl
+      settings: ../depth-1-split/inputs.yml
+    bindings:
+      - step: /
+        target:
+          deployment: source
+      - step: /process_items
+        target:
+          - deployment: worker_a
+          - deployment: worker_b
+      - step: /process_items/2
+        target:
+          deployment: shared
+deployments:
+  source:
+    type: local
+    config: {}
+    port: 35700
+  worker_a:
+    type: local
+    config: {}
+    port: 35701
+  worker_b:
+    type: local
+    config: {}
+    port: 35702
+  shared:
+    type: local
+    config: {}
+    port: 35703

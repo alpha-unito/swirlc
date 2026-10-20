@@ -1,0 +1,30 @@
+version: v1.0
+workflows:
+  depth_1_split:
+    type: cwl
+    config:
+      file: main.cwl
+      settings: inputs.yml
+    bindings:
+      - step: /
+        target:
+          deployment: source
+      - step: /process_items
+        target:
+          deployment: worker
+      - step: /process_items/finish
+        target:
+          deployment: finish
+deployments:
+  source:
+    type: local
+    config: {}
+    port: 35680
+  worker:
+    type: local
+    config: {}
+    port: 35681
+  finish:
+    type: local
+    config: {}
+    port: 35682

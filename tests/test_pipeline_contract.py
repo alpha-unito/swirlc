@@ -210,6 +210,44 @@ def verify_bundle(directory, metadata, outputs, expected, example, variant="plai
     return actual, placements, len(task_directories)
 
 
+@pytest.mark.parametrize("name, base_port, first, shared, last", [
+    ("depth-1-split-two-workers", 35690, "stage", "finish", None),
+    ("depth-1-round-trip", 35700, "1", "2", "3"),
+])
+def test_scattered_subworkflow_two_workers(tmp_path, name, base_port, first, shared, last):
+    example = ROOT / "examples/cwl/pipeline" / name
+    run_command([str(PYTHON), "-m", "swirlc", "translate", "-l", "cwl",
+                 str(example / "streamflow.yml"), "-o", str(tmp_path)], tmp_path / "translation.log")
+    run_command([str(PYTHON), "-m", "swirlc", "compile", str(tmp_path / "workflow.swirl"),
+                 str(tmp_path / "metadata.yml"), "--bundle-dependencies", "-o", str(tmp_path)],
+                tmp_path / "compilation.log")
+    run_command(["bash", "run.sh"], tmp_path / "execution.log", cwd=tmp_path, timeout=30)
+    metadata = SwirlValidator().validate_file(str(tmp_path / "metadata.yml"))
+    placements = {}
+    for location, details in metadata["locations"].items():
+        records = json.loads((tmp_path / f"{location}.outputs.json").read_text())
+        placements[details["deployment"]["port"]] = records
+    stages = []
+    for port in (base_port + 1, base_port + 2):
+        ids = {tuple(record["id"]) for record in placements[port]
+               if record["port"] == f"p_process_items_{first}_result"}
+        assert ids, "Each scatter worker must execute stage tasks"
+        if last:
+            assert {tuple(record["id"]) for record in placements[port]
+                    if record["port"] == f"p_process_items_{last}_result"} == ids
+        stages.append(ids)
+    assert stages[0].isdisjoint(stages[1])
+    assert stages[0] | stages[1] == {(0,), (1,), (2,)}
+    assert {tuple(record["id"]) for record in placements[base_port + 3]
+            if record["port"] == f"p_process_items_{shared}_result"} == {(0,), (1,), (2,)}
+    main_example = example if last else example.parent / "depth-1-split"
+    _, final_port = terminal_ports(main_example, metadata)["results"]
+    final = [record["payload"] for record in placements[base_port] if record["port"] == final_port]
+    assert len(final) == 1
+    assert [Path(path).read_text().rstrip("\n") for path in final[0]] == [
+        "item=alpha", "item=beta", "item=alpha"]
+
+
 def check_depth(depth, root, prepare_only=False, variant="plain"):
     example = ROOT / f"examples/cwl/pipeline/depth-{depth}/{variant}"
     directory = root / f"depth-{depth}" / variant

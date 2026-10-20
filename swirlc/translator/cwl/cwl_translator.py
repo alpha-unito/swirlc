@@ -542,8 +542,11 @@ def _lower_expression(source: str, bindings: dict | None = None) -> dict:
         pieces.append((True, body))
     if literal:
         pieces.append((False, "".join(literal)))
-    if len(pieces) == 1 and pieces[0][0]:
-        body = pieces[0][1]
+    # YAML block scalars commonly surround standalone expressions with whitespace.
+    significant = [(expression, value) for expression, value in pieces
+                   if expression or value.strip()]
+    if len(significant) == 1 and significant[0][0]:
+        body = significant[0][1]
     else:
         terms = ["_text((function(){" + value + "})())" if expression else json.dumps(value)
                  for expression, value in pieces]
@@ -1314,6 +1317,12 @@ class CWLTranslator(AbstractTranslator):
             context.location_by_deployment.get(target, context.controller)
             if target else context.controller
         )
+        # Keep a scatter body on its assigned worker when that worker is eligible.
+        if context.task_id and context.controller in {
+            context.location_by_deployment.get(candidate)
+            for candidate in invocation.deployments
+        }:
+            location = context.controller
         child = context.child(context.region, controller=location)
         pending_inputs = set(child.pending)
         receives = self._ready_inputs(invocation, child, location)

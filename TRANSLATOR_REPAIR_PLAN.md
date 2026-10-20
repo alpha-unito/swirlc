@@ -697,6 +697,11 @@ specified by metadata; actual resulting payload is not runtime-proven.
 
 ### Unresolved work and coverage limits
 
+Future runtime work may add heartbeat signals to check whether a node expected
+to send data is still alive. Keep node liveness separate from workflow-data wait
+duration: valid steps may run for days. Heartbeat policy and handling of suspected
+node loss are deferred; a missed heartbeat alone does not prove node failure.
+
 Deferred metadata #3 (command argument expressions), #5 (stdout and output
 processing) and #6 (inputBinding.valueFrom transformations) remain unresolved.
 `inputPorts` records exec ownership only and does not implement their evaluator or

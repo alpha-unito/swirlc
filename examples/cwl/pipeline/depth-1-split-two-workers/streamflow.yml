@@ -1,0 +1,35 @@
+version: v1.0
+workflows:
+  depth_1_split_two_workers:
+    type: cwl
+    config:
+      file: ../depth-1-split/main.cwl
+      settings: ../depth-1-split/inputs.yml
+    bindings:
+      - step: /
+        target:
+          deployment: source
+      - step: /process_items
+        target:
+          - deployment: worker_a
+          - deployment: worker_b
+      - step: /process_items/finish
+        target:
+          deployment: finish
+deployments:
+  source:
+    type: local
+    config: {}
+    port: 35690
+  worker_a:
+    type: local
+    config: {}
+    port: 35691
+  worker_b:
+    type: local
+    config: {}
+    port: 35692
+  finish:
+    type: local
+    config: {}
+    port: 35693

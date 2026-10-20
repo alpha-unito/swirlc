@@ -1,5 +1,13 @@
 # Full-pipeline CWL examples
 
+See also [depth-1-split](depth-1-split/README.md): one scattered two-step
+subworkflow whose first step runs at the scatter worker and whose second step
+runs at a shared third location for every item.
+The [two-worker variant](depth-1-split-two-workers/README.md) distributes the
+first step across two scatter locations and keeps a shared finish location.
+The [round-trip variant](depth-1-round-trip/README.md) runs steps `1` and `3`
+on the item's assigned worker, with step `2` on a shared location between them.
+
 Eight small workflows for translator, trace compiler and Python execution
 acceptance. All deployments are local, with different locations/ports following
 the existing scatter examples. They need only GNU `cp` and `printf`, with four

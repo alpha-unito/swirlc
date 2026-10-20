@@ -1583,6 +1583,10 @@ not end-to-end completion.
 
 ## Superseded material and deferred scope
 
+- **Future node liveness:** consider heartbeat signals from nodes that a receiver
+  expects data from, so it can distinguish a live node doing long-running work
+  from a suspected lost node. Workflow-data waits must not use elapsed task time
+  as evidence of failure; heartbeat policy and failure handling remain future work.
 - **Do not redo:** region IR construction, recursive lowering, longest-prefix
   deployment lookup, translator flat-path removal and initial hint scaffolding.
   Unchecked boxes in the older nested plan do not establish missing work.

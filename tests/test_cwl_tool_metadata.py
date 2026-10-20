@@ -132,6 +132,10 @@ def test_genome_nameroot_and_dynamic_glob_keep_source_context():
     (r"\$(inputs.text):$(inputs.text)", "$(inputs.text):(value)"),
     ("${ return inputs.count + 1; }", 3),
     ("$([inputs.count, inputs.count])", [2, 2]),
+    ('${\n return {"chromosome": inputs.count};\n}\n', {"chromosome": 2}),
+    (" \n$(inputs.count)\t", 2),
+    ("\n$([inputs.count])\n", [2]),
+    (" before-$(inputs.count)-after\n", " before-2-after\n"),
 ])
 def test_translator_lowers_interpolation_to_generic_javascript(source, expected):
     from swirlc.compiler.default import compiler

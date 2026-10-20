@@ -493,6 +493,7 @@ def _send_value(sock: socket.socket, data_type: str, value: Any):
         name = os.path.basename(value).encode("utf-8")
         _send_len(sock, len(name))
         sock.sendall(name)
+        _send_len(sock, os.stat(value).st_mode & 0o777)
         _send_len(sock, os.path.getsize(value))
         with open(value, "rb") as fd:
             while buf := fd.read(BUF_SIZE):
@@ -512,6 +513,7 @@ def _recv_value(sock: socket.socket, data_type: str) -> Any:
         if data_type == "directory":
             raise NotImplementedError("Receiving directories is not implemented yet")
         name = _recv_exactly(sock, _recv_len(sock)).decode("utf-8")
+        mode = _recv_len(sock) & 0o777
         path = os.path.join(SCRATCH_DIR, f"rcv_{uuid.uuid4()}", name)
         os.makedirs(os.path.dirname(path), exist_ok=True)
         size = _recv_len(sock)
@@ -521,6 +523,7 @@ def _recv_value(sock: socket.socket, data_type: str) -> Any:
                 chunk = _recv_exactly(sock, min(BUF_SIZE, remaining))
                 fd.write(chunk)
                 remaining -= len(chunk)
+        os.chmod(path, mode)
         return path
     else:
         payload = _recv_exactly(sock, _recv_len(sock))

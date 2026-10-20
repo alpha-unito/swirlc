@@ -22,6 +22,24 @@ def envelope(payload, identity):
 ROOT = term('literal', 'root')
 
 
+def test_file_transport_preserves_permissions(tmp_path):
+    from swirlc.compiler.default.compiler import framing_helpers, list_helper
+
+    namespace = {'socket': socket, 'Any': Any, 'os': os, 'uuid': uuid,
+                 'SCRATCH_DIR': str(tmp_path), 'BUF_SIZE': 4096}
+    exec(list_helper + framing_helpers, namespace)
+    for mode in (0o755, 0o644):
+        source = tmp_path / f'file-{mode:o}'
+        source.write_text('#!/bin/sh\nexit 0\n')
+        source.chmod(mode)
+        sender, receiver = socket.socketpair()
+        with sender, receiver:
+            namespace['_send_value'](sender, 'file', str(source))
+            received = Path(namespace['_recv_value'](receiver, 'file'))
+        assert received.read_bytes() == source.read_bytes()
+        assert received.stat().st_mode & 0o777 == mode
+
+
 class ScopedRuntimeTests(unittest.TestCase):
     def runtime(self, metadata=None):
         listener = socket.socket()
@@ -423,13 +441,70 @@ class ScopedRuntimeTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'invalid gather key'):
             runtime.execute_step({}, node['tool'], node['inputs'], node['outputs'])
 
-    def test_blocked_receive_has_bounded_deadline(self):
+    def test_workflow_wait_outlives_transport_timeout_and_reports_failure(self):
         runtime = self.runtime()
-        runtime.timeout = .05
-        start = time.monotonic()
-        with self.assertRaisesRegex(TimeoutError, 'blocked receive'):
-            runtime.recv({}, 'p', envelope(term('variable', 'v'), ROOT), 'missing')
-        self.assertLess(time.monotonic() - start, .5)
+        runtime.timeout = .02
+        errors = []
+        def receive():
+            try:
+                runtime.recv({}, 'p', envelope(term('variable', 'v'), ROOT), 'missing')
+            except Exception as exc:
+                errors.append(exc)
+        worker = threading.Thread(target=receive, daemon=True)
+        worker.start()
+        worker.join(.1)
+        try:
+            self.assertTrue(worker.is_alive())
+            self.assertEqual(errors, [])
+        finally:
+            runtime.fail(RuntimeError('worker failed'), broadcast=False)
+            worker.join(1)
+        self.assertFalse(worker.is_alive())
+        self.assertRegex(str(errors[0]), 'worker failed')
+
+    def test_transfer_acknowledgement_waits_for_delayed_consumer(self):
+        runtime = self.runtime()
+        runtime.timeout = .02
+        errors = []
+        def send():
+            try:
+                runtime.send({'value': 7}, 'p', envelope(term('variable', 'value'), ROOT),
+                             'int', 'local', 'local')
+            except Exception as exc:
+                errors.append(exc)
+        worker = threading.Thread(target=send, daemon=True)
+        worker.start()
+        try:
+            runtime._wait(lambda: bool(runtime.offers), 'test offer')
+            worker.join(.1)
+            self.assertTrue(worker.is_alive())
+            env = {}
+            runtime.recv(env, 'p', envelope(term('variable', 'received'), ROOT), 'local')
+            worker.join(1)
+            self.assertFalse(worker.is_alive())
+            self.assertEqual(errors, [])
+            self.assertEqual(runtime.values[-1]['payload'], 7)
+        finally:
+            runtime.fail(RuntimeError('test finished'), broadcast=False)
+            worker.join(1)
+
+    def test_close_wakes_workflow_wait(self):
+        runtime = self.runtime()
+        errors = []
+        started = threading.Event()
+        def wait():
+            try:
+                started.set()
+                runtime._wait(lambda: False, 'test wait')
+            except RuntimeError as exc:
+                errors.append(str(exc))
+        worker = threading.Thread(target=wait, daemon=True)
+        worker.start()
+        self.assertTrue(started.wait(1))
+        runtime.close()
+        worker.join(1)
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(errors, ['test wait: runtime closed'])
 
     def test_gather_rejects_duplicate_key(self):
         metadata = {'steps': {'gather': {'type': 'scatter_gather', 'shapeFrom': ['a'],

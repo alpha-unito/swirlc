@@ -53,6 +53,7 @@ class Runtime:
         self.routing = {}
         self.error = None
         self.stopping = False
+        # Bound network operations, never the time spent waiting for workflow data.
         self.timeout = float(__import__('os').environ.get('SWIRLC_RUNTIME_TIMEOUT', '60'))
         self.initial = {name: descriptor['value'] for name, descriptor in metadata.get('dependencies', {}).items() if 'value' in descriptor}
 
@@ -61,7 +62,9 @@ class Runtime:
         threading.Thread(target=self._accept, daemon=True).start()
 
     def close(self):
-        self.stopping = True
+        with self.condition:
+            self.stopping = True
+            self.condition.notify_all()
         self.listener.close()
 
     def _accept(self):
@@ -129,17 +132,15 @@ class Runtime:
             pass
 
     def _wait(self, predicate, description):
-        deadline = time.monotonic() + self.timeout
         with self.condition:
             while True:
                 if self.error:
                     raise RuntimeError(f'{description}: {self.error}') from self.error
+                if self.stopping:
+                    raise RuntimeError(f'{description}: runtime closed')
                 if predicate():
                     return
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    raise TimeoutError(f'{self.location}: blocked {description}')
-                self.condition.wait(min(remaining, .2))
+                self.condition.wait()
 
     def _send_header(self, dst, header, payload=None, timeout=None):
         timeout = self.timeout if timeout is None else timeout
@@ -150,6 +151,9 @@ class Runtime:
             _frame(conn, header)
             if payload is not None:
                 self._send_payload(conn, header['type'], payload)
+            # Offers are acknowledged only when workflow consumers commit them.
+            if header['kind'] == 'offer':
+                conn.settimeout(None)
             response = _unframe(conn)
             if 'error' in response:
                 raise RuntimeError(response['error'])

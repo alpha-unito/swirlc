@@ -1,7 +1,7 @@
 version: v1.0
 
 workflows:
-  1000genome:
+  genome:
     type: cwl
     config:
       file: main.cwl
