@@ -72,7 +72,10 @@ class EmittedFragment:
         parts = [str(part) for part in self.parts if part]
         parts = [part for part in parts if part]
         def grouped(part):
-            if re.match(r"(?:exec|send|recv|move)\(", part):
+            if isinstance(part, EmittedFragment) and part.kind == "marked":
+                return str(part)
+            part = str(part)
+            if re.match(r"(?:exec|send|recv|move)?\(", part):
                 depth = 0
                 for index in range(part.index("("), len(part)):
                     character = part[index]
@@ -93,7 +96,22 @@ class EmittedFragment:
             return f"!(\n{grouped(parts[0])}\n+\n{grouped(parts[1])}\n)"
         if len(parts) == 1:
             return parts[0]
-        return "(\n" + "\n|\n".join(grouped(part) for part in parts) + "\n)" if parts else ""
+        return "(\n" + "\n|\n".join(grouped(part) for part in self.parts if part and str(part)) + "\n)" if parts else ""
+
+    def starts_with_action(self) -> bool:
+        """Whether replication can bind an iteration from the first operation."""
+        parts = [part for part in self.parts if part and str(part)]
+        if self.kind == "marked":
+            parts = parts[1:2]
+        elif self.kind == "hint":
+            parts = [part for part in parts if not str(part).startswith("//")]
+        elif self.kind not in ("sequence", "parallel"):
+            return False
+        if not parts or (self.kind == "parallel" and len(parts) != 1):
+            return False
+        first = parts[0]
+        return (first.starts_with_action() if isinstance(first, EmittedFragment)
+                else bool(re.match(r"(?:exec|send|recv|move)\(", first)))
 
     def __bool__(self) -> bool:
         return bool(self.parts)
@@ -1336,16 +1354,6 @@ class CWLTranslator(AbstractTranslator):
         child = context.child(context.region, controller=location)
         pending_inputs = set(child.pending)
         receives = self._ready_inputs(invocation, child, location)
-        admission = ""
-        admission_receive = ""
-        if context.task_id and location != context.controller:
-            control = f"p_invocation_{_generated_name(invocation.path.strip('/'))}"
-            admission_receive = (
-                f"recv((begin, {context.task_id}) -> {control}, {context.controller}, {location})"
-            )
-            admission = (
-                f"send((begin, {context.task_id}) -> {control}, {context.controller}, {location})"
-            )
         for sources in invocation.input_bindings.values():
             for source in sources:
                 if source in pending_inputs:
@@ -1369,11 +1377,22 @@ class CWLTranslator(AbstractTranslator):
                     else:
                         context.fragments[producer].append(send)
                     receives.append(receive)
+        if (context.task_id and location != context.controller
+                and not any(context.task_id in str(receive) for receive in receives)):
+            # A remote task with only reusable inputs still needs an iteration-bearing value.
+            port = _generated_name("p_iteration", invocation.path.strip("/"))
+            send, receive = self._iteration_transfer(context, location, port)
+            context.fragments[context.controller].append(send)
+            receives.insert(0, receive)
         trace = self._tool_trace(invocation, child)
-        if receives:
-            setup = " | ".join(receives)
-            trace = (f"({setup})" if len(receives) > 1 else setup) + "\n.\n" + trace
-        trace = _sequence([admission_receive, trace])
+        if context.task_id and location != context.controller:
+            receives.sort(key=lambda receive: context.task_id not in str(receive))
+            trace = _sequence([*receives, trace])
+        else:
+            if receives:
+                setup = " | ".join(receives)
+                trace = (f"({setup})" if len(receives) > 1 else setup) + "\n.\n" + trace
+            trace = _sequence([trace])
         publisher = _parallel([])
         trace.parts.append(publisher)
         for output_path in invocation.outputs.values():
@@ -1382,8 +1401,6 @@ class CWLTranslator(AbstractTranslator):
             context.publishers[output_path] = publisher
         if location != context.controller:
             context.fragments[location].append(trace)
-            if admission:
-                context.fragments[context.controller].append(admission)
             return []
         return [trace]
 
@@ -1422,7 +1439,7 @@ class CWLTranslator(AbstractTranslator):
         data = DataReference(base, scope, bool(stage.scope))
         collection = f"stream_{base}"
         gather = self._exec_name(stage.sources[0].context, f"_s_gather_{suffix}")
-        loops, begins, routes = [], [], []
+        loops, routes = [], []
         for source_index, occurrence in enumerate(stage.sources):
             actual = (
                 self._materialize(occurrence.pending, destination)
@@ -1445,15 +1462,18 @@ class CWLTranslator(AbstractTranslator):
                 controls = worker.remote_controls.setdefault(location, ([], []))
                 controls[0].append(begin)
                 controls[1].append(eof)
-            begins.append(f"recv((begin, {collector_scope}) -> {route_port}, {location}, {destination})")
             received = DataReference(actual.value[1].payload, task_id, True)
+            hint = f"gather_stream {collection}_{source_index} {location} {route_port}"
             loops.append(EmittedFragment("marked", [
-                f"// @compiler begin gather_stream {collection}_{source_index} {location} {route_port}",
-                EmittedFragment("replication", [
-                    f"recv({received} -> {route_port}, {location}, {destination})",
-                    f"recv((eof, {collector_scope}) -> {route_port}, {location}, {destination})",
+                f"// @compiler begin {hint}",
+                _sequence([
+                    f"recv((begin, {collector_scope}) -> {route_port}, {location}, {destination})",
+                    EmittedFragment("replication", [
+                        f"recv({received} -> {route_port}, {location}, {destination})",
+                        f"recv((eof, {collector_scope}) -> {route_port}, {location}, {destination})",
+                    ]),
                 ]),
-                f"// @compiler end gather_stream {collection}_{source_index} {location} {route_port}",
+                f"// @compiler end {hint}",
             ]))
             result_route = {"port": route_port, "source": location, "receiver": destination,
                             "scope": scope, "operation": stage.invocation.scatter.region_id,
@@ -1462,8 +1482,6 @@ class CWLTranslator(AbstractTranslator):
         publisher = _parallel([])
         gather_inputs = ", ".join(f"U({route['port']}, ({collection}_{i}, {collector_scope}))" for i, route in enumerate(routes))
         fragment = _sequence([
-            begins[0],
-            _parallel(begins[1:]),
             _parallel(loops),
             f"exec({gather}, {{{gather_inputs}}} -> {{({port}, {data})}}, {{{destination}}})",
             publisher,
@@ -1610,17 +1628,20 @@ class CWLTranslator(AbstractTranslator):
             streams.append((name, dispatch, port, element, producer))
             distributors = []
             for worker in workers:
+                hint = f"scatter_stream {collection} {worker} {port}"
                 distributors.append(EmittedFragment("marked", [
-                    f"// @compiler begin scatter_stream {collection} {worker} {port}",
-                    EmittedFragment("replication", [
-                        f"move({DataReference(element, dispatch_id, True)} -> {port}, {producer}, {worker})",
-                        f"send((eof, {dispatch_scope}) -> {port}, {producer}, {worker})",
+                    f"// @compiler begin {hint}",
+                    _sequence([
+                        f"send((begin, {dispatch_scope}) -> {port}, {producer}, {worker})",
+                        EmittedFragment("replication", [
+                            f"move({DataReference(element, dispatch_id, True)} -> {port}, {producer}, {worker})",
+                            f"send((eof, {dispatch_scope}) -> {port}, {producer}, {worker})",
+                        ]),
                     ]),
-                    f"// @compiler end scatter_stream {collection} {worker} {port}",
+                    f"// @compiler end {hint}",
                 ]))
             fragment = _sequence([
                 *activation,
-                _parallel([f"send((begin, {dispatch_scope}) -> {port}, {producer}, {worker})" for worker in workers]),
                 f"exec({dispatch}, {{({source_port}, {source_data})}} -> {{U({port}, ({collection}, {dispatch_scope}))}}, {{{producer}}})",
                 _parallel(distributors),
             ])
@@ -1733,6 +1754,21 @@ class CWLTranslator(AbstractTranslator):
                                                   [stream[1] for stream in streams], occurrences, value)
         return []
 
+    @staticmethod
+    def _iteration_transfer(context: LoweringContext, location: str, port: str) -> tuple[str, str]:
+        """Carry iteration identity when no single input admits the remote body."""
+        _, data, _ = next(
+            value for path, value in context.available.items()
+            if value[1].identity == context.task_id
+            and context.value_locations.get(path, context.controller) == context.controller
+            and path not in context.publishers
+        )
+        received = DataReference(f"iteration_d_{port}", context.task_id, True)
+        return (
+            f"send({data} -> {port}, {context.controller}, {location})",
+            f"recv({received} -> {port}, {context.controller}, {location})",
+        )
+
     def _finish_owners(self, context: LoweringContext) -> None:
         """Close each distributed source after that owner's actual publications."""
         for owner in reversed(context.workers):
@@ -1750,17 +1786,16 @@ class CWLTranslator(AbstractTranslator):
                 owner.openings.parts.append(f"send((begin, {prefix}) -> {control}, {worker}, {location})")
                 owner.closings.parts.append(f"send((eof, {prefix}) -> {control}, {worker}, {location})")
                 begins, eofs = owner.remote_controls.get(location, ([], []))
-                invocation_control = f"{control}_invocation"
-                child_id = " / ".join(owner.scope)
-                owner.body.parts.insert(0, f"send((begin, {child_id}) -> {invocation_control}, {worker}, {location})")
+                body = parts[0]
+                if len(parts) > 1 or not body.starts_with_action():
+                    send, receive = self._iteration_transfer(child, location, f"{control}_iteration")
+                    owner.body.parts.insert(0, send)
+                    body = _sequence([receive, _parallel(parts)])
                 service = _sequence([
                     f"recv((begin, {prefix}) -> {control}, {worker}, {location})",
                     _parallel(begins),
                     EmittedFragment("replication", [
-                        _sequence([
-                            f"recv((begin, {child_id}) -> {invocation_control}, {worker}, {location})",
-                            _parallel(parts),
-                        ]),
+                        body,
                         f"recv((eof, {prefix}) -> {control}, {worker}, {location})",
                     ]), _parallel(eofs),
                 ])

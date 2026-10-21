@@ -7,7 +7,7 @@ from types import SimpleNamespace
 import pytest
 from ruamel.yaml import YAML
 
-from swirlc.translator.cwl.cwl_translator import CWLTranslator, _lower_expression
+from swirlc.translator.cwl.cwl_translator import CWLTranslator, EmittedFragment, _lower_expression
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -208,17 +208,36 @@ def test_scatter_uses_operation_readiness_and_eof_termination():
     assert description["conditions"] == {}
     assert "+[" not in source
     assert "end()" not in source
-    distributors = re.findall(
-        r"// @compiler begin scatter_stream [^\n]+\n(.*?)"
-        r"// @compiler end scatter_stream", source, re.S,
-    )
-    assert distributors
-    for distributor in distributors:
-        assert re.fullmatch(
-            r"\(\s*!\(\s*move\([^\n]+\)\s*\+\s*"
-            r"send\(\(eof, [^\n]+\)\s*\)\s*\)\s*",
-            distributor,
-        )
+    for kind, operation, control, element in [
+        ("scatter", "dispatch", "send", "move"),
+        ("gather", "gather", "recv", "recv"),
+    ]:
+        hints = re.findall(rf"// @compiler begin ({kind}_stream [^\n]+)\n", source)
+        assert hints
+        for hint in hints:
+            block = source.split(f"// @compiler begin {hint}\n", 1)[1].split(
+                f"// @compiler end {hint}", 1,
+            )[0]
+            _, collection, location, port = hint.split()
+            endpoints = rf"[^,\n]+, {location}" if kind == "scatter" else rf"{location}, [^\n]+"
+            begin = re.search(rf"{control}\(\(begin, [^\n]+ -> {port}, {endpoints}\)", block)
+            loop = re.search(rf"!\(\s*{element}\([^\n]+ -> {port}, [^\n]+\)\s*\+\s*{control}\(\(eof,", block)
+            assert begin and loop
+            assert begin.start() < loop.start()
+            assert re.fullmatch(r"\s*\.\s*", block[begin.end():loop.start()])
+            assert block.count(f"{control}((begin,") == 1
+            assert block.count("!(") == 1
+            assert "// @compiler" not in block
+            assert "exec(" not in block
+            execution = re.search(rf"exec\(_s_{operation}_[^\n]*{collection}[^\n]*", source)
+            assert execution
+            opening = source.index(f"// @compiler begin {hint}\n")
+            closing = source.index(f"// @compiler end {hint}", opening)
+            if kind == "scatter":
+                assert execution.start() < opening
+            else:
+                assert closing < execution.start()
+
 
 
 @pytest.mark.parametrize("config", [
@@ -253,3 +272,78 @@ def test_single_operation_branches_omit_grouping_parentheses():
     assert parallel == f"(\n{receive}\n|\n{eof}\n)"
     for trace in (single, multiple, parallel):
         parse_workflow(f"<worker, {{}}, {trace}>")
+
+
+@pytest.mark.parametrize("kind", ["scatter", "gather"])
+def test_parallel_stream_hints_do_not_add_redundant_parentheses(kind):
+    hint = f"{kind}_stream stream_d l1 p_stream"
+    branch = EmittedFragment("marked", [
+        f"// @compiler begin {hint}",
+        EmittedFragment("sequence", ["send(begin)", "!(move(data) + send(eof))"]),
+        f"// @compiler end {hint}",
+    ])
+    assert str(EmittedFragment("parallel", [branch, branch])) == (
+        f"(\n{branch}\n|\n{branch}\n)"
+    )
+
+
+def test_worker_loop_reuses_existing_body_grouping():
+    body = EmittedFragment("parallel", ["exec(first)", "exec(second)"])
+    loop = EmittedFragment("replication", [body, "recv(eof)"])
+    assert str(loop) == "!(\n(\nexec(first)\n|\nexec(second)\n)\n+\nrecv(eof)\n)"
+    sequence = EmittedFragment("sequence", [body, "send(result)"])
+    loop.parts[0] = sequence
+    assert str(loop) == f"!(\n(\n{sequence}\n)\n+\nrecv(eof)\n)"
+
+
+@pytest.mark.parametrize("config", [
+    "examples/cwl/pipeline/depth-1-round-trip/streamflow.yml",
+    "examples/cwl/pipeline/depth-2/plain/streamflow.yml",
+    "examples/cwl/toy-genome/streamflow.yml",
+])
+def test_remote_services_use_data_admission_instead_of_inner_begin(config):
+    source, _ = metadata(config)
+    assert "p_invocation_" not in source
+    assert not re.search(r"p_owner_\w+_invocation", source)
+    assert "recv((begin," in source
+    assert "!(" in source
+
+
+def test_remote_default_only_task_receives_an_iteration_value(tmp_path):
+    translator = CWLTranslator(ROOT / "examples/cwl/pipeline/depth-1-round-trip/streamflow.yml")
+    region = translator.build_region_tree()
+    remote = region.invocations[0].process.invocations[1]
+    remote.input_bindings = {}
+    remote.defaults["sample"] = {"class": "File", "path": str(ROOT / "README.md")}
+    translator.build_region_tree = lambda: region
+    source, description = StringIO(), StringIO()
+    translator.translate(source, description)
+    trace = source.getvalue()
+    assert "p_invocation_" not in trace
+    assert "recv((?iteration_d_p_iteration_process_items_2, ?scope_0 / ?iteration_1) -> p_iteration_process_items_2" in trace
+    assert "send((?element_d_samples, ?scope_0 / ?iteration_1) -> p_iteration_process_items_2" in trace
+    from swirlc.main import main
+
+    workflow = tmp_path / "workflow.swirl"
+    metadata_file = tmp_path / "metadata.yml"
+    workflow.write_text(trace)
+    metadata_file.write_text(description.getvalue())
+    assert main(["compile", str(workflow), str(metadata_file), "-o", str(tmp_path)]) == 0
+
+
+def test_nested_remote_gather_with_multiple_routes_has_data_admission(tmp_path):
+    from swirlc.main import main
+
+    translator = CWLTranslator(ROOT / "examples/cwl/pipeline/depth-2/plain/streamflow.yml")
+    region = translator.build_region_tree()
+    outer = region.invocations[0]
+    outer.process.invocations[0].deployments += outer.deployments
+    translator.build_region_tree = lambda: region
+    source, description = StringIO(), StringIO()
+    translator.translate(source, description)
+    workflow = tmp_path / "workflow.swirl"
+    metadata_file = tmp_path / "metadata.yml"
+    workflow.write_text(source.getvalue())
+    metadata_file.write_text(description.getvalue())
+    assert "p_invocation_" not in source.getvalue()
+    assert main(["compile", str(workflow), str(metadata_file), "-o", str(tmp_path)]) == 0

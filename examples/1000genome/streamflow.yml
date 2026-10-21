@@ -38,29 +38,29 @@ deployments:
   coordinator:
     type: local
     config: {}
-    port: 35400
+    port: 25400
 
   chromosome_worker1:
     type: local
     config: {}
-    port: 35410
+    port: 25410
 
   chromosome_worker2:
     type: local
     config: {}
-    port: 35411
+    port: 25411
 
   inner_worker1:
     type: local
     config: {}
-    port: 35420
+    port: 25420
 
   inner_worker2:
     type: local
     config: {}
-    port: 35421
+    port: 25421
 
   inner_worker3:
     type: local
     config: {}
-    port: 35422
+    port: 25422

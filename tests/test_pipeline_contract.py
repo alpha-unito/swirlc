@@ -368,3 +368,33 @@ if __name__ == "__main__":
     for depth in args.depth or range(4):
         for variant in args.variant or ["plain", "metadata"]:
             print(json.dumps(check_depth(depth, args.output.resolve(), args.prepare_only, variant)), flush=True)
+
+
+def test_dependent_remote_steps_finish_before_owner_eof(tmp_path):
+    from io import StringIO
+    from swirlc.translator.cwl.cwl_translator import CWLTranslator
+
+    translator = CWLTranslator(ROOT / "examples/cwl/pipeline/depth-1-round-trip/streamflow.yml")
+    region = translator.build_region_tree()
+    steps = region.invocations[0].process.invocations
+    steps[2].deployments = steps[1].deployments
+    steps[1].process.baseCommand = ["sh", "-c", 'sleep 0.2; cp -T "$1" "$2"', "copy"]
+    translator.build_region_tree = lambda: region
+    source, description = StringIO(), StringIO()
+    translator.translate(source, description)
+    (tmp_path / "workflow.swirl").write_text(source.getvalue())
+    (tmp_path / "metadata.yml").write_text(description.getvalue())
+    assert "p_invocation_" not in source.getvalue()
+    run_command([str(PYTHON), "-m", "swirlc", "compile", str(tmp_path / "workflow.swirl"),
+                 str(tmp_path / "metadata.yml"), "--bundle-dependencies", "-o", str(tmp_path)],
+                tmp_path / "compilation.log")
+    run_command(["bash", "run.sh"], tmp_path / "execution.log", cwd=tmp_path, timeout=30)
+    records = json.loads((tmp_path / "l3.outputs.json").read_text())
+    for step in ("2", "3"):
+        assert {tuple(record["id"]) for record in records
+                if record["port"] == f"p_process_items_{step}_result"} == {(0,), (1,), (2,)}
+    results = json.loads((tmp_path / "l0.outputs.json").read_text())
+    final = [record["payload"] for record in results if record["port"].startswith("p_gather_data_")]
+    assert len(final) == 1
+    assert [Path(path).read_text().strip() for path in final[0]] == [
+        "item=alpha", "item=beta", "item=alpha"]
