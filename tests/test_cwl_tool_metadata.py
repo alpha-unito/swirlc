@@ -1,4 +1,5 @@
 """CWL command/output descriptors retain their bound invocation contexts."""
+import re
 from io import StringIO
 from pathlib import Path
 from types import SimpleNamespace
@@ -202,11 +203,53 @@ def test_cwl_when_is_rejected_instead_of_executed_unconditionally():
         translator.translate(StringIO(), StringIO())
 
 
-def test_scatter_emits_named_builtin_conditions():
+def test_scatter_uses_operation_readiness_and_eof_termination():
     source, description = metadata("examples/cwl/toy-genome/streamflow.yml")
-    assert " has data in " not in source
-    assert description["conditions"]
-    for name, condition in description["conditions"].items():
-        assert condition["type"] == "has_data"
-        assert f"+[{name}]" in source
-        assert any(condition["port"] in step["outputs"] for step in description["steps"].values())
+    assert description["conditions"] == {}
+    assert "+[" not in source
+    assert "end()" not in source
+    distributors = re.findall(
+        r"// @compiler begin scatter_stream [^\n]+\n(.*?)"
+        r"// @compiler end scatter_stream", source, re.S,
+    )
+    assert distributors
+    for distributor in distributors:
+        assert re.fullmatch(
+            r"\(\s*!\(\s*move\([^\n]+\)\s*\+\s*"
+            r"send\(\(eof, [^\n]+\)\s*\)\s*\)\s*",
+            distributor,
+        )
+
+
+@pytest.mark.parametrize("config", [
+    "examples/cwl/toy-genome/streamflow.yml",
+    "examples/cwl/scatter-nested/streamflow.yml",
+    "examples/cwl/pipeline/depth-1-split/streamflow.yml",
+])
+def test_worker_termination_keeps_all_eof_receives(config):
+    source, _ = metadata(config)
+    assert "end()" not in source
+    assert "+[" not in source
+    closures = re.findall(
+        r"\+\s*(?:\(\s*)?(recv\(\(eof, [^\n]+\)(?:\n\.\nrecv\(\(eof, [^\n]+\))*)",
+        source,
+    )
+    assert closures
+    if "toy-genome" in config:
+        assert any(len(closure.split("\n.\n")) == 2 for closure in closures)
+
+
+def test_single_operation_branches_omit_grouping_parentheses():
+    from swirlc.translator.cwl.cwl_translator import EmittedFragment, _sequence
+    from swirlc.core.parsing import parse_workflow
+
+    receive = "recv((?item, root / ?iteration) -> p, source, worker)"
+    eof = "recv((eof, root) -> p, source, worker)"
+    single = str(EmittedFragment("replication", [receive, _sequence([eof])]))
+    assert single == f"!(\n{receive}\n+\n{eof}\n)"
+    multiple = str(EmittedFragment("replication", [receive, _sequence([eof, eof])]))
+    assert f"(\n{eof}\n.\n{eof}\n)" in multiple
+    parallel = str(EmittedFragment("parallel", [receive, eof]))
+    assert parallel == f"(\n{receive}\n|\n{eof}\n)"
+    for trace in (single, multiple, parallel):
+        parse_workflow(f"<worker, {{}}, {trace}>")

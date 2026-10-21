@@ -274,7 +274,8 @@ def check_depth(depth, root, prepare_only=False, variant="plain"):
                 joined = "\n".join(traces)
                 assert all(tool in joined for tool in metadata["steps"])
                 if depth:
-                    assert "fresh=" in joined and "exact=" in joined and "close owner=" in joined
+                    assert "fresh=" in joined and "exact=" in joined and "first operation closes owner=" in joined
+                    assert "end()" not in joined
                     assert "drain admitted instances and descendants" in joined
                     assert "INVALID" not in joined
             else:

@@ -16,7 +16,7 @@ trace       :   REPL trace                                  # TraceRepl
             |   '(' trace ')'                               # TraceParen
             ;
 
-pred        :   exec | send | recv | move | end;
+pred        :   exec | send | recv | move;
 
 // Functions
 exec        : 'exec(' step ',' flow ',' mapping ')';
@@ -25,7 +25,6 @@ recv        : 'recv(' data '->' port ',' src ',' dst ')';
 move        : 'move(' data '->' port ',' src ',' dst ')';
 
 
-end         : 'end()';
 guard       : '[' port ('has' 'data' IN data)? ']';
 
 // Sets

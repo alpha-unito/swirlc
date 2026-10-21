@@ -1,7 +1,7 @@
 // Handwritten design example: not generated or compiled by swirlc.
 // Proposed semantics: begin opens a scope; data keys extend that scope.
 // scope / iteration matches or constructs a hierarchical key.
-// Guards and U snapshots explicitly select the scope.
+// First operations activate choices; U snapshots explicitly select the scope.
 // Begin/EOF match the scope exactly; root names the common root invocation.
 // The dependency routes worker occurrences to collector; collector gathers before s_consumer.
 // Worker completion waits for occurrence acknowledgments, never final consumer execution.
@@ -14,11 +14,9 @@
   .
   !(
     move((?a, root / ?iteration_1) -> p_a, source_a, worker)
-    +[p_a has data in root]
-    end()
+    +
+    send((eof, root) -> p_a, source_a, worker)
   )
-  .
-  send((eof, root) -> p_a, source_a, worker)
 > |
 
 <source_b, {(p_list_b, (d_b, root))},
@@ -28,11 +26,9 @@
   .
   !(
     move((?b, root / ?iteration_1) -> p_b, source_b, worker)
-    +[p_b has data in root]
-    end()
+    +
+    send((eof, root) -> p_b, source_b, worker)
   )
-  .
-  send((eof, root) -> p_b, source_b, worker)
 > |
 
 <worker, {},
@@ -58,8 +54,6 @@
       recv((eof, ?scope_0) -> p_a, source_a, worker)
       .
       recv((eof, ?scope_0) -> p_b, source_b, worker)
-      .
-      end()
     )
   )
   .
@@ -72,11 +66,7 @@
   !(
     recv((?result, ?scope_0 / ?iteration_1) -> p_results, worker, collector)
     +
-    (
-      recv((eof, ?scope_0) -> p_results, worker, collector)
-      .
-      end()
-    )
+    recv((eof, ?scope_0) -> p_results, worker, collector)
   )
   .
   exec(s_gather, {U(p_results, (results, ?scope_0))} -> {(p_output, (d_output, ?scope_0))}, {collector})

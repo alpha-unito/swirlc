@@ -510,9 +510,6 @@ class StructuredCompiler(StandardCompiler):
     def zero(self):
         self._action("zero")
 
-    def end(self):
-        self._action("end")
-
     def exec(self, step, flow, mapping):
         self._action("exec", tool=step.name, inputs=flow[0], outputs=flow[1], mapping=sorted(mapping))
 

@@ -89,10 +89,7 @@ def validate_bindings(tree: SWIRLParser.WorkflowContext, conditions: dict | None
             return left & right if ctx.op.type == SWIRLParser.CHOICE else left | right
         if isinstance(ctx, SWIRLParser.TracePredContext):
             pred = ctx.pred()
-            if pred.end():
-                if not replicated:
-                    raise ValueError("end() has no enclosing replication owner")
-            elif pred.exec():
+            if pred.exec():
                 inputs, outputs = get_flow(pred.exec())
                 for _, term in inputs:
                     require(term, bound, "exec input")

@@ -181,7 +181,7 @@ def test_nested_scatter_trace_target() -> None:
         traced.mkdir()
         assert main(["compile", str(source), str(metadata), "--outdir", str(traced), "--target", "trace"]) == 0
         trace = "\n".join(path.read_text() for path in sorted(traced.glob("*.md")))
-        for expected in ("repl owner=", "choice", "move (", "recv (", "eof", "_s_dispatch_", "_s_gather_", "close owner=", "join activated descendants"):
+        for expected in ("repl owner=", "choice", "move (", "recv (", "eof", "_s_dispatch_", "_s_gather_", "first operation closes owner=", "join activated descendants"):
             assert expected in trace
 
         stripped = pathlib.Path(workdir) / "without-hints.swirl"

@@ -31,7 +31,7 @@ def test_structured_envelopes_scopes_collections_and_guard() -> None:
         "<l0,{(p,(d,root))},exec(s,{(p,(d,root))}"
         "->{U(q,(stream,root))},{l0}) . "
         "!(move((?value,root / ?iteration)->q,l0,l1)"
-        "+[q has data in root] end())>"
+        "+ send((eof,root)->q,l0,l1))>"
     )
     location = tree.location(0)
     envelope = get_term(location.dataSet().dataPair(0).data())
@@ -84,6 +84,7 @@ def test_rejects_malformed_named_guards(guard: str) -> None:
 
 @pytest.mark.parametrize("source", [
     "<l0,{},end()>",
+    "<l0,{},!(end())>",
     "<l0,{},recv((?payload,?scope / ?iteration)->p,l1,l0)>",
     "<l0,{},send((?payload,root)->p,l0,l1)>",
     "<l0,{},recv((?payload,root)->p,l1,l0) | send((?payload,root)->q,l0,l1)>",

@@ -236,7 +236,7 @@ class ScopedRuntimeTests(unittest.TestCase):
             if branch == 0:
                 runtime.spawn(owner, task, candidate)
             elif branch == 1:
-                runtime.end(owner)
+                runtime.close_owner(owner)
         runtime.join(owner)
         runtime.finish()
         producer.join(1)
@@ -279,7 +279,7 @@ class ScopedRuntimeTests(unittest.TestCase):
         self.assertTrue(runtime.has_data('p', ROOT, {}))
         self.assertFalse(runtime.exhausted('p', ROOT, {}))
         owner = runtime.new_owner()
-        runtime.end(owner)
+        runtime.close_owner(owner)
         def forbidden(env):
             raise AssertionError('closed owner attempted admission')
         self.assertEqual(runtime.admit({}, owner, forbidden), (None, None))
@@ -519,3 +519,55 @@ class ScopedRuntimeTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+def test_send_activation_requires_matching_data_and_scoped_eof_emptiness():
+    runtime = Runtime.__new__(Runtime)
+    runtime.condition = threading.Condition()
+    runtime.values = [{'port': 'p', 'id': (3,), 'payload': 7, 'type': 'int'}]
+    runtime.condition_ports = set()
+    data = envelope(term('variable', 'value'), term('path', '', ROOT, term('variable', 'i')))
+    env = {}
+    assert runtime.try_send(env, 'p', data)
+    assert env['value'] == 7 and env['i'] == 3
+    assert len(runtime.values) == 1
+    assert not runtime.try_send({}, 'q', data)
+    eof = envelope(term('literal', 'eof'), ROOT)
+    assert not runtime.try_send({}, 'p', eof)
+    assert runtime.try_send({}, 'q', eof)
+    runtime.values.clear()
+    assert runtime.try_send({}, 'p', eof)
+
+
+def test_exec_activation_waits_for_all_inputs_without_leaking_bindings():
+    runtime = Runtime.__new__(Runtime)
+    runtime.condition = threading.Condition(threading.RLock())
+    runtime.condition_ports = set()
+    runtime.metadata = {'steps': {'work': {}}}
+    runtime.values = [{'port': 'p', 'id': (), 'payload': 7, 'type': 'int'}]
+    first = envelope(term('variable', 'a'), ROOT)
+    second = envelope(term('variable', 'b'), ROOT)
+    env = {}
+    assert not runtime.try_execute(env, 'work', [('p', first), ('q', second)])
+    assert env == {}
+    runtime.values.append({'port': 'q', 'id': (), 'payload': 8, 'type': 'int'})
+    assert runtime.try_execute(env, 'work', [('p', first), ('q', second)])
+    assert env['a'] == 7 and env['b'] == 8
+    assert len(runtime.values) == 2
+    literal_input = [('p', envelope(term('literal', 'd'), ROOT))]
+    assert runtime.try_execute({'d': 7}, 'work', literal_input)
+    assert not runtime.try_execute({'d': 99}, 'work', literal_input)
+
+
+def test_collection_exec_activation_waits_for_closed_or_finite_stream():
+    runtime = Runtime.__new__(Runtime)
+    runtime.condition = threading.Condition(threading.RLock())
+    runtime.metadata = {'steps': {'gather': {'routes': [{'port': 'p', 'source': 'worker'}]}, 'local': {}}}
+    runtime.closed, runtime.finite = set(), set()
+    inputs = [('p', term('collection', 'p', term('literal', 'stream'), ROOT))]
+    assert not runtime.try_execute({}, 'gather', inputs)
+    runtime.closed.add(('worker', 'p', ()))
+    assert runtime.try_execute({}, 'gather', inputs)
+    assert not runtime.try_execute({}, 'local', inputs)
+    runtime.finite.add(('p', ()))
+    assert runtime.try_execute({}, 'local', inputs)

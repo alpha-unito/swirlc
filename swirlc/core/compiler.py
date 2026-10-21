@@ -119,10 +119,6 @@ class BaseCompiler:
         """After processing the body of a replication operator."""
         pass
 
-    def end(self) -> None:
-        """Close and drain the nearest replication owner."""
-        pass
-
     def zero(self) -> None:
         """Process the zero (0) null-process trace."""
         pass
@@ -506,9 +502,6 @@ class CompileVisitor(SWIRLVisitor, ABC):
             self.compiler.end_choice()
         else:
             raise Exception(f"Unsupported operator {ctx.op.text}")
-
-    def visitEnd(self, ctx: SWIRLParser.EndContext):
-        return self.compiler.end()
 
     def visitTraceRepl(self, ctx: SWIRLParser.TraceReplContext):
         self.compiler.begin_repl()

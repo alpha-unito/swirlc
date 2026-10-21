@@ -69,11 +69,6 @@ class SWIRLVisitor(ParseTreeVisitor):
         return self.visitChildren(ctx)
 
 
-    # Visit a parse tree produced by SWIRLParser#end.
-    def visitEnd(self, ctx:SWIRLParser.EndContext):
-        return self.visitChildren(ctx)
-
-
     # Visit a parse tree produced by SWIRLParser#guard.
     def visitGuard(self, ctx:SWIRLParser.GuardContext):
         return self.visitChildren(ctx)

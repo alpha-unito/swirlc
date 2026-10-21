@@ -14,9 +14,7 @@
     -> {U(p_outer, (matrix_stream, root))}, {source})
   .
   !(move((?matrix, root / ?iteration_1) -> p_outer, source, outer)
-    +[p_outer has data in root] end())
-  .
-  send((eof, root) -> p_outer, source, outer)
+    + send((eof, root) -> p_outer, source, outer))
 > |
 
 <outer, {},
@@ -36,11 +34,9 @@
         -> {U(p_middle, (list_stream, ?scope_0 / ?iteration_1))}, {outer})
       .
       !(move((?items, ?scope_0 / ?iteration_1 / ?iteration_2) -> p_middle, outer, middle)
-        +[p_middle has data in ?scope_0 / ?iteration_1] end())
-      .
-      send((eof, ?scope_0 / ?iteration_1) -> p_middle, outer, middle)
+        + send((eof, ?scope_0 / ?iteration_1) -> p_middle, outer, middle))
     )
-    + (recv((eof, ?scope_0) -> p_outer, source, outer) . end())
+    + recv((eof, ?scope_0) -> p_outer, source, outer)
   )
   .
   (send((eof, ?scope_0) -> p_middle_control, outer, middle)
@@ -68,17 +64,15 @@
             -> {U(p_inner, (item_stream, ?scope_0 / ?iteration_1 / ?iteration_2))}, {middle})
           .
           !(move((?item, ?scope_0 / ?iteration_1 / ?iteration_2 / ?iteration_3) -> p_inner, middle, inner)
-            +[p_inner has data in ?scope_0 / ?iteration_1 / ?iteration_2] end())
-          .
-          send((eof, ?scope_0 / ?iteration_1 / ?iteration_2) -> p_inner, middle, inner)
+            + send((eof, ?scope_0 / ?iteration_1 / ?iteration_2) -> p_inner, middle, inner))
         )
-        + (recv((eof, ?scope_0 / ?iteration_1) -> p_middle, outer, middle) . end())
+        + recv((eof, ?scope_0 / ?iteration_1) -> p_middle, outer, middle)
       )
       .
       (send((eof, ?scope_0 / ?iteration_1) -> p_inner_sessions, middle, inner)
         | send((eof, ?scope_0 / ?iteration_1) -> p_interface_sessions, middle, collector))
     )
-    + (recv((eof, ?scope_0) -> p_middle_control, outer, middle) . end())
+    + recv((eof, ?scope_0) -> p_middle_control, outer, middle)
   )
 > |
 
@@ -104,15 +98,15 @@
               .
               send((?result, ?scope_0 / ?iteration_1 / ?iteration_2 / ?iteration_3) -> p_item_results, inner, collector)
             )
-            + (recv((eof, ?scope_0 / ?iteration_1 / ?iteration_2) -> p_inner, middle, inner) . end())
+            + recv((eof, ?scope_0 / ?iteration_1 / ?iteration_2) -> p_inner, middle, inner)
           )
           .
           send((eof, ?scope_0 / ?iteration_1 / ?iteration_2) -> p_item_results, inner, collector)
         )
-        + (recv((eof, ?scope_0 / ?iteration_1) -> p_inner_sessions, middle, inner) . end())
+        + recv((eof, ?scope_0 / ?iteration_1) -> p_inner_sessions, middle, inner)
       )
     )
-    + (recv((eof, ?scope_0) -> p_inner_control, outer, inner) . end())
+    + recv((eof, ?scope_0) -> p_inner_control, outer, inner)
   )
 > |
 
@@ -137,7 +131,7 @@
                   .
                   !(
                     recv((?result, ?scope_0 / ?iteration_1 / ?iteration_2 / ?iteration_3) -> p_item_results, inner, collector)
-                    + (recv((eof, ?scope_0 / ?iteration_1 / ?iteration_2) -> p_item_results, inner, collector) . end())
+                    + recv((eof, ?scope_0 / ?iteration_1 / ?iteration_2) -> p_item_results, inner, collector)
                   )
                   .
                   exec(s_gather_inner, {U(p_item_results, (item_results, ?scope_0 / ?iteration_1 / ?iteration_2))}
@@ -145,7 +139,7 @@
                   .
                   send((?list_results, ?scope_0 / ?iteration_1 / ?iteration_2) -> p_list_results, collector, collector)
                 )
-                + (recv((eof, ?scope_0 / ?iteration_1) -> p_interface_sessions, middle, collector) . end())
+                + recv((eof, ?scope_0 / ?iteration_1) -> p_interface_sessions, middle, collector)
               )
               .
               send((eof, ?scope_0 / ?iteration_1) -> p_list_results, collector, collector)
@@ -156,7 +150,7 @@
               .
               !(
                 recv((?list_results, ?scope_0 / ?iteration_1 / ?iteration_2) -> p_list_results, collector, collector)
-                + (recv((eof, ?scope_0 / ?iteration_1) -> p_list_results, collector, collector) . end())
+                + recv((eof, ?scope_0 / ?iteration_1) -> p_list_results, collector, collector)
               )
               .
               exec(s_gather_middle, {U(p_list_results, (list_results, ?scope_0 / ?iteration_1))}
@@ -166,7 +160,7 @@
             )
           )
         )
-        + (recv((eof, ?scope_0) -> p_interface_control, outer, collector) . end())
+        + recv((eof, ?scope_0) -> p_interface_control, outer, collector)
       )
       .
       send((eof, ?scope_0) -> p_matrix_results, collector, collector)
@@ -177,7 +171,7 @@
       .
       !(
         recv((?matrix_results, ?scope_0 / ?iteration_1) -> p_matrix_results, collector, collector)
-        + (recv((eof, ?scope_0) -> p_matrix_results, collector, collector) . end())
+        + recv((eof, ?scope_0) -> p_matrix_results, collector, collector)
       )
       .
       exec(s_gather_outer, {U(p_matrix_results, (matrix_results, ?scope_0))}

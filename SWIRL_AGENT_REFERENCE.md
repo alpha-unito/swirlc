@@ -1,3 +1,21 @@
+## Operation-driven replication termination (2026-10-21)
+
+`end()` is removed from the grammar. An unguarded `+` selects a branch whose
+first operation can activate. Data moves/sends require matching port data;
+EOF sends require an exhausted port in the selected scope. Receives activate
+on a matching incoming offer. Executions require their input port data. Existing
+explicit condition choices remain available. The Python backend requires an
+unguarded branch to start with an action (or `0`); a parallel group or nested
+replication in that position is rejected because it has no single admission action.
+
+A replication stops admission when its selected branch starts with `send(eof)`
+or `recv(eof)`. The selected branch still executes its remaining operations,
+including additional EOF receives. The replication joins admitted work and its
+descendants before continuing; EOF publication must follow prior data transfers.
+An EOF later in a normal iteration does not terminate its enclosing replication.
+A publisher therefore uses `!(move(data) + send(eof))`, with scoped envelopes,
+rather than a guarded `end()` followed by an EOF send.
+
 ## Named condition guards (2026-10-15)
 
 Modern CWL translation emits `left +[condition_id] right`, resolved against a

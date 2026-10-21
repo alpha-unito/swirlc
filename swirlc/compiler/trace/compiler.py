@@ -133,7 +133,7 @@ class TraceTarget(StructuredCompiler):
             self._render(root, trace, 0, [], set())
             self.write_location_end(location, trace)
 
-    def _render(self, node, trace, depth, owners, bound):
+    def _render(self, node, trace, depth, owners, bound, admission=False):
         prefix = "  " * depth
         label = self._label(node)
         kind = node.kind
@@ -150,9 +150,10 @@ class TraceTarget(StructuredCompiler):
             trace.write(f"{prefix}{label}: {kind}{annotation} {{\n")
             child_bound = set(bound)
             branch_bounds = []
-            for child in node.children.values():
+            for index, child in enumerate(node.children.values()):
                 branch_bound = child_bound if kind == "seq" else set(bound)
-                self._render(child, trace, depth + 1, owners + ([owner] if owner else []), branch_bound)
+                self._render(child, trace, depth + 1, owners + ([owner] if owner else []), branch_bound,
+                             kind == "repl" or (admission and (kind == "choice" or (kind == "seq" and index == 0))))
                 branch_bounds.append(branch_bound)
             join = "drain admitted instances and descendants" if owner else "join activated descendants"
             trace.write(f"{prefix}}} wait {label}: {join}\n")
@@ -176,10 +177,11 @@ class TraceTarget(StructuredCompiler):
             term = args['term']
             variables = set(getattr(term, 'variables', lambda: set())())
             detail = f" fresh={sorted(variables - bound)} exact={sorted(variables & bound)}" if kind == "recv" else ""
+            payload = term.items[0]
+            if admission and owners and kind in ("send", "recv") and payload.kind == "literal" and payload.name == "eof":
+                detail += f" first operation closes owner={owners[-1]}; stop admission and drain before terminal branch"
             trace.write(f"{prefix}{label}: {kind} {term} [{args['data_type']}] {args['src']} -> {args['dst']} : {args['port']}{detail}\n")
             if kind == "recv":
                 bound.update(variables)
-        elif kind == "end":
-            trace.write(f"{prefix}{label}: end(): close owner={owners[-1] if owners else 'INVALID'}; stop admission and drain\n")
         else:
             trace.write(f"{prefix}{label}: zero (null process)\n")

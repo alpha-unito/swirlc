@@ -1794,12 +1794,19 @@ class _PythonEmitter:
             return result
         return [(nodes, conditions)]
 
-    def _try_action(self, node):
+    def _try_action(self, node, guarded=False):
         args = node.args
         if node.kind == "recv":
             return f"runtime.try_receive(env, {args['port']!r}, {self._term(args['term'])}, {args['src']!r})"
-        if node.kind == "move":
-            return f"runtime.try_move(env, {args['port']!r}, {self._term(args['term'])}, {args['dst']!r})"
+        if node.kind in ("move", "send"):
+            return f"runtime.try_{node.kind}(env, {args['port']!r}, {self._term(args['term'])}, {args['dst']!r})"
+        if node.kind == "exec":
+            inputs = ", ".join(f"({port!r}, {self._term(term)})" for port, term in args["inputs"])
+            return f"runtime.try_execute(env, {args['tool']!r}, [{inputs}])"
+        if node.kind in ("par", "repl") and guarded:
+            return "True"
+        if node.kind != "zero":
+            raise ValueError(f"Choice/replication admission cannot begin with {node.kind}; begin with an action")
         return "True"
 
     def _selector(self, alternatives, depth):
@@ -1822,12 +1829,19 @@ class _PythonEmitter:
                     method = "has_data" if has_data else "exhausted"
                     predicates.append(f"runtime.{method}({guard['port']!r}, {self._term(guard['scope'])}, env)")
             if nodes:
-                predicates.append(self._try_action(nodes[0]))
+                predicates.append(self._try_action(nodes[0], guarded=bool(conditions)))
             condition = " and ".join(predicates) or "True"
             self._write(depth + 1, f"if {condition}:")
             self._write(depth + 2, f"return {index}")
         self._write(depth + 1, "return None")
         return name
+
+    @staticmethod
+    def _terminal(nodes):
+        if not nodes or nodes[0].kind not in ("send", "recv"):
+            return False
+        payload = nodes[0].args["term"].items[0]
+        return payload.kind == "literal" and payload.name == "eof"
 
     def _continuation(self, nodes):
         # The admission receive has committed; a claimed move still sends.
@@ -1870,9 +1884,10 @@ class _PythonEmitter:
             self._write(depth + 3, "break")
             for index, ((nodes, _conditions), branch) in enumerate(zip(alternatives, branches, strict=True)):
                 self._write(depth + 2, f"{'if' if index == 0 else 'elif'} selected == {index}:")
-                if nodes and nodes[0].kind == "end":
-                    self._write(depth + 3, f"runtime.end({owner})")
-                    self._emit_nodes(nodes[1:], depth + 3)
+                if self._terminal(nodes):
+                    self._write(depth + 3, f"runtime.close_owner({owner})")
+                    self._write(depth + 3, f"runtime.join({owner})")
+                    self._write(depth + 3, f"{branch}(replica_env, {owner})")
                 else:
                     self._write(depth + 3, f"runtime.spawn({owner}, {branch}, replica_env)")
             self._write(depth, "finally:")
@@ -1900,8 +1915,6 @@ class _PythonEmitter:
             self._write(depth, f"runtime.recv(env, {args['port']!r}, {self._term(args['term'])}, {args['src']!r})")
         elif kind in ("send", "move"):
             self._write(depth, f"runtime.{kind}(env, {args['port']!r}, {self._term(args['term'])}, {args['data_type']!r}, {args['src']!r}, {args['dst']!r})")
-        elif kind == "end":
-            self._write(depth, "runtime.end(owner)")
         elif kind == "zero":
             self._write(depth, "pass  # zero")
         else:

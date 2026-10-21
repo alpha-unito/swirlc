@@ -116,15 +116,6 @@ class SWIRLListener(ParseTreeListener):
         pass
 
 
-    # Enter a parse tree produced by SWIRLParser#end.
-    def enterEnd(self, ctx:SWIRLParser.EndContext):
-        pass
-
-    # Exit a parse tree produced by SWIRLParser#end.
-    def exitEnd(self, ctx:SWIRLParser.EndContext):
-        pass
-
-
     # Enter a parse tree produced by SWIRLParser#guard.
     def enterGuard(self, ctx:SWIRLParser.GuardContext):
         pass

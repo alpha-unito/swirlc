@@ -75,7 +75,7 @@ def check_toy_genome(directory):
                 text = "\n".join((bundle / f"{location}.md").read_text()
                                  for location in metadata["locations"])
                 assert all(tool in text for tool in metadata["steps"])
-                assert "fresh=" in text and "exact=" in text and "close owner=" in text
+                assert "fresh=" in text and "exact=" in text and "first operation closes owner=" in text
                 assert "drain admitted instances and descendants" in text
                 assert "INVALID" not in text
                 continue

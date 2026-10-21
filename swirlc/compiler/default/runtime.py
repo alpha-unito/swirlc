@@ -335,6 +335,25 @@ class Runtime:
                         raise ValueError(f"Closed stream {port} is missing required key {wanted}")
             return False
 
+    def try_send(self, env, port, term, dst=None):
+        with self.condition:
+            payload, identity = term['items']
+            if payload['kind'] == 'literal' and payload['name'] in ('begin', 'eof'):
+                scope = self._identity(identity, env)
+                return payload['name'] == 'begin' or not any(
+                    value['port'] == port and value['id'][:len(scope)] == scope
+                    for value in self.values)
+            for value in self.values:
+                if value['port'] != port:
+                    continue
+                candidate = dict(env)
+                if self._match_payload(payload, value['payload'], candidate) and self._match_id(identity, value['id'], candidate):
+                    self._bind_types(payload, value['type'], candidate)
+                    self._bind_condition_input(candidate, port, value['payload'])
+                    env.update(candidate)
+                    return True
+            return False
+
     def try_move(self, env, port, term, dst=None):
         with self.condition:
             payload, identity = term['items']
@@ -460,6 +479,24 @@ class Runtime:
             return [(i,) for i in range(lengths[0])]
         coordinates = list(itertools.product(*(range(length) for length in lengths)))
         return [(i,) for i in range(len(coordinates))] if method == 'flat_crossproduct' else [(c,) for c in coordinates]
+
+    def try_execute(self, env, name, input_flow):
+        with self.condition:
+            candidate = dict(env)
+            step = self.metadata['steps'][name]
+            for port, term in input_flow:
+                if term['kind'] == 'collection':
+                    scope = self._identity(term['items'][1], candidate)
+                    routes = [route for route in step.get('routes', []) if route['port'] == port]
+                    if routes:
+                        if any((route['source'], port, scope) not in self.closed for route in routes):
+                            return False
+                    elif (port, scope) not in self.finite:
+                        return False
+                elif not self.try_send(candidate, port, term):
+                    return False
+            env.update(candidate)
+            return True
 
     def execute_step(self, env, name, input_flow, output_flow, mapping=None):
         if self.error:
@@ -615,9 +652,9 @@ class Runtime:
         if self.error:
             raise self.error
 
-    def end(self, owner):
+    def close_owner(self, owner):
         if owner is None:
-            raise ValueError('end() has no replication owner')
+            raise ValueError('No replication owner to close')
         with self.condition:
             owner['closed'] = True
             self.condition.notify_all()

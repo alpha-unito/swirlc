@@ -12,7 +12,7 @@ SOURCE = """
   !(
     (recv(((?left, ?right), ?scope / ?iteration) -> p, l1, l0)
      . send(((?left, ?right), ?scope / ?iteration) -> q, l0, l1))
-    + (recv((eof, ?scope) -> p, l1, l0) . end())
+    + (recv((eof, ?scope) -> p, l1, l0))
   ) . 0
 >
 """
@@ -35,7 +35,7 @@ def test_trace_exposes_envelope_patterns_owners_and_completion(tmp_path: Path) -
     assert "((?left, ?right), ?scope / ?iteration)" in trace
     assert "fresh=['iteration', 'left', 'right'] exact=['scope']" in trace
     assert "(eof, ?scope)" in trace
-    assert "end(): close owner=" in trace
+    assert "first operation closes owner=" in trace
     assert "drain admitted instances and descendants" in trace
     assert "join activated descendants" in trace
     assert "zero (null process)" in trace

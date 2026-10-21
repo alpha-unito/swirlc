@@ -71,19 +71,29 @@ class EmittedFragment:
     def __str__(self) -> str:
         parts = [str(part) for part in self.parts if part]
         parts = [part for part in parts if part]
+        def grouped(part):
+            if re.match(r"(?:exec|send|recv|move)\(", part):
+                depth = 0
+                for index in range(part.index("("), len(part)):
+                    character = part[index]
+                    depth += (character == "(") - (character == ")")
+                    if depth == 0:
+                        if index == len(part) - 1:
+                            return part
+                        break
+            return f"(\n{part}\n)"
+
         if self.kind == "marked":
-            return f"{parts[0]}\n(\n{parts[1]}\n)\n{parts[2]}\n"
+            return f"{parts[0]}\n{grouped(parts[1])}\n{parts[2]}\n"
         if self.kind == "hint":
             return "\n".join(parts) + "\n"
         if self.kind == "sequence":
             return "\n.\n".join(parts)
-        if self.kind == "distribution":
-            return f"!(\n({parts[0]})\n+[{parts[1]}]\n(end())\n)"
         if self.kind == "replication":
-            return f"!(\n({parts[0]})\n+\n({parts[1]})\n)"
+            return f"!(\n{grouped(parts[0])}\n+\n{grouped(parts[1])}\n)"
         if len(parts) == 1:
             return parts[0]
-        return "(\n" + "\n|\n".join(f"(\n{part}\n)" for part in parts) + "\n)" if parts else ""
+        return "(\n" + "\n|\n".join(grouped(part) for part in parts) + "\n)" if parts else ""
 
     def __bool__(self) -> bool:
         return bool(self.parts)
@@ -1441,7 +1451,7 @@ class CWLTranslator(AbstractTranslator):
                 f"// @compiler begin gather_stream {collection}_{source_index} {location} {route_port}",
                 EmittedFragment("replication", [
                     f"recv({received} -> {route_port}, {location}, {destination})",
-                    f"recv((eof, {collector_scope}) -> {route_port}, {location}, {destination}) . end()",
+                    f"recv((eof, {collector_scope}) -> {route_port}, {location}, {destination})",
                 ]),
                 f"// @compiler end gather_stream {collection}_{source_index} {location} {route_port}",
             ]))
@@ -1598,17 +1608,12 @@ class CWLTranslator(AbstractTranslator):
                                                   "elementId": dispatch_id, "type": fields[name]}}},
             }
             streams.append((name, dispatch, port, element, producer))
-            condition = f"condition_{dispatch}"
-            context.conditions[condition] = {"type": "has_data", "port": port, "scope": dispatch_scope}
             distributors = []
             for worker in workers:
                 distributors.append(EmittedFragment("marked", [
                     f"// @compiler begin scatter_stream {collection} {worker} {port}",
-                    _sequence([
-                        EmittedFragment("distribution", [
-                            f"move({DataReference(element, dispatch_id, True)} -> {port}, {producer}, {worker})",
-                            condition,
-                        ]),
+                    EmittedFragment("replication", [
+                        f"move({DataReference(element, dispatch_id, True)} -> {port}, {producer}, {worker})",
                         f"send((eof, {dispatch_scope}) -> {port}, {producer}, {worker})",
                     ]),
                     f"// @compiler end scatter_stream {collection} {worker} {port}",
@@ -1700,7 +1705,7 @@ class CWLTranslator(AbstractTranslator):
                 body,
             ])
             close = _sequence([*[f"recv((eof, {' / '.join(worker_prefix)}) -> {port}, {producer}, {worker})"
-                                  for _, _, port, _, producer in streams], "end()"])
+                                  for _, _, port, _, producer in streams]])
             branch = _sequence([
                 f"recv((begin, {' / '.join(worker_prefix)}) -> {streams[0][2]}, {streams[0][4]}, {worker})",
                 _parallel([*[f"recv((begin, {' / '.join(worker_prefix)}) -> {port}, {producer}, {worker})"
@@ -1756,7 +1761,7 @@ class CWLTranslator(AbstractTranslator):
                             f"recv((begin, {child_id}) -> {invocation_control}, {worker}, {location})",
                             _parallel(parts),
                         ]),
-                        f"recv((eof, {prefix}) -> {control}, {worker}, {location}) . end()",
+                        f"recv((eof, {prefix}) -> {control}, {worker}, {location})",
                     ]), _parallel(eofs),
                 ])
                 parent.fragments[location].append(service)

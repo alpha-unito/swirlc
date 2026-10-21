@@ -27,7 +27,7 @@ def test_scoped_replication_compiles_to_direct_python_control_flow(tmp_path):
         (recv((?item, ?scope / ?iteration) -> p, l1, l0)
          . (send((?item, ?scope / ?iteration) -> q, l0, l1)
             | send((?item, ?scope / ?iteration) -> r, l0, l1)))
-        + (recv((eof, ?scope) -> p, l1, l0) . end())
+        + (recv((eof, ?scope) -> p, l1, l0))
       ) . 0
     >
     """
@@ -76,7 +76,7 @@ def test_guarded_move_admission_sends_claim_and_closes_generated_owner(tmp_path)
     source = """
     <l0, {},
       !(move((?item,root / ?iteration)->p,l0,l1)
-        +[p has data in root] end())
+        + send((eof,root)->p,l0,l1))
     >
     """
     workflow = next(node for node in generated_modules(tmp_path, source)["l0"].body
@@ -84,10 +84,10 @@ def test_guarded_move_admission_sends_claim_and_closes_generated_owner(tmp_path)
     calls = [node for node in ast.walk(workflow)
              if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)]
     methods = [call.func.attr for call in calls]
-    assert {"has_data", "exhausted", "try_move", "move", "admit", "spawn", "join", "end"} <= set(methods)
+    assert {"try_send", "try_move", "move", "admit", "spawn", "join", "close_owner"} <= set(methods)
     assert methods.count("try_move") == 1
     assert methods.count("move") == 1
-    closures = [call for call in calls if call.func.attr == "end"]
+    closures = [call for call in calls if call.func.attr == "close_owner"]
     assert any(isinstance(call.args[0], ast.Name)
                and call.args[0].id.startswith("replication_owner_") for call in closures)
 
@@ -120,3 +120,61 @@ def test_collection_codegen_uses_port_and_envelope(tmp_path) -> None:
         {"kind": "literal", "name": "stream", "items": []},
         {"kind": "literal", "name": "root", "items": []},
     ]}
+
+
+def test_terminal_receive_drains_owner_and_runs_remaining_receives(tmp_path):
+    from swirlc.compiler.default.compiler import TERM_CONSTRUCTORS
+
+    source = "<l0,{},!((recv((eof,root)->p,l1,l0) . recv((eof,root)->q,l1,l0)))>"
+    module = generated_modules(tmp_path, source)["l0"]
+    workflow = next(node for node in module.body
+                    if isinstance(node, ast.FunctionDef) and node.name == "workflow")
+    namespace = {}
+    exec(TERM_CONSTRUCTORS, namespace)
+    exec(compile(ast.Module(body=[workflow], type_ignores=[]), "workflow", "exec"), namespace)
+
+    class RecordingRuntime:
+        def __init__(self):
+            self.events = []
+
+        def new_owner(self):
+            return {"closed": False}
+
+        def try_receive(self, env, port, term, src):
+            self.events.append(("claim", port))
+            return True
+
+        def admit(self, env, owner, selector):
+            return selector(env), dict(env)
+
+        def close_owner(self, owner):
+            owner["closed"] = True
+            self.events.append("close")
+
+        def join(self, owner):
+            self.events.append("join")
+
+        def recv(self, env, port, term, src):
+            self.events.append(("receive", port))
+
+    runtime = RecordingRuntime()
+    namespace["workflow"](runtime, {})
+    assert runtime.events == [("claim", "p"), "close", "join", ("receive", "q"), "join"]
+
+
+def test_exec_choice_codegen_checks_input_activation(tmp_path):
+    compiler = DefaultTarget(str(tmp_path))
+    metadata = {"locations": {"l0": {}, "l1": {}}, "dependencies": {},
+                "steps": {"work": {"displayName": "work", "inputs": {}, "outputs": {}}}}
+    CompileVisitor(compiler, metadata).visit(parse_workflow(
+        "<l0,{},exec(work,{}->{},{l0}) + recv((eof,root)->p,l1,l0)>"))
+    module = ast.parse((tmp_path / 'l0.py').read_text())
+    assert any(isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+               and node.func.attr == 'try_execute' for node in ast.walk(module))
+
+
+def test_unguarded_parallel_choice_start_is_rejected(tmp_path):
+    import pytest
+
+    with pytest.raises(ValueError, match='admission cannot begin with par'):
+        generated_modules(tmp_path, '<l0,{},(0 | 0) + 0>')
