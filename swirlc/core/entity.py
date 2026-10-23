@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import MutableMapping, MutableSequence
 from pathlib import PurePath
-from typing import Any
+from typing import Any, Literal
 
 from swirlc.core.deployment import Deployment, make_deployment
 from swirlc.core.utils import flatten_list
@@ -48,7 +48,7 @@ class Location:
         slurm: MutableMapping[str, Any] | None = None,
         username: str | None = None,
         ssh_key: str | None = None,
-        check_host_key: bool | None = None,
+        check_host_key: bool | Literal["accept-new"] | None = None,
         deployment: Deployment | None = None,
     ):
         self.data: MutableMapping[str, Any] = data
@@ -72,7 +72,7 @@ class Location:
         self.slurm: MutableMapping[str, Any] | None = self.deployment.slurm
         self.username: str | None = self.deployment.username
         self.ssh_key: str | None = self.deployment.ssh_key
-        self.check_host_key: bool | None = self.deployment.check_host_key
+        self.check_host_key: bool | Literal["accept-new"] | None = self.deployment.check_host_key
 
     def get_command(self, cmd: str) -> str:
         return self.deployment.get_command(cmd, self.name)

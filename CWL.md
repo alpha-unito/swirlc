@@ -49,6 +49,23 @@ cd build
 ./run.sh
 ```
 
+## SSH host keys
+
+For unattended SSH connections to new systems, set `checkHostKey: accept-new`
+in each SSH deployment's `config`:
+
+```yaml
+config:
+  nodes: [compute.example.org]
+  checkHostKey: accept-new
+```
+
+SWIRL passes this policy to SSH and SCP, including connections through Slurm's
+SSH deployment. OpenSSH saves new host keys in the launching account's
+`~/.ssh/known_hosts` and rejects changed keys. This trusts the first connection
+without verifying its fingerprint; prepopulate verified keys when that is not
+appropriate. Omitting the setting preserves the existing SSH configuration.
+
 ## JavaScript expression example
 
 The example in `examples/cwl/expressions` uses a CWL `ExpressionTool` with

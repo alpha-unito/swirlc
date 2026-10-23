@@ -4,7 +4,7 @@ import os
 import shlex
 from collections.abc import MutableMapping
 from pathlib import PurePath
-from typing import Any
+from typing import Any, Literal
 
 
 class Deployment:
@@ -17,7 +17,7 @@ class Deployment:
         workdir: str | None = None,
         username: str | None = None,
         ssh_key: str | None = None,
-        check_host_key: bool | None = None,
+        check_host_key: bool | Literal["accept-new"] | None = None,
         slurm: MutableMapping[str, Any] | None = None,
     ):
         self.hostname = hostname
@@ -80,6 +80,8 @@ class SshDeployment(Deployment):
             options.extend(
                 ["-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null"]
             )
+        elif self.check_host_key == "accept-new":
+            options.extend(["-o", "StrictHostKeyChecking=accept-new"])
         return options
 
     def _copy_destination(self, src: str, dst: str) -> str:
@@ -233,7 +235,7 @@ def make_deployment(
     workdir: str | None = None,
     username: str | None = None,
     ssh_key: str | None = None,
-    check_host_key: bool | None = None,
+    check_host_key: bool | Literal["accept-new"] | None = None,
     slurm: MutableMapping[str, Any] | None = None,
 ) -> Deployment:
     kwargs = {
