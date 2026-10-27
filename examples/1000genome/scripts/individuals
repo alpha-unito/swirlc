@@ -16,6 +16,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# Keep all 2,504 output files open instead of repeatedly reopening them on NFS.
+ulimit -Sn 4096 2>/dev/null || true
+
 inputfile=$1
 c=$2
 counter=$3

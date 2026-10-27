@@ -30,3 +30,62 @@ Once all software and data dependencies are installed, the workflow can be launc
 ```bash
 cwl-runner main.cwl config.yml
 ```
+
+## Running on Fedarcs with swirlc
+
+Run these commands on `fd-coordinator`, logged in as the account that will run the
+workflow. Use a prepared checkout containing `streamflow-fedarcs.yml` and the
+`ulimit -Sn 4096` adjustment in `scripts/individuals`.
+
+### One-time setup for a different user
+
+Set your checkout path and create a venv on the shared filesystem:
+
+```bash
+export RUN_USER="$(id -un)"
+export PROJECT="/mnt/shared/$RUN_USER/swirlc"
+cd "$PROJECT"
+python3 -m venv venv
+. venv/bin/activate
+python -m pip install -e . -r examples/1000genome/requirements.txt
+```
+
+Edit these files:
+
+- `examples/1000genome/streamflow-fedarcs.yml`: replace `tfogliobonda` in every
+  `username` and `workdir` with your username. Keep `checkHostKey: accept-new`.
+  Choose different ports if someone else is running the workflow on the same nodes.
+- `examples/1000genome/clt/frequency.cwl` and `clt/mutation_overlap.cwl`: set
+  `baseCommand` to your venv's absolute Python path:
+
+  ```yaml
+  baseCommand: ["/mnt/shared/YOUR_USERNAME/swirlc/venv/bin/python"]
+  
+
+### Translate, compile, and run
+
+From your checkout:
+
+```bash
+. venv/bin/activate
+
+export RUN_DIR="$PROJECT/build/fedarcs"
+export SCRATCH="$PROJECT/tmp"
+
+mkdir -p "$RUN_DIR" "$SCRATCH
+"
+python tmp_main.py translate --language cwl \
+    examples/1000genome/streamflow-fedarcs.yml --outdir "$RUN_DIR
+    "
+python tmp_main.py compile "$RUN_DIR/workflow.swirl" "$RUN_DIR/metadata.yml" \
+    --outdir "$RUN_DIR" --tmpdir "$SCRATCH" --bundle-dependencies
+    
+cd "$RUN_DIR"
+
+./run.sh > workflow-run.log 2>&1
+
+status=$?
+
+printf 'Workflow exit status: %s\n' "$status"
+```
+
