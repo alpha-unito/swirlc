@@ -96,7 +96,7 @@ def test_collection_codegen_uses_port_and_envelope(tmp_path) -> None:
     from swirlc.compiler.default.compiler import TERM_CONSTRUCTORS
     from swirlc.compiler.trace.compiler import TraceTarget
 
-    source = "<l0,{(p,(d,root))},exec(s,{(p,(d,root))}->{U(q,(stream,root))},{l0})>"
+    source = "<l0,{(p,(d,root))},exec(s,{(p,(d,root))}->{U_{?stream}(q,(?stream,root))},{l0})>"
     metadata = {
         "locations": {"l0": {}},
         "dependencies": {"d": {"type": "list[string]", "value": ["a", "a"]}},
@@ -106,7 +106,7 @@ def test_collection_codegen_uses_port_and_envelope(tmp_path) -> None:
     }
     for target in (DefaultTarget, TraceTarget):
         CompileVisitor(target(str(tmp_path)), metadata).visit(parse_workflow(source))
-    assert " -> {U(q, (stream, root))}" in (tmp_path / "l0.md").read_text()
+    assert " -> {U_{?stream}(q, (?stream, root))}" in (tmp_path / "l0.md").read_text()
     tree = ast.parse((tmp_path / "l0.py").read_text())
     calls = [node for node in ast.walk(tree) if isinstance(node, ast.Call)
              and isinstance(node.func, ast.Name) and node.func.id == "collection"]
@@ -117,7 +117,7 @@ def test_collection_codegen_uses_port_and_envelope(tmp_path) -> None:
     exec(TERM_CONSTRUCTORS, namespace)
     actual = eval(compile(ast.Expression(calls[0]), "generated collection", "eval"), namespace)
     assert actual == {"kind": "collection", "name": "q", "items": [
-        {"kind": "literal", "name": "stream", "items": []},
+        {"kind": "variable", "name": "stream", "items": []},
         {"kind": "literal", "name": "root", "items": []},
     ]}
 

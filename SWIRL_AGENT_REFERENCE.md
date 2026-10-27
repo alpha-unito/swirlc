@@ -1,3 +1,13 @@
+## Collection payload binders (2026-10-26)
+
+Collections use `U_{?sample_stream}(sample_queue, (?sample_stream, root))`.
+The variable after `U_` binds each payload in the collection; the envelope must
+use that same variable. The binder is local to the collection and does not bind
+variables for subsequent operations. Its scope must be independently bound and
+cannot depend on the payload binder. Collection metadata retains the bare name
+`sample_stream` and its existing scope. The old `U(port, (name, scope))` spelling
+is rejected. The Python parser and lexer were regenerated with ANTLR 4.13.2.
+
 ## Operation-driven replication termination (2026-10-21)
 
 `end()` is removed from the grammar. An unguarded `+` selects a branch whose

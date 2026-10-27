@@ -22,7 +22,7 @@ class Term:
         if self.kind == "path":
             return " / ".join(map(str, self.items))
         if self.kind == "collection":
-            return f"U({self.name}, ({self.items[0]}, {self.items[1]}))"
+            return f"U_{{{self.items[0]}}}({self.name}, ({self.items[0]}, {self.items[1]}))"
         if self.kind == "indexed":
             return f"{self.name}[{self.items[0]}]"
         return self.name
@@ -32,6 +32,8 @@ class Term:
                 "items": [item.to_dict() for item in self.items]}
 
     def variables(self) -> set[str]:
+        if self.kind == "collection":
+            return self.items[1].variables()
         return ({self.name} if self.kind == "variable" else set()).union(
             *(item.variables() for item in self.items)
         )
@@ -90,7 +92,13 @@ def get_pair(ctx: SWIRLParser.DataPairContext, dependencies: dict | None = None)
     if ctx.collection():
         collection = ctx.collection()
         port = get_name(collection.port())
-        return port, Term("collection", port, (Term("literal", get_name(collection.name())), get_term(collection.data())))
+        binder = get_name(collection.binder)
+        if binder != get_name(collection.payload):
+            raise ValueError("Collection payload must match its U binder")
+        scope = get_term(collection.data())
+        if binder in scope.variables():
+            raise ValueError("Collection scope cannot depend on its payload binder")
+        return port, Term("collection", port, (Term("variable", binder), scope))
     port, term = get_name(ctx.port()), get_term(ctx.data())
     if dependencies and term.kind == "literal" and port in dependencies and term.name not in dependencies:
         port, term = term.name, Term("literal", port)

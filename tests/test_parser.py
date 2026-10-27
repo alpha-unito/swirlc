@@ -29,7 +29,7 @@ def test_structured_envelopes_scopes_collections_and_guard() -> None:
     from swirlc.core.utils import get_flow, get_term
     tree = parse_workflow(
         "<l0,{(p,(d,root))},exec(s,{(p,(d,root))}"
-        "->{U(q,(stream,root))},{l0}) . "
+        "->{U_{?stream}(q,(?stream,root))},{l0}) . "
         "!(move((?value,root / ?iteration)->q,l0,l1)"
         "+ send((eof,root)->q,l0,l1))>"
     )
@@ -106,7 +106,7 @@ def test_parallel_receive_bindings_available_after_join() -> None:
 @pytest.mark.parametrize("identity", ["root", "?scope", "?scope / ?iteration", "root / ?outer / ?inner"])
 def test_collection_pairs_preserve_identity_and_flow_order(identity: str) -> None:
     from swirlc.core.utils import get_flow
-    source = f"<l0,{{}},exec(s,{{U(z,(last,{identity})),U(a,(first,{identity}))}}->{{}},{{l0}})>"
+    source = f"<l0,{{}},exec(s,{{U_{{?last}}(z,(?last,{identity})),U_{{?first}}(a,(?first,{identity}))}}->{{}},{{l0}})>"
     tree = parse_workflow(source)
     inputs, outputs = get_flow(tree.location(0).trace().pred().exec())
     assert [port for port, _ in inputs] == ["z", "a"]
@@ -115,15 +115,50 @@ def test_collection_pairs_preserve_identity_and_flow_order(identity: str) -> Non
         assert term.kind == "collection"
         assert term.name == port
         assert str(term.items[1]).replace(" ", "") == identity.replace(" ", "")
-        assert str(term) == f"U({port}, ({term.items[0]}, {term.items[1]}))"
+        assert str(term) == f"U_{{{term.items[0]}}}({port}, ({term.items[0]}, {term.items[1]}))"
         assert term.to_dict()["items"][1] == term.items[1].to_dict()
 
 
 @pytest.mark.parametrize("collection", [
+    "U(p,(stream,root))",
     "U(p,stream,root)", "U(p,stream)", "U(p,(stream))",
     "U(p,(stream,))", "U(p,(,root))", "U(p,(stream,root,extra))",
     "U(p,(stream,root /))", "U(p,(stream,?))",
+    "U_{stream}(p,(?stream,root))", "U_{?stream}(p,(stream,root))",
 ])
 def test_rejects_old_or_malformed_collection_pairs(collection: str) -> None:
     with pytest.raises(ValueError, match="Invalid SWIRL"):
         parse_workflow(f"<l0,{{}},exec(s,{{{collection}}}->{{}},{{l0}})>")
+
+
+def test_collection_payload_binder_is_local():
+    from swirlc.core.parsing import validate_bindings
+
+    collection = "U_{?sample_stream}(sample_queue,(?sample_stream,root))"
+    validate_bindings(parse_workflow(f"<l0,{{}},exec(s,{{{collection}}}->{{}},{{l0}})>"))
+    validate_bindings(parse_workflow(f"<l0,{{}},exec(s,{{}}->{{{collection}}},{{l0}})>"))
+    for flow in (f"{{{collection}}}->{{}}", f"{{}}->{{{collection}}}"):
+        with pytest.raises(ValueError, match="Unbound variables.*sample_stream"):
+            validate_bindings(parse_workflow(
+                f"<l0,{{}},exec(s,{flow},{{l0}}) . send((?sample_stream,root)->q,l0,l1)>"
+            ))
+
+
+@pytest.mark.parametrize("collection", [
+    "U_{?value}(p,(?other,root))",
+    "U_{?value}(p,(?value,?value))",
+])
+def test_collection_requires_matching_payload_and_independent_scope(collection):
+    from swirlc.core.parsing import validate_bindings
+
+    with pytest.raises(ValueError, match="Collection"):
+        validate_bindings(parse_workflow(f"<l0,{{}},exec(s,{{{collection}}}->{{}},{{l0}})>"))
+
+
+def test_collection_still_requires_its_scope_to_be_bound():
+    from swirlc.core.parsing import validate_bindings
+
+    with pytest.raises(ValueError, match="Unbound variables.*scope"):
+        validate_bindings(parse_workflow(
+            "<l0,{},exec(s,{U_{?value}(p,(?value,?scope))}->{},{l0})>"
+        ))

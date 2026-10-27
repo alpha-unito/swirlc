@@ -11,7 +11,7 @@
 <source, {(p_input, (d_lists, root))},
   send((begin, root) -> p_outer, source, outer)
   .
-  exec(s_dispatch_outer, {(p_input, (d_lists, root))} -> {U(p_outer, (outer_stream, root))}, {source})
+  exec(s_dispatch_outer, {(p_input, (d_lists, root))} -> {U_{?outer_stream}(p_outer, (?outer_stream, root))}, {source})
   .
   !(
     move((?items, root / ?iteration_1) -> p_outer, source, outer)
@@ -35,7 +35,7 @@
       .
       send((begin, ?scope_0 / ?iteration_1) -> p_inner, outer, inner)
       .
-      exec(s_dispatch_inner, {(p_outer, (?items, ?scope_0 / ?iteration_1))} -> {U(p_inner, (inner_stream, ?scope_0 / ?iteration_1))}, {outer})
+      exec(s_dispatch_inner, {(p_outer, (?items, ?scope_0 / ?iteration_1))} -> {U_{?inner_stream}(p_inner, (?inner_stream, ?scope_0 / ?iteration_1))}, {outer})
       .
       !(
         move((?item, ?scope_0 / ?iteration_1 / ?iteration_2) -> p_inner, outer, inner)
@@ -99,7 +99,7 @@
             recv((eof, ?scope_0 / ?iteration_1) -> p_inner_results, inner, collector)
           )
           .
-          exec(s_gather_inner, {U(p_inner_results, (inner_results, ?scope_0 / ?iteration_1))} -> {(p_outer_results, (?results, ?scope_0 / ?iteration_1))}, {collector})
+          exec(s_gather_inner, {U_{?inner_results}(p_inner_results, (?inner_results, ?scope_0 / ?iteration_1))} -> {(p_outer_results, (?results, ?scope_0 / ?iteration_1))}, {collector})
           .
           send((?results, ?scope_0 / ?iteration_1) -> p_outer_results, collector, collector)
         )
@@ -119,7 +119,7 @@
         recv((eof, ?scope_0) -> p_outer_results, collector, collector)
       )
       .
-      exec(s_gather_outer, {U(p_outer_results, (outer_results, ?scope_0))} -> {(p_output, (d_output, ?scope_0))}, {collector})
+      exec(s_gather_outer, {U_{?outer_results}(p_outer_results, (?outer_results, ?scope_0))} -> {(p_output, (d_output, ?scope_0))}, {collector})
       .
       exec(s_consumer, {(p_output, (d_output, ?scope_0))} -> {(p_final, (d_final, ?scope_0))}, {collector})
     )

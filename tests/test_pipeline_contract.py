@@ -333,6 +333,8 @@ def test_ordinary_nested_metadata(configuration, tmp_path):
     assert not metadata.get("scatterRegions")
     outputs = terminal_ports(example, metadata)
     for step in metadata["steps"].values():
+        if "command" not in step:
+            continue
         assert step["bindings"]["inputs"]["object"]
         assert step["arguments"][0] == {"value": "-c"}
         assert len(step["arguments"]) == 2 and "expression" in step["arguments"][1]

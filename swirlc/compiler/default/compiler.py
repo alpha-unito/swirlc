@@ -454,6 +454,8 @@ def _coerce_expression_output(value: Any, data_type: str) -> Any:
         return bool(value)
     if data_type == "string":
         return str(value)
+    if data_type in ("file", "directory") and isinstance(value, dict):
+        return value["path"]
     return value
 
 """
@@ -1069,6 +1071,8 @@ wait_function = """def _wait(threads: MutableSequence[Thread]):
 command_tool_function = r'''def _resolve_bindings(specifications, bound, context=None, input_types=None):
     context = context or {}
     def resolve(spec):
+        if "value" in spec:
+            return spec["value"]
         if "object" in spec:
             return {name: resolve(value) for name, value in spec["object"].items()}
         if "port" in spec:

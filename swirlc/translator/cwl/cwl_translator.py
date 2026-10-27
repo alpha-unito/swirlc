@@ -93,7 +93,7 @@ class EmittedFragment:
         if self.kind == "sequence":
             return "\n.\n".join(parts)
         if self.kind == "replication":
-            return f"!(\n{grouped(parts[0])}\n+\n{grouped(parts[1])}\n)"
+            return f"(!(\n{grouped(parts[0])}\n+\n{grouped(parts[1])}\n))"
         if len(parts) == 1:
             return parts[0]
         return "(\n" + "\n|\n".join(grouped(part) for part in self.parts if part and str(part)) + "\n)" if parts else ""
@@ -1181,6 +1181,32 @@ class CWLTranslator(AbstractTranslator):
             raise ValueError(f"Duplicate exec descriptor {name}")
         return name
 
+    def _send_value(self, context, value, port, source, destination):
+        """Publish through a populated route port, preserving the reusable source."""
+        source_port, data, data_type = value
+        send = f"send({data} -> {port}, {source}, {destination})"
+        if source_port == port:
+            return send
+        copy = self._exec_name(context, f"_s_route_{port}")
+        routed = DataReference(f"route_d_{copy}", data.identity, True)
+        # Consume the route copy so a local receive cannot duplicate gather entries.
+        send = f"move({routed} -> {port}, {source}, {destination})"
+        context.steps[copy] = {
+            "displayName": f"Route {source_port} to {port}",
+            "inputs": {source_port: {"type": data_type}},
+            "expression": {
+                **_lower_expression("${ return {value: inputs.value}; }", {
+                    "inputs": {"object": {"value": {"port": source_port}}}
+                }),
+                "outputs": {"value": port},
+            },
+            "outputs": {port: _output_descriptor(routed, data_type)},
+        }
+        return _sequence([
+            f"exec({copy}, {{({source_port}, {data})}} -> {{({port}, {routed})}}, {{{source}}})",
+            send,
+        ])
+
     def _tool_trace(
         self,
         invocation: Invocation,
@@ -1195,6 +1221,7 @@ class CWLTranslator(AbstractTranslator):
         named_inputs = {}
         input_types = {}
         expression_inputs = {}
+        input_bindings = {}
         for tool_input in getattr(tool, "inputs", []):
             name = _local_name(tool_input.id).split("/")[-1]
             if len(invocation.input_bindings.get(name, ())) > 1:
@@ -1208,30 +1235,43 @@ class CWLTranslator(AbstractTranslator):
                     if source in context.available
                 ]
             )
+            literal = None
             if not values and name in invocation.defaults:
-                values = [self._default_value(
-                    invocation.path, name, invocation.defaults[name],
-                    invocation.input_types[name], context,
-                )]
+                data_type = invocation.input_types[name]
+                # Files remain dependencies so deployment staging still applies.
+                if "file" in data_type or "directory" in data_type:
+                    values = [self._default_value(
+                        invocation.path, name, invocation.defaults[name], data_type, context,
+                    )]
+                else:
+                    literal = {"value": _coerce_cwl_value(
+                        invocation.defaults[name], data_type, self.cwl_file.parent,
+                    )}
             for port, data, _ in values:
                 input_flow.append(f"({port}, {data})")
-            if not values:
+            if not values and literal is None:
                 continue
-            port, _, data_type = values[0]
-            named_inputs[name] = port
-            input_types[name] = data_type
+            if values:
+                port, _, data_type = values[0]
+                named_inputs[name] = port
+                input_types[name] = data_type
+                source = {"port": port}
+            else:
+                source = literal
+            input_bindings[name] = source
             binding = getattr(tool_input, "inputBinding", None)
             if getattr(tool, "expression", None) is not None:
-                expression_inputs[name] = {"port": port}
+                expression_inputs[name] = source
             if binding is not None:
                 position = binding.position if binding.position is not None else 0
                 if not isinstance(position, int):
                     raise ValueError(f"Expression argument positions are unsupported at {invocation.path}/{name}")
                 transformation = getattr(binding, "valueFrom", None)
                 value = (
-                    {"expression": _lower_expression(transformation, {"self": {"port": port}})}
+                    {"expression": _lower_expression(transformation, {"self": source})}
                     if isinstance(transformation, str) and ("$(" in transformation or "${" in transformation)
                     else {"value": transformation} if transformation is not None
+                    else literal if literal is not None
                     else {"valueFrom": port}
                 )
                 arguments.append((position, name, _argument_descriptor(binding, value, position)))
@@ -1291,10 +1331,7 @@ class CWLTranslator(AbstractTranslator):
         step = {
             "displayName": local,
             "inputs": {port: {"type": input_types[name]} for name, port in named_inputs.items()},
-            "bindings": {"inputs": {"object": {
-                name: {"port": port}
-                for name, port in named_inputs.items()
-            }}},
+            "bindings": {"inputs": {"object": input_bindings}},
             "command": command,
             "arguments": [
                 {"value": _resolve_token(extra, self.cwl_file.parent)} for extra in extras
@@ -1361,7 +1398,8 @@ class CWLTranslator(AbstractTranslator):
                 producer = child.value_locations.get(source, context.controller)
                 if producer == location and source not in child.publishers:
                     continue
-                port, data, data_type = self._value(child, source)
+                value = self._value(child, source)
+                _, data, data_type = value
                 port = _generated_name("p_input", invocation.path.strip("/"), source.strip("/"), location)
                 # Each consumer binds its own transported File path, even for a shared source.
                 received = DataReference(
@@ -1371,7 +1409,7 @@ class CWLTranslator(AbstractTranslator):
                 child.available[source] = (port, received, data_type)
                 receive = f"recv({received} -> {port}, {producer}, {location})"
                 if receive not in receives:
-                    send = f"send({data} -> {port}, {producer}, {location})"
+                    send = self._send_value(context, value, port, producer, location)
                     if source in context.publishers:
                         context.publishers[source].parts.append(send)
                     else:
@@ -1430,7 +1468,7 @@ class CWLTranslator(AbstractTranslator):
         if destination in stage.materialized:
             return stage.materialized[destination]
         scope = " / ".join(stage.scope) if stage.scope else "root"
-        collector_scope = " / ".join(stage.scope) if stage.scope else "?scope_0"
+        collector_scope = " / ".join(stage.scope) if stage.scope else f"?scope_{stage.index}"
         task_id = f"{collector_scope} / {stage.coordinate}"
         suffix = f"{stage.output_index}_{stage.index}_{destination}"
         source_port = f"p_result_{suffix}"
@@ -1440,19 +1478,24 @@ class CWLTranslator(AbstractTranslator):
         collection = f"stream_{base}"
         gather = self._exec_name(stage.sources[0].context, f"_s_gather_{suffix}")
         loops, routes = [], []
-        for source_index, occurrence in enumerate(stage.sources):
-            actual = (
-                self._materialize(occurrence.pending, destination)
-                if occurrence.pending else occurrence
-            )
+        collection_ports = []
+        actuals = [
+            self._materialize(occurrence.pending, destination)
+            if occurrence.pending else occurrence
+            for occurrence in stage.sources
+        ]
+        remote = all(actual.location != destination for actual in actuals)
+        for source_index, (occurrence, actual) in enumerate(zip(stage.sources, actuals)):
             worker = occurrence.context.worker_owner
             assert worker is not None
             location = actual.location
-            route_port = source_port if len(stage.sources) == 1 else f"{source_port}_{source_index}"
-            actual.publisher.parts.append(
-                f"send({actual.value[1]} -> {route_port}, {location}, {destination})"
+            route_port = actual.value[0] if remote else (
+                source_port if len(stage.sources) == 1 else f"{source_port}_{source_index}"
             )
-            sender_scope = scope if stage.scope else "?scope_0"
+            actual.publisher.parts.append(
+                self._send_value(actual.context, actual.value, route_port, location, destination)
+            )
+            sender_scope = scope if stage.scope else f"?scope_{stage.index}"
             begin = f"send((begin, {sender_scope}) -> {route_port}, {location}, {destination})"
             eof = f"send((eof, {sender_scope}) -> {route_port}, {location}, {destination})"
             if location == worker.context.controller:
@@ -1463,7 +1506,9 @@ class CWLTranslator(AbstractTranslator):
                 controls[0].append(begin)
                 controls[1].append(eof)
             received = DataReference(actual.value[1].payload, task_id, True)
-            hint = f"gather_stream {collection}_{source_index} {location} {route_port}"
+            if route_port not in collection_ports:
+                collection_ports.append(route_port)
+            hint = f"gather_stream {collection}_{collection_ports.index(route_port)} {location} {route_port}"
             loops.append(EmittedFragment("marked", [
                 f"// @compiler begin {hint}",
                 _sequence([
@@ -1480,7 +1525,7 @@ class CWLTranslator(AbstractTranslator):
                             "output": stage.name, "elementId": actual.value[1].identity}
             routes.append(result_route)
         publisher = _parallel([])
-        gather_inputs = ", ".join(f"U({route['port']}, ({collection}_{i}, {collector_scope}))" for i, route in enumerate(routes))
+        gather_inputs = ", ".join(f"U_{{?{collection}_{i}}}({source}, (?{collection}_{i}, {collector_scope}))" for i, source in enumerate(collection_ports))
         fragment = _sequence([
             _parallel(loops),
             f"exec({gather}, {{{gather_inputs}}} -> {{({port}, {data})}}, {{{destination}}})",
@@ -1501,9 +1546,9 @@ class CWLTranslator(AbstractTranslator):
             "shapeFrom": stage.dispatches,
             "routes": routes,
             "collections": {
-                route["port"]: {"name": f"{collection}_{i}", "scope": collector_scope,
+                source: {"name": f"{collection}_{i}", "scope": collector_scope,
                                 "output": port, "type": stage.sources[0].value[2], "read": "snapshot"}
-                for i, route in enumerate(routes)
+                for i, source in enumerate(collection_ports)
             },
             "outputs": {port: _output_descriptor(data, value[2])},
         }
@@ -1520,7 +1565,7 @@ class CWLTranslator(AbstractTranslator):
                     continue
                 output = self._materialize(context.pending[source], location)
                 port = _generated_name("p_ready", invocation.path.strip("/"), source.strip("/"), location)
-                output.publisher.parts.append(f"send({output.value[1]} -> {port}, {location}, {location})")
+                output.publisher.parts.append(self._send_value(context, output.value, port, location, location))
                 received = DataReference(
                     _generated_name("ready_d", invocation.path.strip("/"), source.strip("/"), location),
                     output.value[1].identity, True,
@@ -1539,10 +1584,8 @@ class CWLTranslator(AbstractTranslator):
         index = self._region_number(context, invocation)
         prefix = context.bound_path
         scope_id = " / ".join(prefix) if prefix else "root"
-        worker_prefix = prefix or ("?scope_0",)
-        depth = len(prefix) if prefix else 1
-        siblings = [item for item in context.region.invocations if item.scatter]
-        coordinate = f"?iteration_{depth}" + (f"_{index}" if len(siblings) > 1 else "")
+        worker_prefix = prefix or (f"?scope_{index}",)
+        coordinate = f"?iteration_{index + 1}"
         task_path = (*worker_prefix, coordinate)
         worker_id = " / ".join(task_path)
         inputs, invariants, producers, input_publishers = [], [], {}, {}
@@ -1565,6 +1608,10 @@ class CWLTranslator(AbstractTranslator):
                         input_publishers[name] = context.publishers[source]
             elif name in invocation.defaults:
                 data_type = invocation.input_types[name]
+                if (not isinstance(invocation.process, WorkflowRegion)
+                        and name not in invocation.scatter.inputs
+                        and "file" not in data_type and "directory" not in data_type):
+                    continue
                 if name in invocation.scatter.inputs:
                     data_type = f"list[{data_type}]"
                 value = self._default_value(invocation.path, name, invocation.defaults[name], data_type, context)
@@ -1610,7 +1657,7 @@ class CWLTranslator(AbstractTranslator):
             source_port, source_data, _ = value
             if name in input_publishers:
                 source_port = f"p_dispatch_input_{dimension}_{index}"
-                input_publishers[name].parts.append(f"send({source_data} -> {source_port}, {producer}, {producer})")
+                input_publishers[name].parts.append(self._send_value(context, value, source_port, producer, producer))
                 activation.append(f"recv({source_data} -> {source_port}, {producer}, {producer})")
             dispatch_id = f"{dispatch_scope} / {coordinate}"
             context.steps[dispatch] = {
@@ -1642,7 +1689,7 @@ class CWLTranslator(AbstractTranslator):
                 ]))
             fragment = _sequence([
                 *activation,
-                f"exec({dispatch}, {{({source_port}, {source_data})}} -> {{U({port}, ({collection}, {dispatch_scope}))}}, {{{producer}}})",
+                f"exec({dispatch}, {{({source_port}, {source_data})}} -> {{U_{{?{collection}}}({port}, (?{collection}, {dispatch_scope}))}}, {{{producer}}})",
                 _parallel(distributors),
             ])
             context.fragments[producer].append(fragment)
@@ -1666,7 +1713,7 @@ class CWLTranslator(AbstractTranslator):
                 port, data, data_type = value
                 if producer != worker or name in input_publishers:
                     transfer = f"p_invariant_{name}_{index}_{worker}"
-                    send = f"send({data} -> {transfer}, {producer}, {worker})"
+                    send = self._send_value(context, value, transfer, producer, worker)
                     if name in input_publishers:
                         input_publishers[name].parts.append(send)
                     else:
@@ -1754,18 +1801,18 @@ class CWLTranslator(AbstractTranslator):
                                                   [stream[1] for stream in streams], occurrences, value)
         return []
 
-    @staticmethod
-    def _iteration_transfer(context: LoweringContext, location: str, port: str) -> tuple[str, str]:
+    def _iteration_transfer(self, context: LoweringContext, location: str, port: str):
         """Carry iteration identity when no single input admits the remote body."""
-        _, data, _ = next(
+        value = next(
             value for path, value in context.available.items()
             if value[1].identity == context.task_id
             and context.value_locations.get(path, context.controller) == context.controller
             and path not in context.publishers
         )
+        _, data, _ = value
         received = DataReference(f"iteration_d_{port}", context.task_id, True)
         return (
-            f"send({data} -> {port}, {context.controller}, {location})",
+            self._send_value(context, value, port, context.controller, location),
             f"recv({received} -> {port}, {context.controller}, {location})",
         )
 

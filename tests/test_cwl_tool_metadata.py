@@ -32,6 +32,15 @@ def test_input_self_is_preserved_with_an_explicit_binding():
     assert expression["bindings"] == {"self": binding}
 
 
+def test_remote_scatter_results_are_sent_from_the_exec_output_port():
+    source, description = metadata("examples/cwl/pipeline/depth-1/plain/streamflow.yml")
+    assert not any(name.startswith("_s_route_") for name in description["steps"])
+    data = "(?element_d_process_items_result, ?scope_0 / ?iteration_1)"
+    assert f"-> {{(p_process_items_result, {data})}}, {{l1}})" in source
+    assert f"send({data} -> p_process_items_result, l1, l0)" in source
+    assert f"recv({data} -> p_process_items_result, l1, l0)" in source
+
+
 def render_translator():
     translator = CWLTranslator(ROOT / "examples/cwl/pipeline/depth-0/metadata/streamflow.yml")
     tool = next(tool for uri, tool in translator.cwl_bundle.items() if uri.endswith("/render.cwl"))
@@ -95,7 +104,8 @@ def test_pipeline_metadata_preserves_argument_positions_and_output_processors():
     received = re.search(r"recv\(\(\?(\w+), root\) -> " + re.escape(binding["port"]) + r", l0, l1\)", source)
     assert received, "Tool input must be received with its source identity"
     payload = received.group(1)
-    assert f"send((d_sample, root) -> {binding['port']}, l0, l1)" in source
+    assert f"{{(p_sample, (d_sample, root))}} -> {{({binding['port']}, (?route_d_" in source
+    assert re.search(r"move\(\(\?route_d_\w+, root\) -> " + re.escape(binding['port']) + r", l0, l1\)", source)
     assert f"exec(s_stage_0, {{({binding['port']}, (?{payload}, root))}}" in source
 
 
@@ -224,7 +234,7 @@ def test_scatter_uses_operation_readiness_and_eof_termination():
             loop = re.search(rf"!\(\s*{element}\([^\n]+ -> {port}, [^\n]+\)\s*\+\s*{control}\(\(eof,", block)
             assert begin and loop
             assert begin.start() < loop.start()
-            assert re.fullmatch(r"\s*\.\s*", block[begin.end():loop.start()])
+            assert re.fullmatch(r"\s*\.\s*\(", block[begin.end():loop.start()])
             assert block.count(f"{control}((begin,") == 1
             assert block.count("!(") == 1
             assert "// @compiler" not in block
@@ -265,7 +275,7 @@ def test_single_operation_branches_omit_grouping_parentheses():
     receive = "recv((?item, root / ?iteration) -> p, source, worker)"
     eof = "recv((eof, root) -> p, source, worker)"
     single = str(EmittedFragment("replication", [receive, _sequence([eof])]))
-    assert single == f"!(\n{receive}\n+\n{eof}\n)"
+    assert single == f"(!(\n{receive}\n+\n{eof}\n))"
     multiple = str(EmittedFragment("replication", [receive, _sequence([eof, eof])]))
     assert f"(\n{eof}\n.\n{eof}\n)" in multiple
     parallel = str(EmittedFragment("parallel", [receive, eof]))
@@ -290,10 +300,10 @@ def test_parallel_stream_hints_do_not_add_redundant_parentheses(kind):
 def test_worker_loop_reuses_existing_body_grouping():
     body = EmittedFragment("parallel", ["exec(first)", "exec(second)"])
     loop = EmittedFragment("replication", [body, "recv(eof)"])
-    assert str(loop) == "!(\n(\nexec(first)\n|\nexec(second)\n)\n+\nrecv(eof)\n)"
+    assert str(loop) == "(!(\n(\nexec(first)\n|\nexec(second)\n)\n+\nrecv(eof)\n))"
     sequence = EmittedFragment("sequence", [body, "send(result)"])
     loop.parts[0] = sequence
-    assert str(loop) == f"!(\n(\n{sequence}\n)\n+\nrecv(eof)\n)"
+    assert str(loop) == f"(!(\n(\n{sequence}\n)\n+\nrecv(eof)\n))"
 
 
 @pytest.mark.parametrize("config", [
@@ -321,7 +331,8 @@ def test_remote_default_only_task_receives_an_iteration_value(tmp_path):
     trace = source.getvalue()
     assert "p_invocation_" not in trace
     assert "recv((?iteration_d_p_iteration_process_items_2, ?scope_0 / ?iteration_1) -> p_iteration_process_items_2" in trace
-    assert "send((?element_d_samples, ?scope_0 / ?iteration_1) -> p_iteration_process_items_2" in trace
+    assert "{(p_scatter_0_0, (?element_d_samples, ?scope_0 / ?iteration_1))} -> {(p_iteration_process_items_2," in trace
+    assert "move((?route_d__s_route_p_iteration_process_items_2_0, ?scope_0 / ?iteration_1) -> p_iteration_process_items_2" in trace
     from swirlc.main import main
 
     workflow = tmp_path / "workflow.swirl"

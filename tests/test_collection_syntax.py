@@ -37,7 +37,8 @@ def test_translated_collections_pair_names_with_their_metadata_scope(depth):
                 if term.kind == "collection":
                     name, scope = term.items
                     actual.add((tool, side, port, name.name, str(scope)))
-                    assert f"U({port}, ({name}, {scope}))" in trace.getvalue()
+                    assert name.kind == "variable"
+                    assert f"U_{{{name}}}({port}, ({name}, {scope}))" in trace.getvalue()
     expected = set()
     for tool, descriptor in metadata["steps"].items():
         for port, output in descriptor.get("outputs", {}).items():
@@ -47,7 +48,7 @@ def test_translated_collections_pair_names_with_their_metadata_scope(depth):
         for port, collection in descriptor.get("collections", {}).items():
             expected.add((tool, "input", port, collection["name"], collection["scope"]))
     assert actual == expected
-    assert len(actual) == trace.getvalue().count("U(")
+    assert len(actual) == trace.getvalue().count("U_{")
 
 
 @pytest.mark.parametrize("depth", [1, 2, 3])
