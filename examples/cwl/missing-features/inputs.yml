@@ -1,0 +1,12 @@
+items:
+  - name: one
+    source:
+      class: File
+      basename: source.txt
+      contents: "seed\n"
+      secondaryFiles:
+        - class: File
+          basename: source.txt.meta
+          contents: "meta\n"
+enabled: false
+status: 1

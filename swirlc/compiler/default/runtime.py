@@ -149,7 +149,7 @@ class Runtime:
             conn.settimeout(timeout)
             conn.connect(self.addresses[dst])
             _frame(conn, header)
-            if payload is not None:
+            if header["kind"] == "offer" and not header.get("control"):
                 self._send_payload(conn, header['type'], payload)
             # Offers are acknowledged only when workflow consumers commit them.
             if header['kind'] == 'offer':
@@ -290,11 +290,16 @@ class Runtime:
             return True
         return self._identity(final, env) == identity[len(prefix):]
 
-    def _store(self, port, identity, payload, data_type):
-        self.values.append({'port': port, 'id': identity, 'payload': payload, 'type': data_type})
+    def _store(self, port, identity, payload, data_type, received_from=None):
+        value = {'port': port, 'id': identity, 'payload': payload, 'type': data_type}
+        if received_from is not None and self._dispatch_workers(port):
+            # A self-local delivery remains readable, but must not be dispatched twice.
+            value['received_from'] = received_from
+        self.values.append(value)
 
-    def _snapshot(self, port, scope):
-        return [v for v in self.values if v['port'] == port and v['id'][:-1] == scope and len(v['id']) == len(scope) + 1]
+    def _snapshot(self, port, scope, source=False):
+        return [v for v in self.values if v['port'] == port and v['id'][:-1] == scope and len(v['id']) == len(scope) + 1
+                and not (source and 'received_from' in v)]
 
     def _bind_condition_input(self, env, port, value):
         if port in self.condition_ports:
@@ -319,7 +324,7 @@ class Runtime:
                     if offer.get('control') == 'eof':
                         self.closed.add((src, port, offer['id']))
                     elif not offer.get('control'):
-                        self._store(port, offer['id'], offer['value'], offer['type'])
+                        self._store(port, offer['id'], offer['value'], offer['type'], received_from=src)
                     offer['event'].set()
                     self.condition.notify_all()
                     return True
@@ -341,7 +346,7 @@ class Runtime:
             if payload['kind'] == 'literal' and payload['name'] in ('begin', 'eof'):
                 scope = self._identity(identity, env)
                 return payload['name'] == 'begin' or not any(
-                    value['port'] == port and value['id'][:len(scope)] == scope
+                    value['port'] == port and value['id'][:len(scope)] == scope and 'received_from' not in value
                     for value in self.values)
             for value in self.values:
                 if value['port'] != port:
@@ -359,7 +364,7 @@ class Runtime:
             payload, identity = term['items']
             workers = self._dispatch_workers(port) if dst is not None else []
             for value in self.values:
-                if value['port'] != port:
+                if value['port'] != port or (workers and 'received_from' in value):
                     continue
                 candidate = dict(env)
                 if self._match_payload(payload, value['payload'], candidate) and self._match_id(identity, value['id'], candidate):
@@ -416,6 +421,8 @@ class Runtime:
 
     @staticmethod
     def _coerce(value, data_type):
+        if value is None:
+            return None
         if isinstance(data_type, list):
             return tuple(Runtime._coerce(item, item_type) for item, item_type in zip(value, data_type, strict=True))
         if data_type.startswith('list['):
@@ -694,12 +701,12 @@ class Runtime:
     def has_data(self, port, scope, env):
         identity = self._identity(scope, env)
         with self.condition:
-            return bool(self._snapshot(port, identity))
+            return bool(self._snapshot(port, identity, source=True))
 
     def exhausted(self, port, scope, env):
         identity = self._identity(scope, env)
         with self.condition:
-            return (port, identity) in self.finite and not self._snapshot(port, identity)
+            return (port, identity) in self.finite and not self._snapshot(port, identity, source=True)
 
     def initialize(self, initial, env):
         self.initial = {entry['name']: entry['payload'] for entry in initial}

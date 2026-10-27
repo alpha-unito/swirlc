@@ -37,3 +37,29 @@ Input for the later mosaic workflow:
 `examples/montage/data-small/config_montage.json`.
 Dataset-run log: `build/montage/get-dataset-small.log`.
 The dataset files are validated; `main_montage.cwl` has not been run.
+
+## Local dataset run
+
+On 2026-10-27, the unchanged workflow and small configuration completed locally
+with cwltool. This run produced 12 FITS images (four per band), six overlap
+pairs per band, and 15.6 MiB of output. The archive result can change over time;
+the earlier Fedarcs run above returned five images per band. All FITS files and
+configuration references were validated.
+
+The locally built Montage 7.0 commands are under `.tools/montage/Montage-main/bin`.
+With `uv`, cwltool, Astropy, and Node.js available, reproduce the run with:
+
+```bash
+export PATH="$PWD/.tools/montage/Montage-main/bin:$PATH"
+mkdir -p build/montage/tmp examples/montage/data-small
+uv run --no-project --with cwltool --with astropy python -m cwltool \
+  --no-container --skip-schemas --parallel --parallel-max 3 \
+  --outdir examples/montage/data-small \
+  --tmpdir-prefix "$PWD/build/montage/tmp/cwl-" \
+  --cachedir "$PWD/build/montage/cwl-cache" \
+  examples/montage/main_get_dataset.cwl examples/montage/config_get_dataset_small.json \
+  > build/montage/get-dataset-small.result.json 2> build/montage/get-dataset-small.log
+```
+
+The generated input for the mosaic workflow is `data-small/config_montage.json`;
+`build/montage/dataset-summary.json` records the local validation results.

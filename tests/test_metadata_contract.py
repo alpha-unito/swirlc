@@ -172,3 +172,131 @@ def test_expression_port_binding_requires_an_input_declaration():
     step["bindings"] = {"sample": {"port": "p_in"}}
     with pytest.raises(ValueError, match="require typed inputs declarations"):
         SwirlValidator().validate(config)
+
+
+def structured_metadata():
+    config = metadata()
+    schema = {"type": "array", "items": {"type": "record", "fields": {
+        "file": {"type": "file"}, "note": {"type": "string", "nullable": True},
+    }}}
+    config["dependencies"]["d_records"] = {"type": "list[file]", "schema": schema,
+        "value": [{"file": {"class": "File", "contents": "data"}, "note": None}]}
+    step = config["steps"]["s_copy"]
+    step.update(
+        bindings={"inputs": {"object": {"source": {"items": [
+            {"port": "p_in"}, {"value": None}, {"object": {"nested": {"port": "p_in"}}},
+        ]}}}},
+        inputSchemas={"source": schema},
+        inputOptions={"source": {"readContents": True, "secondaryFiles": [
+            {"pattern": ".meta", "required": True},
+            {"pattern": expression("return '.index';"), "required": expression("return true;")},
+        ]}},
+        inputTransforms={"source": {"select": "all_non_null", "merge": "merge_nested",
+                                    "evaluate": expression("return self;")}},
+        staging=[{"entry": expression("return inputs.source;"), "name": "bundle"},
+                 {"entry": "generated text", "name": expression("return 'script.py';")},
+                 {"entry": {"class": "Directory", "listing": []}}],
+        acceptedExitCodes=[0, 1], when=expression("return true;"),
+        outputNames={"result": "p_out"},
+    )
+    step["outputs"]["p_out"].update(schema=schema, secondaryFiles=[{"pattern": ".meta", "required": True}])
+    return config
+
+
+def test_structured_cwl_execution_descriptors_are_valid():
+    config = structured_metadata()
+    assert SwirlValidator().validate(config) is config
+
+
+@pytest.mark.parametrize("field, value", [
+    ("inputSchemas", {"source": {"type": "array"}}),
+    ("inputSchemas", {"source": {"type": "record"}}),
+    ("inputSchemas", {"source": {"type": "string", "items": {"type": "int"}}}),
+    ("inputSchemas", {"source": {"type": "record", "fields": {"x": {"type": "unknown"}}}}),
+    ("inputSchemas", {"source": {"type": "file", "nullable": "true"}}),
+    ("acceptedExitCodes", [True]),
+    ("acceptedExitCodes", [0, 0]),
+    ("staging", [{"name": "missing-entry"}]),
+    ("staging", [{"entry": "text", "writable": True}]),
+    ("when", "$(true)"),
+    ("inputTransforms", {"source": {"select": "unknown"}}),
+    ("inputTransforms", {"source": {"merge": "unknown"}}),
+    ("inputOptions", {"source": {"secondaryFiles": [{"pattern": ".meta"}]}}),
+])
+def test_structured_cwl_execution_descriptors_are_strict(field, value):
+    config = structured_metadata()
+    config["steps"]["s_copy"][field] = value
+    with pytest.raises(Exception, match="configuration is invalid"):
+        SwirlValidator().validate(config)
+
+
+@pytest.mark.parametrize("field, value, message", [
+    ("outputNames", {"result": "p_missing"}, "unknown output"),
+    ("inputOptions", {"missing": {"readContents": True}}, "unknown input name"),
+    ("inputTransforms", {"missing": {"select": "first_non_null"}}, "unknown input name"),
+    ("bindings", {"inputs": {"items": [{"object": {"nested": {"port": "p_missing"}}}]}}, "outside its inputs"),
+])
+def test_structured_cwl_references_are_owned(field, value, message):
+    config = structured_metadata()
+    config["steps"]["s_copy"][field] = value
+    with pytest.raises(ValueError, match=message):
+        SwirlValidator().validate(config)
+
+
+def test_literal_record_field_names_are_not_expression_references(tmp_path):
+    from ruamel.yaml import YAML
+
+    from swirlc.main import main
+
+    config = {
+        "version": "v1.1", "locations": {"l0": {}},
+        "dependencies": {"d_in": {"type": "file", "value": {"port": "data", "bindings": {"port": "also data"}},
+            "schema": {"type": "record", "fields": {"port": {"type": "string"},
+                        "bindings": {"type": "record", "fields": {"port": {"type": "string"}}}}}},
+            "d_out": {"type": "file"}},
+        "steps": {"s_copy": {"displayName": "copy", "inputs": {"p_in": {"type": "file"}},
+            "bindings": {"inputs": {"object": {"value": {"value": {"port": "literal", "bindings": {"port": "literal"}}}}}},
+            "expression": {"language": "javascript", "source": "return {value: inputs.value};", "outputs": {"value": "p_out"}},
+            "outputs": {"p_out": {"dataName": "d_out", "id": "root", "schema": {"type": "record", "fields": {"port": {"type": "string"}}}}}}},
+    }
+    SwirlValidator().validate(config)
+    source = tmp_path / "workflow.swirl"
+    source.write_text("<l0, {(p_in,(d_in,root))}, exec(s_copy,{(p_in,(d_in,root))}->{(p_out,(d_out,root))},{l0})>")
+    description = tmp_path / "metadata.yml"
+    with description.open("w") as stream:
+        YAML().dump(config, stream)
+    assert main(["compile", str(source), str(description), "--outdir", str(tmp_path)]) == 0
+
+
+def test_nested_secondary_declaration_survives_metadata_validation():
+    config = structured_metadata()
+    schema = {"type": "array", "items": {"type": "record", "fields": {
+        "source": {"type": "file", "secondaryFiles": [{"pattern": ".meta", "required": True}]}}}}
+    config["steps"]["s_copy"]["inputSchemas"]["record"] = schema
+    assert SwirlValidator().validate(config) is config
+
+
+def test_preparation_descriptor_and_field_binding_are_valid():
+    config = metadata()
+    step = config["steps"]["s_copy"]
+    step.pop("command")
+    step.pop("arguments")
+    step["outputs"].pop("p_root")
+    step["prepare"] = {"output": "p_out"}
+    step["bindings"] = {"inputs": {"object": {"item": {"port": "p_in", "field": "item"}}}}
+    assert SwirlValidator().validate(config) is config
+
+
+@pytest.mark.parametrize("mutation,message", [
+    ({"prepare": {"output": "missing"}}, "exactly its output"),
+    ({"prepare": {"output": "p_out"}, "command": "true"}, "cannot also execute"),
+])
+def test_preparation_rejects_inconsistent_execution_descriptors(mutation, message):
+    config = metadata()
+    step = config["steps"]["s_copy"]
+    step.pop("command")
+    step.pop("arguments")
+    step["outputs"].pop("p_root")
+    step.update(mutation)
+    with pytest.raises(ValueError, match=message):
+        SwirlValidator().validate(config)

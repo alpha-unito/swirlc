@@ -10,7 +10,7 @@ from ruamel.yaml import YAML
 
 from swirlc.config.validator import SwirlValidator
 from tests.test_pipeline_contract import (
-    PYTHON, ROOT, generated_execs, replace_files, run_command, terminal_ports,
+    PYTHON, ROOT, generated_execs, file_path, replace_files, run_command, terminal_ports,
 )
 
 EXAMPLE = ROOT / "examples/cwl/toy-genome"
@@ -125,9 +125,8 @@ def check_toy_genome(directory):
                 directories = list(scratch.glob(f"exec_{tool}_*"))
                 # Different exec templates may publish the same port at one location.
                 ids = {tuple(record["id"]) for record in manifests[location]
-                       if record["port"] in step["outputs"]
-                       and isinstance(record["payload"], str)
-                       and Path(record["payload"]).parent in directories}
+                       if record["port"] in step["outputs"] and record["type"] == "file"
+                       and file_path(record["payload"]).parent in directories}
                 assert len(directories) == len(ids), (tool, ids, directories)
                 assert all(path.is_dir() and any(path.glob("*.txt")) for path in directories)
                 isolated.extend(directories)

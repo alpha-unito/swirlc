@@ -9,6 +9,7 @@
 | `lists-input` | A whole-list workflow input |
 | `scatter` | One dotproduct scatter over two short lists |
 | `scatter-nested` | Two scatter levels, including an empty inner list |
+| `missing-features` | Minimal cwltool reference for missing records, conditions, staging, companions, and status handling |
 
 Each directory has a `streamflow.yml` entry point. Basic workflows also retain
 existing deployment variants. The larger scatter and CWL 1000Genomes examples

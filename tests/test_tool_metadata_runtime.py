@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import logging
 import shlex
+import socket
 import sys
 import time
 import threading
@@ -51,11 +52,13 @@ def test_javascript_engine_is_serialized_across_parallel_tasks(tool_runtime, mon
 
 @pytest.fixture
 def tool_runtime(tmp_path):
-    namespace = {"__name__": "tool_metadata_test", "SCRATCH_DIR": str(tmp_path),
+    namespace = {"__name__": "tool_metadata_test", "SCRATCH_DIR": str(tmp_path), "BUF_SIZE": 65536,
                  "logger": logging.getLogger("tool_metadata_test")}
     exec(compiler.imports, namespace)
     exec(compiler.list_helper, namespace)
     exec(compiler.expression_function, namespace)
+    exec(compiler.value_helpers, namespace)
+    exec(compiler.framing_helpers, namespace)
     exec(compiler.exec_function, namespace)
     exec(compiler.command_tool_function, namespace)
     exec(compiler.SCOPED_MAIN, namespace)
@@ -196,7 +199,7 @@ def test_shell_quote_false_and_item_separator(tool_runtime, monkeypatch):
 
 
 @pytest.mark.parametrize("expression", ["$(inputs.missing.value)", "$(inputs.text +)",
-                                         "$(runtime.outdir)"])
+                                         "$(undeclaredRuntime.outdir)"])
 def test_unsupported_or_malformed_expressions_fail(tool_runtime, expression):
     step = descriptor([{"expression": expression}], inputs={"text": "p_text"},
                       input_types={"text": "string"})
@@ -286,3 +289,338 @@ def test_typed_inputs_stage_nested_file_lists_without_expression_bindings(tool_r
     step.pop("bindings")
     step["inputs"] = {"p_files": {"type": "list[list[file]]"}}
     assert execute(tool_runtime, step, {"p_files": [[str(first)], [], [str(second)]]}) == "first\nsecond\n"
+
+
+def test_structured_values_validate_nested_fields_and_preserve_primitives(tool_runtime):
+    schema = {"type": "array", "items": {"type": "record", "fields": {
+        "count": {"type": "int"}, "enabled": {"type": "boolean"},
+        "text": {"type": "string"}, "optional": {"type": "string", "nullable": True}}}}
+    value = [{"count": 0, "enabled": False, "text": "", "optional": None}]
+    assert tool_runtime["_prepare_value"](value, schema) == value
+    for field, invalid in [("count", False), ("enabled", 0), ("text", None)]:
+        with pytest.raises(TypeError):
+            tool_runtime["_prepare_value"]([{**value[0], field: invalid}], schema)
+    with pytest.raises(TypeError):
+        tool_runtime["_prepare_value"]([{"enabled": False, "text": ""}], schema)
+
+
+def test_literal_directory_stages_files_and_companions_without_changing_sources(tool_runtime, tmp_path):
+    value = tool_runtime["_prepare_value"]({"class": "Directory", "basename": "bundle",
+        "listing": [{"class": "File", "basename": "value.txt", "contents": "seed\n",
+                     "secondaryFiles": [{"class": "File", "basename": "value.txt.meta",
+                                         "contents": "meta\n"}]}]})
+    source = Path(value["listing"][0]["path"])
+    workdir = tmp_path / "invocation"
+    workdir.mkdir()
+    staged = tool_runtime["_stage_value"](value, str(workdir))
+    assert Path(staged["path"]) == workdir / "bundle"
+    assert (workdir / "bundle/value.txt").read_text() == "seed\n"
+    assert (workdir / "bundle/value.txt.meta").read_text() == "meta\n"
+    assert source.read_text() == "seed\n"
+    assert tool_runtime["_stage_value"](value, str(workdir)) == staged
+
+
+@pytest.mark.parametrize("name", ["../escape.txt", "/absolute.txt", "bundle/../../escape"])
+def test_staging_rejects_escaping_entries(tool_runtime, tmp_path, name):
+    with pytest.raises(ValueError, match="escapes|Invalid staging"):
+        tool_runtime["_entry_path"](str(tmp_path), name)
+
+
+def test_staging_rejects_conflicting_entries_across_calls(tool_runtime, tmp_path):
+    workdir = tmp_path / "work"
+    workdir.mkdir()
+    prepare = tool_runtime["_prepare_value"]
+    first = prepare({"class": "File", "basename": "same.txt", "contents": "first"})
+    second = prepare({"class": "File", "basename": "same.txt", "contents": "second"})
+    tool_runtime["_stage_value"](first, str(workdir))
+    with pytest.raises(ValueError, match="Conflicting"):
+        tool_runtime["_stage_value"](second, str(workdir))
+    assert (workdir / "same.txt").read_text() == "first"
+
+
+def test_secondary_patterns_expressions_and_requiredness(tool_runtime, tmp_path):
+    primary = tmp_path / "sample.txt"
+    primary.write_text("seed")
+    (tmp_path / "sample.txt.meta").write_text("meta")
+    (tmp_path / "sample.index").write_text("index")
+    prepare = tool_runtime["_prepare_value"]
+    value = prepare({"class": "File", "path": str(primary)})
+    evaluate = lambda descriptor, own: tool_runtime["_evaluate_expression"](descriptor, {"self": own})
+    result = tool_runtime["_apply_secondary"](value, [
+        {"pattern": ".meta", "required": True},
+        {"pattern": "^.index", "required": True},
+        {"pattern": expression("return self.nameroot + '.index';"), "required": True},
+        {"pattern": ".absent", "required": expression("return false;")}], evaluate)
+    assert [item["basename"] for item in result["secondaryFiles"]] == ["sample.txt.meta", "sample.index"]
+    # Reapplying declarations must never request sample.txt.meta.meta.
+    assert tool_runtime["_apply_secondary"](result, [{"pattern": ".meta"}], evaluate) == result
+    with pytest.raises(ValueError, match="does not exist"):
+        tool_runtime["_apply_secondary"](value, [{"pattern": ".absent", "required": True}], evaluate)
+
+
+def test_contents_loader_enforces_byte_limit(tool_runtime, tmp_path):
+    path = tmp_path / "contents.txt"
+    path.write_bytes(b"x" * 65536)
+    assert len(tool_runtime["_load_contents"](str(path))) == 65536
+    path.write_bytes(b"x" * 65537)
+    with pytest.raises(ValueError, match="64 KiB"):
+        tool_runtime["_load_contents"]({"path": str(path)})
+
+
+def test_nested_record_transport_transfers_bytes_into_receiver_scratch(tool_runtime, tmp_path):
+    sender_root, receiver_root = tmp_path / "sender", tmp_path / "receiver"
+    sender_root.mkdir()
+    receiver_root.mkdir()
+    sender_namespace = dict(tool_runtime, SCRATCH_DIR=str(sender_root))
+    receiver_namespace = dict(tool_runtime, SCRATCH_DIR=str(receiver_root))
+    for namespace in (sender_namespace, receiver_namespace):
+        exec(compiler.value_helpers, namespace)
+        exec(compiler.framing_helpers, namespace)
+    original = sender_namespace["_prepare_value"]([{"source": {"class": "File",
+        "basename": "seed.txt", "contents": "seed\n", "secondaryFiles": [
+            {"class": "File", "basename": "seed.txt.meta", "contents": "meta\n"}]},
+        "directory": {"class": "Directory", "basename": "bundle", "listing": [
+            {"class": "File", "basename": "nested.txt", "contents": "nested"}]},
+        "null": None, "false": False, "zero": 0, "empty": ""}])
+    sending, receiving = socket.socketpair()
+    sending.settimeout(5)
+    receiving.settimeout(5)
+    try:
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(sender_namespace["_send_structured"], sending, original)
+            result = receiver_namespace["_recv_structured"](receiving)
+            future.result(timeout=5)
+    finally:
+        sending.close()
+        receiving.close()
+    own = result[0]
+    path = Path(own["source"]["path"])
+    assert path.is_relative_to(receiver_root)
+    assert path != Path(original[0]["source"]["path"])
+    assert path.read_text() == "seed\n"
+    assert path.with_name("seed.txt.meta").read_text() == "meta\n"
+    assert Path(own["directory"]["path"]).is_relative_to(receiver_root)
+    assert (Path(own["directory"]["path"]) / "nested.txt").read_text() == "nested"
+    assert {key: own[key] for key in ("null", "false", "zero", "empty")} == {
+        "null": None, "false": False, "zero": 0, "empty": ""}
+
+
+def json_output_step(script, *, schema=None):
+    spec = {"type": "string", "schema": schema or {"type": "string"}}
+    return {"command": shlex.quote(sys.executable),
+            "arguments": [{"value": "-c"}, {"value": script}],
+            "inputs": {}, "outputNames": {"answer": "out"},
+            "outputs": {"out": dict(spec)}, "runtimeOutputs": {"out": dict(spec)}}
+
+
+def test_output_json_overrides_bindings_and_resolves_relative_files(tool_runtime):
+    step = json_output_step("from pathlib import Path; import json; "
+        "Path('report.txt').write_text('report'); "
+        "Path('cwl.output.json').write_text(json.dumps({'answer': {'class':'File','location':'report.txt'}}))",
+        schema={"type": "file"})
+    step["runtimeOutputs"]["out"]["glob"] = "wrong-binding.txt"
+    result = execute(tool_runtime, step)
+    assert result["class"] == "File"
+    assert Path(result["path"]).read_text() == "report"
+
+
+@pytest.mark.parametrize("contents,exception,match", [
+    ("{", ValueError, None),
+    ("[]", TypeError, "output mapping"),
+    ("{}", ValueError, "Missing required output"),
+    ('{"answer": 42}', TypeError, "Expected string"),
+])
+def test_output_json_rejects_invalid_mapping_and_outputs(tool_runtime, contents, exception, match):
+    step = json_output_step("from pathlib import Path; "
+                           f"Path('cwl.output.json').write_text({contents!r})")
+    with pytest.raises(exception, match=match):
+        execute(tool_runtime, step)
+
+
+def test_output_json_rejects_inaccessible_file_reference(tool_runtime):
+    step = json_output_step("from pathlib import Path; "
+        "Path('cwl.output.json').write_text('{\"answer\":{\"class\":\"File\",\"location\":\"absent.txt\"}}')",
+        schema={"type": "file"})
+    with pytest.raises(ValueError, match="does not exist"):
+        execute(tool_runtime, step)
+
+
+@pytest.mark.parametrize("status", [0, 1])
+def test_accepted_status_is_available_to_output_evaluation_without_glob(tool_runtime, status):
+    step = descriptor([{ "value": "-c"}, {"value": f"exit {status}"}], command="/bin/sh",
+                      data_type="int", output_eval="$(runtime.exitCode)")
+    step["acceptedExitCodes"] = [0, 1]
+    step.pop("stdout")
+    step["runtimeOutputs"]["out"].pop("glob")
+    assert execute(tool_runtime, step) == status
+
+
+@pytest.mark.parametrize("status,accepted", [(2, [0, 1]), (1, None)])
+def test_rejected_status_cannot_be_masked_by_output_json(tool_runtime, status, accepted):
+    step = json_output_step("from pathlib import Path; import sys; "
+        f"Path('cwl.output.json').write_text('{{\"answer\":\"present\"}}'); sys.exit({status})")
+    if accepted is not None:
+        step["acceptedExitCodes"] = accepted
+    with pytest.raises(RuntimeError, match=f"exit status {status}"):
+        execute(tool_runtime, step)
+
+
+def test_false_condition_publishes_null_without_starting_command(tool_runtime, tmp_path):
+    marker = tmp_path / "must-not-exist"
+    step = descriptor([{"value": "-c"}, {"value": f"touch {shlex.quote(str(marker))}"}], command="/bin/sh")
+    step["when"] = expression("return false;")
+    assert execute(tool_runtime, step) is None
+    assert not marker.exists()
+    assert not list(tmp_path.glob("exec_tool_*"))
+
+
+@pytest.mark.parametrize("condition", ["return 0;", "return 'false';", "return null;"])
+def test_condition_requires_boolean(tool_runtime, condition):
+    step = descriptor([], command="false")
+    step["when"] = expression(condition)
+    with pytest.raises(TypeError, match="condition.*boolean"):
+        execute(tool_runtime, step)
+
+
+def selection_step(mode):
+    step = descriptor([], command="true", inputs={"value": "p_value"},
+        input_types={"value": "value"}, output_eval="$(JSON.stringify(inputs.value))")
+    step.pop("stdout")
+    step["runtimeOutputs"]["out"].pop("glob")
+    step["inputTransforms"] = {"value": {"select": mode}}
+    return step
+
+
+@pytest.mark.parametrize("mode,values,expected", [
+    ("all_non_null", [None, False, 0, "", [None, 1]], [False, 0, "", [None, 1]]),
+    ("all_non_null", [None, None], []),
+    ("first_non_null", [None, False, 1], False),
+    ("first_non_null", [None, 0, 1], 0),
+    ("first_non_null", [None, "", 1], ""),
+    ("the_only_non_null", [None, 0, None], 0),
+])
+def test_source_selection_preserves_order_shape_and_falsey_values(tool_runtime, mode, values, expected):
+    result = json.loads(execute(tool_runtime, selection_step(mode), {"p_value": values}))
+    assert result == expected
+    assert type(result) is type(expected)
+    if isinstance(expected, list):
+        assert [type(item) for item in result] == [type(item) for item in expected]
+
+
+@pytest.mark.parametrize("mode,values", [
+    ("first_non_null", [None, None]),
+    ("the_only_non_null", [None, None]),
+    ("the_only_non_null", [False, 0]),
+])
+def test_source_selection_rejects_wrong_non_null_count(tool_runtime, mode, values):
+    with pytest.raises(ValueError, match="requires"):
+        execute(tool_runtime, selection_step(mode), {"p_value": values})
+
+
+def test_sibling_input_transforms_evaluate_against_original_snapshot(tool_runtime):
+    step = descriptor([], command="true", inputs={"a": "p_a", "b": "p_b"},
+        input_types={"a": "int", "b": "int"}, output_eval="$(JSON.stringify(inputs))")
+    step.pop("stdout")
+    step["runtimeOutputs"]["out"].pop("glob")
+    step["inputTransforms"] = {
+        "a": {"evaluate": expression("return inputs.b + 10;")},
+        "b": {"evaluate": expression("return inputs.a + 20;")}}
+    assert json.loads(execute(tool_runtime, step, {"p_a": 1, "p_b": 2})) == {"a": 12, "b": 21}
+
+
+def test_automatic_input_staging_keeps_duplicate_basenames_and_companions(tool_runtime, tmp_path):
+    prepare = tool_runtime["_prepare_value"]
+    values = [prepare({"class": "File", "basename": "same.txt", "contents": label,
+                      "secondaryFiles": [{"class": "File", "basename": "same.txt.meta",
+                                          "contents": label + " companion"}]})
+              for label in ("first", "second")]
+    workdir = tmp_path / "work"
+    workdir.mkdir()
+    stage = tool_runtime["_stage_value"]
+    result = stage(values, str(workdir), allow_collisions=True)
+    assert result[0]["path"] != result[1]["path"]
+    for value, expected in zip(result, ("first", "second")):
+        path = Path(value["path"])
+        assert path.name == "same.txt"
+        assert path.read_text() == expected
+        assert path.with_name("same.txt.meta").read_text() == expected + " companion"
+    assert stage(values, str(workdir), allow_collisions=True) == result
+    with pytest.raises(ValueError, match="Conflicting"):
+        stage(values[1], str(workdir))
+
+
+def test_automatic_staging_relocates_primary_when_only_companion_conflicts(tool_runtime, tmp_path):
+    prepare = tool_runtime["_prepare_value"]
+    values = [prepare({"class": "File", "basename": label + ".txt", "contents": label,
+                      "secondaryFiles": [{"class": "File", "basename": "shared.meta",
+                                          "contents": label}]}) for label in ("first", "second")]
+    workdir = tmp_path / "work"
+    workdir.mkdir()
+    result = tool_runtime["_stage_value"](values, str(workdir), allow_collisions=True)
+    for value, expected in zip(result, ("first", "second")):
+        path = Path(value["path"])
+        assert path.read_text() == expected
+        assert path.with_name("shared.meta").read_text() == expected
+
+
+def test_record_field_secondary_schema_is_applied_inside_arrays(tool_runtime, tmp_path):
+    primary = tmp_path / "seed.txt"
+    primary.write_text("seed")
+    companion = tmp_path / "seed.txt.meta"
+    companion.write_text("meta")
+    value = tool_runtime["_prepare_value"]([{"source": {"class": "File", "path": str(primary)},
+                                            "optional": None}])
+    schema = {"type": "array", "items": {"type": "record", "fields": {
+        "source": {"type": "file", "secondaryFiles": [{"pattern": ".meta", "required": True}]},
+        "optional": {"type": "file", "nullable": True}}}}
+    result = tool_runtime["_apply_value_schema"](value, schema, lambda *args: None)
+    assert result[0]["source"]["secondaryFiles"][0]["path"] == str(companion)
+    assert result[0]["optional"] is None
+    missing_schema = {"type": "array", "items": {"type": "record", "fields": {
+        "source": {"type": "file", "secondaryFiles": [{"pattern": ".missing", "required": True}]}}}}
+    with pytest.raises(ValueError, match="does not exist"):
+        tool_runtime["_apply_value_schema"](value, missing_schema, lambda *args: None)
+
+
+def test_old_expression_file_outputs_keep_path_compatibility(tool_runtime, tmp_path):
+    source = tmp_path / "source.txt"
+    source.write_text("source")
+    assert tool_runtime["_coerce_expression_output"]({"class": "File", "path": str(source)}, "file") == str(source)
+    with pytest.raises(ValueError, match="wrong class"):
+        tool_runtime["_prepare_value"]({"class": "File", "path": "/dev/zero"})
+
+
+def test_initial_workdir_literal_file_entries(tool_runtime):
+    step = descriptor([], command="cat", output_eval="$(self[0].contents)")
+    step["arguments"] = [{"value": "literal.txt"}]
+    step["staging"] = [{"entry": {"class": "File", "basename": "literal.txt", "contents": "literal bytes"}}]
+    assert execute(tool_runtime, step) == "literal bytes"
+
+
+@pytest.mark.parametrize("value,expected", [(None, 7), (False, False), (0, 0), ("", "")])
+def test_input_default_precedes_valuefrom_and_preserves_falsey_data(tool_runtime, value, expected):
+    step = descriptor([], command="true", inputs={"value": "p_value"},
+        input_types={"value": "value"}, output_eval="$(JSON.stringify(inputs.value))")
+    step.pop("stdout")
+    step["runtimeOutputs"]["out"].pop("glob")
+    step["inputTransforms"] = {"value": {"default": 7, "evaluate": expression("return self;")}}
+    result = json.loads(execute(tool_runtime, step, {"p_value": value}))
+    assert result == expected
+    assert type(result) is type(expected)
+
+
+def test_preparation_publishes_transformed_inputs_before_tool_type_validation(tool_runtime):
+    step = {
+        "displayName": "prepare", "inputs": {"p_value": {"type": "int"}},
+        "bindings": {"inputs": {"object": {"value": {"port": "p_value"}}}},
+        "inputTransforms": {"value": {"evaluate": expression("return inputs.value + 1;")}},
+        "inputSchemas": {"value": {"type": "string"}},
+        "prepare": {"output": "prepared"},
+        "outputs": {"prepared": {}}, "runtimeOutputs": {"prepared": {"type": "file", "schema": {"type": "any"}}},
+    }
+    tool_runtime["METADATA"] = {"steps": {"prepare": step}}
+    result = tool_runtime["_execute_bound"]("prepare", {"p_value": 1})
+    assert result == {"prepared": {"value": 2}}
+    assert tool_runtime["_resolve_bindings"](
+        {"self": {"port": "prepared", "field": "value"}}, result,
+        input_types={"prepared": {"type": "file"}}) == {"self": 2}

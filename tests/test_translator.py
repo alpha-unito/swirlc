@@ -649,13 +649,12 @@ def test_cwl_file_location_is_coerced_to_an_absolute_path(tmp_path):
 
     assert _coerce_cwl_value(
         {"class": "File", "location": "data/input.vcf.gz"}, "file", tmp_path
-    ) == str(tmp_path / "data" / "input.vcf.gz")
-    assert (
-        _coerce_cwl_value(
-            {"class": "File", "location": "file:///data/input.vcf.gz"}, "file", tmp_path
-        )
-        == "/data/input.vcf.gz"
-    )
+    ) == {"class": "File", "location": "data/input.vcf.gz",
+          "path": str(tmp_path / "data" / "input.vcf.gz"), "basename": "input.vcf.gz"}
+    assert _coerce_cwl_value(
+        {"class": "File", "location": "file:///data/input.vcf.gz"}, "file", tmp_path
+    ) == {"class": "File", "location": "file:///data/input.vcf.gz",
+          "path": "/data/input.vcf.gz", "basename": "input.vcf.gz"}
     with pytest.raises(ValueError, match="Unsupported CWL file URI"):
         _coerce_cwl_value(
             {"class": "File", "location": "https://example.test/input.vcf.gz"},

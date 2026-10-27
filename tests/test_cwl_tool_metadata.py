@@ -206,11 +206,68 @@ def test_scatter_policies_are_runtime_invariants():
         del container[field]
 
 
-def test_cwl_when_is_rejected_instead_of_executed_unconditionally():
+def test_cwl_when_uses_named_choice_with_nullable_outputs():
     translator = CWLTranslator(ROOT / "examples/cwl/pipeline/depth-0/metadata/streamflow.yml")
     translator.cwl_obj.steps[0].when = "$(true)"
-    with pytest.raises(NotImplementedError, match="CWL when is not supported"):
-        translator.translate(StringIO(), StringIO())
+    source, description = StringIO(), StringIO()
+    translator.translate(source, description)
+    config = YAML(typ="safe").load(description.getvalue())
+    step = config["steps"]["s_stage_0"]
+    condition_id, condition = next(iter(config["conditions"].items()))
+    assert condition["expression"] == {"language": "javascript", "source": "return (true);"}
+    assert f"+[{condition_id}]" in source.getvalue()
+    assert all("when" not in descriptor for descriptor in config["steps"].values())
+    preparation = next(descriptor for descriptor in config["steps"].values() if "prepare" in descriptor)
+    prepared_port = preparation["prepare"]["output"]
+    assert step["bindings"] == {"inputs": {"port": prepared_port}}
+    assert condition["bindings"]["inputs"] == {"port": prepared_port}
+    skip = next(descriptor for descriptor in config["steps"].values()
+                if descriptor["displayName"].startswith("Skip "))
+    assert set(skip["outputs"]) == set(step["outputs"])
+    assert all(output["schema"]["nullable"] for output in step["outputs"].values())
+    assert "exec(s_stage_0," in source.getvalue()
+
+
+def test_missing_features_lower_to_execution_descriptors_without_rewriting_fixture():
+    _, description = metadata("examples/cwl/missing-features/streamflow.yml")
+    from swirlc.config.validator import SwirlValidator
+
+    SwirlValidator().validate(description)
+    steps = description["steps"]
+    generate = steps["s_generate_0"]
+    assert generate["inputSchemas"]["items"] == {
+        "type": "array", "items": {"type": "record", "fields": {
+            "name": {"type": "string"}, "source": {"type": "file"}}}}
+    assert generate["outputNames"] == {
+        "message": "p_generate_message", "artifact": "p_generate_artifact"}
+    assert generate["outputs"]["p_generate_artifact"]["secondaryFiles"] == [
+        {"pattern": ".meta", "required": True}]
+    assert generate["staging"][1]["name"] == "generate.py"
+    assert "cwl.output.json" in generate["staging"][1]["entry"]
+    optional = steps["s_optional_0"]
+    condition = description["conditions"]["c_when_s_optional_0"]
+    assert condition["expression"]["source"] == "return (inputs.enabled);"
+    preparation = next(step for step in steps.values() if step.get("displayName") == "Prepare optional")
+    assert "enabled" in preparation["bindings"]["inputs"]["object"]
+    assert "enabled" not in optional["inputSchemas"]
+    inspect = steps["s_inspect_0"]
+    assert inspect["acceptedExitCodes"] == [0, 1]
+    assert inspect["outputs"]["p_inspect_report"]["schema"] == {"type": "file"}
+    assert inspect["outputs"]["p_inspect_report"]["glob"] == "report.json"
+    assert "runtime.exitCode" in inspect["outputs"]["p_inspect_code"]["evaluate"]["source"]
+    assert inspect["inputTransforms"]["messages"] == {"select": "all_non_null"}
+    assert "[[inputs.file]].flat()" in inspect["inputTransforms"]["bundle"]["evaluate"]["source"]
+    assert len(inspect["bindings"]["inputs"]["object"]["messages"]["items"]) == 2
+    assert steps["s_check_0"]["inputOptions"]["log"] == {"readContents": True}
+
+
+@pytest.mark.parametrize("schema", [["string", "int"], ["null"], ["File", "Directory", "null"]])
+def test_unsupported_unions_fail_instead_of_selecting_first_member(schema):
+    from swirlc.translator.cwl.cwl_translator import _cwl_type_to_swirl, _value_schema
+
+    for convert in (_cwl_type_to_swirl, _value_schema):
+        with pytest.raises(ValueError, match="Unsupported CWL union"):
+            convert(schema)
 
 
 def test_scatter_uses_operation_readiness_and_eof_termination():
@@ -358,3 +415,91 @@ def test_nested_remote_gather_with_multiple_routes_has_data_admission(tmp_path):
     metadata_file.write_text(description.getvalue())
     assert "p_invocation_" not in source.getvalue()
     assert main(["compile", str(workflow), str(metadata_file), "-o", str(tmp_path)]) == 0
+
+
+def test_scattered_condition_retains_null_positions_and_completes(tmp_path):
+    import json
+    from tests.test_pipeline_contract import PYTHON, run_command
+
+    workflow = {
+        "cwlVersion": "v1.2", "class": "Workflow",
+        "requirements": {"ScatterFeatureRequirement": {}, "InlineJavascriptRequirement": {}},
+        "inputs": {"xs": {"type": "int[]", "default": [0, 1, 2]}},
+        "outputs": {"ys": {"type": {"type": "array", "items": ["null", "int"]},
+                            "outputSource": "choose/y"}},
+        "steps": {"choose": {
+            "in": {"x": "xs"}, "scatter": "x", "when": "$(inputs.x > 0)", "out": ["y"],
+            "run": {"class": "ExpressionTool", "inputs": {"x": "int"}, "outputs": {"y": "int"},
+                    "expression": "${ return {y: inputs.x}; }"}}},
+    }
+    yaml = YAML()
+    with (tmp_path / "main.cwl").open("w") as stream:
+        yaml.dump(workflow, stream)
+    with (tmp_path / "streamflow.yml").open("w") as stream:
+        yaml.dump({"version": "v1.0", "deployments": {"local": {"type": "local", "port": 0}},
+                   "workflows": {"test": {"type": "cwl", "config": {"file": "main.cwl"},
+                                          "bindings": [{"step": "/", "target": {"deployment": "local"}}]}}}, stream)
+    source, description = StringIO(), StringIO()
+    CWLTranslator(tmp_path / "streamflow.yml").translate(source, description)
+    (tmp_path / "workflow.swirl").write_text(source.getvalue())
+    (tmp_path / "metadata.yml").write_text(description.getvalue())
+    run_command([str(PYTHON), "-m", "swirlc", "compile", str(tmp_path / "workflow.swirl"),
+                 str(tmp_path / "metadata.yml"), "--bundle-dependencies", "-o", str(tmp_path)],
+                tmp_path / "compilation.log")
+    run_command(["bash", "run.sh"], tmp_path / "execution.log", cwd=tmp_path, timeout=30)
+    metadata = YAML(typ="safe").load(description.getvalue())
+    gather = next(step for step in metadata["steps"].values() if step.get("type") == "scatter_gather")
+    port = next(iter(gather["outputs"]))
+    outputs = json.loads((tmp_path / "l0.outputs.json").read_text())
+    assert [record["payload"] for record in outputs if record["port"] == port and record["id"] == []] == [[None, 1, 2]]
+
+
+def test_nested_record_file_field_retains_secondary_declarations():
+    from swirlc.translator.cwl.cwl_translator import _value_schema
+
+    field = SimpleNamespace(name="Item/source", type_="File", secondaryFiles=[".meta"])
+    schema = SimpleNamespace(type_="array", items=SimpleNamespace(type_="record", fields=[field]))
+    assert _value_schema(schema) == {"type": "array", "items": {"type": "record", "fields": {
+        "source": {"type": "file", "secondaryFiles": [{"pattern": ".meta", "required": True}]}}}}
+
+
+def test_repeated_step_input_source_has_one_exec_input():
+    translator = CWLTranslator(ROOT / "examples/cwl/missing-features/streamflow.yml")
+    region = translator.build_region_tree()
+    invocation = next(item for item in region.invocations if item.path == "/optional")
+    invocation.input_bindings["enabled"] = invocation.input_bindings["message"]
+    translator.build_region_tree = lambda: region
+    source, description = StringIO(), StringIO()
+    translator.translate(source, description)
+    metadata = YAML(typ="safe").load(description.getvalue())
+    prepare_id, step = next((name, descriptor) for name, descriptor in metadata["steps"].items()
+                            if descriptor.get("displayName") == "Prepare optional")
+    assert len(step["inputs"]) == 1
+    assert step["bindings"]["inputs"]["object"]["message"] == step["bindings"]["inputs"]["object"]["enabled"]
+    execution = re.search(rf"exec\({prepare_id}, \{{([^}}]+)\}}", source.getvalue()).group(1)
+    assert execution.count("root)") == 1
+
+
+@pytest.mark.parametrize("selection", ["first_non_null", "all_non_null", "the_only_non_null"])
+def test_single_source_selection_keeps_source_sequence(selection):
+    translator = CWLTranslator(ROOT / "examples/cwl/missing-features/streamflow.yml")
+    region = translator.build_region_tree()
+    invocation = next(item for item in region.invocations if item.path == "/inspect")
+    invocation.input_bindings["messages"] = ("/generate/message",)
+    invocation.transforms["messages"]["select"] = selection
+    translator.build_region_tree = lambda: region
+    source, description = StringIO(), StringIO()
+    translator.translate(source, description)
+    step = YAML(typ="safe").load(description.getvalue())["steps"]["s_inspect_0"]
+    binding = step["bindings"]["inputs"]["object"]["messages"]
+    assert binding == {"items": [{"port": "p_input_inspect_generate_message_l0"}]}
+    from swirlc.compiler.default import compiler
+    namespace = {}
+    exec(compiler.imports, namespace)
+    exec(compiler.list_helper, namespace)
+    exec(compiler.expression_function, namespace)
+    exec(compiler.command_tool_function, namespace)
+    values = {"p_input_inspect_generate_message_l0": "hello"}
+    resolved = namespace["_resolve_bindings"]({"inputs": {"object": {"messages": binding}}}, values,
+                                              input_types=step["inputs"])
+    assert resolved["inputs"]["messages"] == ["hello"]

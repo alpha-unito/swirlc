@@ -252,12 +252,24 @@ class CompileVisitor(SWIRLVisitor, ABC):
                 expected_type = declared_inputs[port]["type"]
                 if actual_type != "dynamic" and actual_type != expected_type:
                     raise ValueError(f"Step {name}: input {port} type {actual_type} does not match declared type {expected_type}")
+        def binding_ports(spec):
+            if "port" in spec:
+                yield spec["port"]
+            elif "object" in spec:
+                for child in spec["object"].values():
+                    yield from binding_ports(child)
+            elif "items" in spec:
+                for child in spec["items"]:
+                    yield from binding_ports(child)
+
         def referenced_ports(value):
             if isinstance(value, dict):
-                if "port" in value:
-                    yield value["port"]
-                for item in value.values():
-                    yield from referenced_ports(item)
+                for key, item in value.items():
+                    if key == "bindings":
+                        for spec in item.values():
+                            yield from binding_ports(spec)
+                    elif key not in ("value", "schema", "inputSchemas", "default"):
+                        yield from referenced_ports(item)
             elif isinstance(value, list):
                 for item in value:
                     yield from referenced_ports(item)

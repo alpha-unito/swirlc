@@ -96,7 +96,7 @@ class SwirlValidator:
                     for field, item in value.items():
                         if field == "bindings":
                             yield from ports_in_bindings(item)
-                        else:
+                        elif field not in ("value", "schema", "inputSchemas", "default"):
                             yield from binding_ports(item)
                 elif isinstance(value, list):
                     for item in value:
@@ -107,12 +107,30 @@ class SwirlValidator:
                         yield spec["port"]
                     elif "object" in spec:
                         yield from ports_in_bindings(spec["object"])
+                    elif "items" in spec:
+                        for item in spec["items"]:
+                            yield from ports_in_bindings({"item": item})
             binding_references = list(binding_ports(step))
             if binding_references and inputs is None and config.get("version") == "v1.1":
                 raise ValueError(f"Step {name} expression bindings require typed inputs declarations.")
             referenced += binding_references
             if inputs is not None and any(port not in inputs for port in referenced):
                 raise ValueError(f"Step {name} references an input outside its inputs.")
+            if "prepare" in step:
+                output = step["prepare"]["output"]
+                if set(step.get("outputs", {})) != {output}:
+                    raise ValueError(f"Step {name} preparation must declare exactly its output {output}.")
+                if any(field in step for field in ("command", "expression", "when", "type")):
+                    raise ValueError(f"Step {name} preparation cannot also execute another operation.")
+            for port in step.get("outputNames", {}).values():
+                if port not in step.get("outputs", {}):
+                    raise ValueError(f"Step {name} outputNames references an unknown output {port}.")
+            names = set(step.get("bindings", {}).get("inputs", {}).get("object", {}))
+            names.update(step.get("expression", {}).get("bindings", {}).get("inputs", {}).get("object", {}))
+            names.update(step.get("inputSchemas", {}))
+            for field in ("inputOptions", "inputTransforms"):
+                if any(input_name not in names for input_name in step.get(field, {})):
+                    raise ValueError(f"Step {name} {field} references an unknown input name.")
             for output in step.get("outputs", {}).values():
                 if "dataName" in output and output["dataName"] not in dependencies:
                     raise ValueError(f"Step {name} references unknown dependency {output['dataName']}.")

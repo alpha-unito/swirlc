@@ -113,11 +113,20 @@ def terminal_ports(example, metadata):
     return result
 
 
+def file_path(value):
+    """Accept the legacy path and typed File representations at this boundary."""
+    if isinstance(value, dict):
+        assert value.get("class") == "File", value
+        assert isinstance(value.get("basename"), str), value
+        value = value.get("path")
+    assert isinstance(value, str) and Path(value).is_file(), value
+    return Path(value)
+
+
 def replace_files(value):
     if isinstance(value, list):
         return [replace_files(item) for item in value]
-    assert isinstance(value, str) and Path(value).is_file(), value
-    text = Path(value).read_text()
+    text = file_path(value).read_text()
     return text[:-1] if text.endswith("\n") else text
 
 
@@ -200,11 +209,12 @@ def verify_bundle(directory, metadata, outputs, expected, example, variant="plai
                 for record in records:
                     if record["port"] != port:
                         continue
-                    assert isinstance(record["payload"], str)
                     if variant == "plain":
-                        path = Path(record["payload"])
+                        path = file_path(record["payload"])
                         assert path.is_file()
                         assert path.parent in directories, (tool, path, directories)
+                    else:
+                        assert isinstance(record["payload"], str)
     assert len(task_directories) == len(set(task_directories)), "Tasks share execution directories"
     assert len(placements) == sum("command" in step for step in metadata["steps"].values())
     return actual, placements, len(task_directories)
@@ -244,7 +254,7 @@ def test_scattered_subworkflow_two_workers(tmp_path, name, base_port, first, sha
     _, final_port = terminal_ports(main_example, metadata)["results"]
     final = [record["payload"] for record in placements[base_port] if record["port"] == final_port]
     assert len(final) == 1
-    assert [Path(path).read_text().rstrip("\n") for path in final[0]] == [
+    assert [file_path(path).read_text().rstrip("\n") for path in final[0]] == [
         "item=alpha", "item=beta", "item=alpha"]
 
 
@@ -321,7 +331,7 @@ def test_ordinary_whole_file_list_transport(name, expected, tmp_path):
               for record in json.loads((tmp_path / f"{location}.outputs.json").read_text())
               if record["port"] == final_port and record["id"] == []]
     assert len(finals) == 1
-    assert Path(finals[0]).read_text() == expected
+    assert file_path(finals[0]).read_text() == expected
 
 
 @pytest.mark.parametrize("configuration", ["streamflow.yml", "streamflow-split.yml"])
@@ -398,5 +408,5 @@ def test_dependent_remote_steps_finish_before_owner_eof(tmp_path):
     results = json.loads((tmp_path / "l0.outputs.json").read_text())
     final = [record["payload"] for record in results if record["port"].startswith("p_gather_data_")]
     assert len(final) == 1
-    assert [Path(path).read_text().strip() for path in final[0]] == [
+    assert [file_path(path).read_text().strip() for path in final[0]] == [
         "item=alpha", "item=beta", "item=alpha"]

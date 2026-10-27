@@ -23,11 +23,11 @@ ROOT = term('literal', 'root')
 
 
 def test_file_transport_preserves_permissions(tmp_path):
-    from swirlc.compiler.default.compiler import framing_helpers, list_helper
+    from swirlc.compiler.default.compiler import framing_helpers, list_helper, value_helpers
 
     namespace = {'socket': socket, 'Any': Any, 'os': os, 'uuid': uuid,
                  'SCRATCH_DIR': str(tmp_path), 'BUF_SIZE': 4096}
-    exec(list_helper + framing_helpers, namespace)
+    exec(list_helper + value_helpers + framing_helpers, namespace)
     for mode in (0o755, 0o644):
         source = tmp_path / f'file-{mode:o}'
         source.write_text('#!/bin/sh\nexit 0\n')
@@ -80,6 +80,21 @@ class ScopedRuntimeTests(unittest.TestCase):
         self.assertTrue(done.is_set())
         self.assertEqual(runtime.values[0]['payload'], 7)
 
+    def test_null_is_a_committed_data_message(self):
+        runtime = self.runtime()
+        pattern = envelope(term('variable', 'value'), ROOT)
+        worker = threading.Thread(target=runtime.send, args=({'value': None}, 'p', pattern,
+                                                           'string', 'local', 'local'))
+        worker.start()
+        runtime._wait(lambda: bool(runtime.offers), 'null offer')
+        env = {}
+        runtime.recv(env, 'p', envelope(term('variable', 'received'), ROOT), 'local')
+        worker.join(1)
+        self.assertFalse(worker.is_alive())
+        self.assertIsNone(env['received'])
+        self.assertIsNone(runtime.values[0]['payload'])
+        self.assertEqual(runtime.values[0]['id'], ())
+
     def test_control_like_payloads_are_data_and_controls_never_match_data(self):
         for value in ['begin', 'eof', ('begin', 'eof')]:
             with self.subTest(value=value):
@@ -116,7 +131,7 @@ class ScopedRuntimeTests(unittest.TestCase):
             runtime._payload_type(variable, {}, 'string', ('begin', 2))
 
     def test_actual_socket_preserves_heterogeneous_nested_tuple_and_file(self):
-        from swirlc.compiler.default.compiler import framing_helpers, list_helper
+        from swirlc.compiler.default.compiler import framing_helpers, list_helper, value_helpers
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         source = Path(temporary.name) / 'source.txt'
@@ -128,7 +143,7 @@ class ScopedRuntimeTests(unittest.TestCase):
         runtime = self.runtime(metadata)
         namespace = {'socket': socket, 'Any': Any, 'os': os, 'uuid': uuid,
                      'SCRATCH_DIR': temporary.name, 'BUF_SIZE': 4096}
-        exec(list_helper + framing_helpers, namespace)
+        exec(list_helper + value_helpers + framing_helpers, namespace)
         runtime.send_value, runtime.recv_value = namespace['_send_value'], namespace['_recv_value']
         payload = term('tuple', '', term('literal', 'text'), term('literal', 'number'),
                        term('tuple', '', term('literal', 'file'), term('literal', 'tail')))
@@ -571,3 +586,50 @@ def test_collection_exec_activation_waits_for_closed_or_finite_stream():
     assert not runtime.try_execute({}, 'local', inputs)
     runtime.finite.add(('p', ()))
     assert runtime.try_execute({}, 'local', inputs)
+
+
+def test_local_scatter_delivery_cannot_be_dispatched_again_but_remains_readable():
+    metadata = {'steps': {'dispatch': {
+        'type': 'scatter_dispatch', 'operationId': 'scatter', 'dimension': 'x',
+        'outputs': {'p': {'collection': {'type': 'int'}}},
+        'routes': [{'controller': 'local', 'workers': ['local']}]}},
+        'dependencies': {}}
+    runtime = Runtime(metadata, 'local', {}, None, None, None, None)
+    runtime._store('p', (0,), 0, 'int')
+    runtime.finite.add(('p', ()))
+    data = envelope(term('variable', 'value'), term('path', '', ROOT, term('variable', 'i')))
+    assert runtime.try_move({}, 'p', data, 'local')
+    runtime.offers.append({'src': 'local', 'port': 'p', 'id': (0,), 'value': 0,
+                           'type': 'int', 'control': None, 'event': threading.Event()})
+    assert runtime.try_receive({}, 'p', data, 'local')
+    assert not runtime.try_move({}, 'p', data, 'local')
+    assert runtime.try_send({}, 'p', envelope(term('literal', 'eof'), ROOT), 'local')
+    assert not runtime.has_data('p', ROOT, {})
+    assert runtime.exhausted('p', ROOT, {})
+    consumer = {}
+    assert runtime.try_send(consumer, 'p', data)
+    assert consumer['value'] == 0
+    assert runtime.try_execute({}, 'dispatch', [('p', data)])
+    assert runtime._snapshot('p', ()) == runtime.values
+
+
+def test_ordinary_received_value_keeps_normal_move_and_eof_behavior():
+    runtime = Runtime({'steps': {}, 'dependencies': {}}, 'local', {}, None, None, None, None)
+    data = envelope(term('variable', 'value'), term('path', '', ROOT, term('variable', 'i')))
+    runtime.offers.append({'src': 'local', 'port': 'ordinary', 'id': (0,), 'value': 7,
+                           'type': 'int', 'control': None, 'event': threading.Event()})
+    assert runtime.try_receive({}, 'ordinary', data, 'local')
+    assert not runtime.try_send({}, 'ordinary', envelope(term('literal', 'eof'), ROOT))
+    assert runtime.has_data('ordinary', ROOT, {})
+    assert runtime.try_move({}, 'ordinary', data, 'local')
+
+
+def test_legacy_stdout_bytes_transport_remains_text(tmp_path):
+    from swirlc.compiler.default.compiler import imports, framing_helpers, list_helper, value_helpers
+
+    namespace = {"SCRATCH_DIR": str(tmp_path), "BUF_SIZE": 4096}
+    exec(imports + list_helper + value_helpers + framing_helpers, namespace)
+    sender, receiver = socket.socketpair()
+    with sender, receiver:
+        namespace["_send_value"](sender, "stdout", b"captured\n")
+        assert namespace["_recv_value"](receiver, "stdout") == "captured\n"

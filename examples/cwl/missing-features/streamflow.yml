@@ -1,0 +1,7 @@
+version: v1.0
+workflows:
+  missing_features:
+    type: cwl
+    config:
+      file: main.cwl
+      settings: inputs.yml

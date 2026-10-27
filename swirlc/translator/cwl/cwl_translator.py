@@ -24,6 +24,7 @@ DATA_TYPE = "file"
 _CWL_SCALAR_TO_SWIRL = {
     "File": "file",
     "Directory": "directory",
+    "stdout": "file",
     "string": "string",
     "int": "int",
     "long": "int",
@@ -216,6 +217,9 @@ class Invocation:
     input_types: dict[str, str] = field(default_factory=dict)
     output_types: dict[str, str] = field(default_factory=dict)
     defaults: dict[str, object] = field(default_factory=dict)
+    when: str | None = None
+    transforms: dict = field(default_factory=dict)
+    staging: list = field(default_factory=list)
 
 
 @dataclass
@@ -430,24 +434,78 @@ def _load_workflow_inputs(cwl_file: Path, streamflow_config: MutableMapping) -> 
 
 def _coerce_cwl_value(value, value_type: str, base_dir: Path | None = None):
     """Coerce a CWL job value into the scalar/list form used by SWIRL."""
-    if isinstance(value, dict) and (
-        raw_path := value.get("path") or value.get("location")
-    ):
-        parsed = urlsplit(raw_path)
-        if parsed.scheme and parsed.scheme != "file":
-            raise ValueError(f"Unsupported CWL file URI: {raw_path}")
-        path = Path(unquote(parsed.path) if parsed.scheme == "file" else raw_path)
-        if base_dir is not None and not path.is_absolute():
-            path = (base_dir / path).resolve()
-        return str(path)
-    inner_type = _list_inner_type(value_type)
-    if inner_type is not None:
-        return [_coerce_cwl_value(item, inner_type, base_dir) for item in (value or [])]
+    if value is None:
+        return None
+    if isinstance(value, dict):
+        if value_type in ("file", "directory") and value.get("type") in ("File", "Directory") and "class" not in value:
+            value = {**value, "class": value["type"]}
+        result = {key: _coerce_cwl_value(item, "file", base_dir)
+                  for key, item in value.items()}
+        if value.get("class") in ("File", "Directory"):
+            raw_path = value.get("path") or value.get("location")
+            if raw_path:
+                parsed = urlsplit(raw_path)
+                if parsed.scheme and parsed.scheme != "file":
+                    raise ValueError(f"Unsupported CWL file URI: {raw_path}")
+                path = Path(unquote(parsed.path) if parsed.scheme == "file" else raw_path)
+                if base_dir is not None and not path.is_absolute():
+                    path = (base_dir / path).resolve()
+                result["path"] = str(path)
+                result.setdefault("basename", path.name)
+        return result
+    if isinstance(value, list):
+        inner_type = _list_inner_type(value_type) or "file"
+        return [_coerce_cwl_value(item, inner_type, base_dir) for item in value]
     if value_type == "int":
         return int(value)
     if value_type == "bool":
         return value if isinstance(value, bool) else str(value).lower() == "true"
-    return str(value)
+    return value
+
+
+def _value_schema(cwl_type) -> dict:
+    """Keep CWL's structured types outside the fixed SWIRL type grammar."""
+    if isinstance(cwl_type, (tuple, list)):
+        members = [item for item in cwl_type if item not in ("null", None)]
+        if len(members) != 1:
+            raise ValueError(f"Unsupported CWL union: {cwl_type!r}")
+        return {**_value_schema(members[0]), "nullable": len(members) != len(cwl_type)}
+    if isinstance(cwl_type, str):
+        name = _local_name(cwl_type)
+        if name.endswith("?"):
+            return {**_value_schema(name[:-1]), "nullable": True}
+        if name.endswith("[]"):
+            return {"type": "array", "items": _value_schema(name[:-2])}
+        return {"type": _CWL_SCALAR_TO_SWIRL.get(name, name)}
+    get = (lambda name: cwl_type.get(name)) if isinstance(cwl_type, dict) else (lambda name: getattr(cwl_type, "type_" if name == "type" else name, None))
+    kind = get("type")
+    if kind == "array":
+        return {"type": "array", "items": _value_schema(get("items"))}
+    if kind == "record":
+        fields = get("fields")
+        if isinstance(fields, dict):
+            return {"type": "record", "fields": {name: _value_schema(value) for name, value in fields.items()}}
+        field_schemas = {}
+        for item in fields:
+            schema = _value_schema(item.type_)
+            secondary = _secondary_descriptors(getattr(item, "secondaryFiles", None))
+            if secondary:
+                schema["secondaryFiles"] = secondary
+            field_schemas[_local_name(item.name).split("/")[-1]] = schema
+        return {"type": "record", "fields": field_schemas}
+    raise ValueError(f"Unsupported CWL type: {cwl_type!r}")
+
+
+def _secondary_descriptors(value):
+    result = []
+    for item in value or []:
+        if isinstance(item, str):
+            pattern, required = item, True
+        else:
+            pattern, required = item.pattern, item.required
+            required = True if required is None else required
+        result.append({"pattern": _lower_value(pattern), "required": _lower_value(required)})
+    return result
 
 
 def _list_inner_type(data_type: str) -> str | None:
@@ -471,10 +529,10 @@ def _cwl_type_to_swirl(cwl_type) -> str:
 
     # Union types: list of alternatives, e.g. ['null', 'File'].
     if isinstance(cwl_type, (list, tuple)):
-        for member in cwl_type:
-            if member not in ("null", None):
-                return _cwl_type_to_swirl(member)
-        return DATA_TYPE
+        members = [member for member in cwl_type if member not in ("null", None)]
+        if len(members) != 1:
+            raise ValueError(f"Unsupported CWL union: {cwl_type!r}")
+        return _cwl_type_to_swirl(members[0])
 
     # Array schema object (cwl_utils CommandInput/OutputArraySchema).
     items = getattr(cwl_type, "items", None)
@@ -846,6 +904,8 @@ class CWLTranslator(AbstractTranslator):
         cwl_file_rel = first_workflow["config"]["file"]
         self.cwl_file = (streamflow_path.parent / cwl_file_rel).resolve()
 
+        if not sf_config.get("deployments"):
+            sf_config["deployments"] = {"local": {"type": "local"}}
         self.streamflow_config = sf_config
         self.bindings = _normalize_bindings(sf_config)
         self.workflow_inputs = _load_workflow_inputs(self.cwl_file, sf_config)
@@ -854,6 +914,25 @@ class CWLTranslator(AbstractTranslator):
         self.cwl_obj = self.cwl_bundle[root_uri]
 
         display_cwl_workflow(self.cwl_obj, bundle=self.cwl_bundle)
+
+    def _staging(self, *owners):
+        effective = {}
+        for owner in owners:
+            for requirement in getattr(owner, "requirements", None) or []:
+                effective[type(requirement).__name__] = requirement
+        requirement = effective.get("InitialWorkDirRequirement")
+        result = []
+        for item in getattr(requirement, "listing", None) or []:
+            if hasattr(item, "entry"):
+                if getattr(item, "writable", False):
+                    raise ValueError("Writable InitialWorkDir entries are unsupported")
+                descriptor = {"entry": _lower_value(item.entry)}
+                if getattr(item, "entryname", None) is not None:
+                    descriptor["name"] = _lower_value(item.entryname)
+            else:
+                descriptor = {"entry": _lower_value(item.save() if hasattr(item, "save") else item)}
+            result.append(descriptor)
+        return result
 
     def build_region_tree(self) -> WorkflowRegion:
         """Build the recursive CWL IR without generating SWIRL text.
@@ -871,7 +950,7 @@ class CWLTranslator(AbstractTranslator):
                 value = [value]
             return tuple(_local_name(source) for source in value)
 
-        def build(wf, path: str, inputs: dict[str, str | None], parent):
+        def build(wf, path: str, inputs: dict[str, str | None], parent, owners=()):
             path = _absolute_cwl_path(path)
             workflow_id = str(getattr(wf, "id", id(wf)))
             if workflow_id in active_workflows:
@@ -981,9 +1060,8 @@ class CWLTranslator(AbstractTranslator):
                             invocation_path,
                             invocation_inputs,
                             region,
+                            (*owners, wf, step),
                         )
-                    if getattr(step, "when", None) is not None:
-                        raise NotImplementedError(f"CWL when is not supported at {invocation_path}; conditional skipped outputs require nullable payload support")
                     region.invocations.append(
                         Invocation(
                             invocation_path,
@@ -1021,6 +1099,13 @@ class CWLTranslator(AbstractTranslator):
                                 for step_input in step.in_
                                 if getattr(step_input, "default", None) is not None
                             },
+                            when=getattr(step, "when", None),
+                            transforms={_local_name(item.id).split("/")[-1]: {
+                                key: getattr(item, source) for key, source in
+                                (("select", "pickValue"), ("merge", "linkMerge"), ("evaluate", "valueFrom"))
+                                if getattr(item, source, None) is not None
+                            } for item in step.in_},
+                            staging=self._staging(*owners, wf, step, process_definition),
                         )
                     )
 
@@ -1200,7 +1285,7 @@ class CWLTranslator(AbstractTranslator):
                 }),
                 "outputs": {"value": port},
             },
-            "outputs": {port: _output_descriptor(routed, data_type)},
+            "outputs": {port: {**_output_descriptor(routed, data_type), "schema": {"type": "any", "nullable": True}}},
         }
         return _sequence([
             f"exec({copy}, {{({source_port}, {data})}} -> {{({port}, {routed})}}, {{{source}}})",
@@ -1216,16 +1301,20 @@ class CWLTranslator(AbstractTranslator):
         tool = invocation.process
         local = invocation.path.rsplit("/", 1)[-1]
         step_name = self._exec_name(context, f"s_{_generated_name(invocation.path.strip('/'))}")
+        prepared_port = f"p_prepared_{step_name}" if invocation.when is not None else None
         input_flow: list[str] = []
         arguments: list[tuple[int, str, dict]] = []
         named_inputs = {}
         input_types = {}
         expression_inputs = {}
         input_bindings = {}
-        for tool_input in getattr(tool, "inputs", []):
+        declared_inputs = {_local_name(item.id).split("/")[-1]: item for item in getattr(tool, "inputs", [])}
+        for name in dict.fromkeys([*declared_inputs, *invocation.input_bindings]):
+            tool_input = declared_inputs.get(name)
+            if tool_input is None:
+                tool_input = type("StepInput", (), {"id": name})()
+
             name = _local_name(tool_input.id).split("/")[-1]
-            if len(invocation.input_bindings.get(name, ())) > 1:
-                raise ValueError(f"Multiple input sources are not supported at {invocation.path}/{name}")
             values = (
                 [input_values[name]]
                 if input_values is not None and name in input_values
@@ -1248,14 +1337,20 @@ class CWLTranslator(AbstractTranslator):
                         invocation.defaults[name], data_type, self.cwl_file.parent,
                     )}
             for port, data, _ in values:
-                input_flow.append(f"({port}, {data})")
+                reference = f"({port}, {data})"
+                if reference not in input_flow:
+                    input_flow.append(reference)
             if not values and literal is None:
-                continue
+                if invocation.transforms.get(name, {}).get("evaluate") is None:
+                    continue
+                literal = {"value": None}
             if values:
+                for value_port, _, value_type in values:
+                    named_inputs[value_port] = value_port
+                    input_types[value_port] = value_type
                 port, _, data_type = values[0]
-                named_inputs[name] = port
-                input_types[name] = data_type
-                source = {"port": port}
+                source = ({"port": port} if len(values) == 1 and not invocation.transforms.get(name, {}).get("select")
+                          else {"items": [{"port": item[0]} for item in values]})
             else:
                 source = literal
             input_bindings[name] = source
@@ -1267,10 +1362,12 @@ class CWLTranslator(AbstractTranslator):
                 if not isinstance(position, int):
                     raise ValueError(f"Expression argument positions are unsupported at {invocation.path}/{name}")
                 transformation = getattr(binding, "valueFrom", None)
+                argument_source = {"port": prepared_port, "field": name} if prepared_port else source
                 value = (
-                    {"expression": _lower_expression(transformation, {"self": source})}
+                    {"expression": _lower_expression(transformation, {"self": argument_source})}
                     if isinstance(transformation, str) and ("$(" in transformation or "${" in transformation)
                     else {"value": transformation} if transformation is not None
+                    else {"expression": _lower_expression(f"$(inputs[{json.dumps(name)}])")} if prepared_port
                     else literal if literal is not None
                     else {"valueFrom": port}
                 )
@@ -1308,7 +1405,15 @@ class CWLTranslator(AbstractTranslator):
             data_type = invocation.output_types.get(name, DATA_TYPE)
             binding = getattr(tool_output, "outputBinding", None)
             output = _output_descriptor(data, data_type)
+            output["schema"] = _value_schema(tool_output.type_)
+            if invocation.when is not None:
+                output["schema"]["nullable"] = True
+            secondary = _secondary_descriptors(getattr(tool_output, "secondaryFiles", None))
+            if secondary:
+                output["secondaryFiles"] = secondary
             glob = _resolve_glob(tool, binding.glob if binding else None)
+            if getattr(tool_output, "type_", None) == "stdout":
+                glob = getattr(tool, "stdout", None)
             if glob:
                 output["glob"] = _lower_value(glob)
             if binding is not None:
@@ -1321,7 +1426,7 @@ class CWLTranslator(AbstractTranslator):
                         )
             outputs[port] = output
             if not context.task_id:
-                context.dependencies[data.payload] = {"type": data_type}
+                context.dependencies[data.payload] = {"type": data_type, "schema": output["schema"]}
             context.available[invocation.outputs[name]] = (port, data, data_type)
             context.value_locations[invocation.outputs[name]] = context.controller
             output_flow.append(f"({port}, {data})")
@@ -1339,17 +1444,97 @@ class CWLTranslator(AbstractTranslator):
             + [item[2] for item in sorted(arguments, key=lambda item: (item[0], item[1]))],
             "outputs": outputs,
         }
+        step["outputNames"] = expression_outputs
+        step["inputSchemas"] = {name: _value_schema(item.type_) for name, item in declared_inputs.items()}
+        options = {}
+        for name, item in declared_inputs.items():
+            option = {}
+            if getattr(item, "loadContents", None):
+                option["readContents"] = True
+            secondary = _secondary_descriptors(getattr(item, "secondaryFiles", None))
+            if secondary:
+                option["secondaryFiles"] = secondary
+            if option:
+                options[name] = option
+        if options:
+            step["inputOptions"] = options
+        transforms = {name: {key: _lower_expression(value) if key == "evaluate" else value for key, value in transform.items()}
+                      for name, transform in invocation.transforms.items() if transform}
+        for name, value in invocation.defaults.items():
+            if invocation.input_bindings.get(name):
+                transforms.setdefault(name, {})["default"] = _coerce_cwl_value(
+                    value, invocation.input_types.get(name, DATA_TYPE), self.cwl_file.parent)
+        if transforms:
+            step["inputTransforms"] = transforms
+        if invocation.staging:
+            step["staging"] = invocation.staging
+        success = getattr(tool, "successCodes", None)
+        if success is not None:
+            step["acceptedExitCodes"] = success
+        for unsupported in ("temporaryFailCodes", "permanentFailCodes"):
+            if getattr(tool, unsupported, None):
+                raise ValueError(f"Unsupported CWL {unsupported} at {invocation.path}")
         expression = getattr(tool, "expression", None)
         if expression is not None:
             step.pop("command")
             step.pop("arguments")
-            step.pop("bindings")
+            # Bindings include step-only inputs used by conditions and valueFrom.
             step["expression"] = {
                 **_lower_expression(expression, {"inputs": {"object": expression_inputs}}),
                 "outputs": expression_outputs,
             }
         elif getattr(tool, "stdout", None) is not None:
             step["stdout"] = _lower_value(tool.stdout)
+        if prepared_port is not None:
+            prepare_name = self._exec_name(context, f"_s_prepare_{step_name}")
+            prepared_data = (DataReference(f"prepared_d_{step_name}", context.task_id, True)
+                             if context.task_id else DataReference(f"prepared_d_{step_name}"))
+            prepared_output = {**_output_descriptor(prepared_data, "file"), "schema": {"type": "any"}}
+            preparation = {
+                "displayName": f"Prepare {local}",
+                "prepare": {"output": prepared_port},
+                "outputs": {prepared_port: prepared_output},
+            }
+            for key in ("inputs", "bindings", "inputTransforms", "inputOptions", "inputSchemas"):
+                if key in step:
+                    preparation[key] = step[key]
+            context.steps[prepare_name] = preparation
+            prepared_inputs = {prepared_port: {"type": "file", "schema": {"type": "any"}}}
+            step["inputs"] = prepared_inputs
+            step["bindings"] = {"inputs": {"port": prepared_port}}
+            step.pop("inputTransforms", None)
+            step.pop("inputOptions", None)
+            if "expression" in step:
+                step["expression"]["bindings"] = step["bindings"]
+            condition_name = f"c_when_{step_name}"
+            context.conditions[condition_name] = {
+                "type": "expression",
+                "inputs": prepared_inputs,
+                "bindings": {"inputs": {"port": prepared_port}, "self": {"value": None}},
+                "expression": _lower_expression(invocation.when),
+            }
+            skip_name = self._exec_name(context, f"_s_skip_{step_name}")
+            context.steps[skip_name] = {
+                "displayName": f"Skip {local}",
+                "inputs": {},
+                "expression": {
+                    **_lower_expression("${ return " + json.dumps({name: None for name in expression_outputs}) + "; }"),
+                    "outputs": expression_outputs,
+                },
+                "outputs": {port: {**_output_descriptor(
+                    context.available[invocation.outputs[name]][1], invocation.output_types.get(name, DATA_TYPE)
+                ), "schema": {"type": "any", "nullable": True}} for name, port in expression_outputs.items()},
+            }
+            if not context.task_id:
+                context.dependencies[prepared_data.payload] = {"type": "file", "schema": {"type": "any"}}
+            context.steps[step_name] = step
+            prepared_flow = f"({prepared_port}, {prepared_data})"
+            output_text = ', '.join(output_flow)
+            return str(_sequence([
+                f"exec({prepare_name}, {{{', '.join(input_flow)}}} -> {{{prepared_flow}}}, {{{context.controller}}})",
+                f"(exec({step_name}, {{{prepared_flow}}} -> {{{output_text}}}, {{{context.controller}}}) "
+                f"+[{condition_name}] exec({skip_name}, {{}} -> {{{output_text}}}, {{{context.controller}}}))",
+            ]))
         context.steps[step_name] = step
         return (
             f"exec({step_name}, {{{', '.join(input_flow)}}} -> "
@@ -1757,7 +1942,7 @@ class CWLTranslator(AbstractTranslator):
                             }),
                             "outputs": {"value": output_port},
                         },
-                        "outputs": {output_port: _output_descriptor(output_data, data_type)},
+                        "outputs": {output_port: {**_output_descriptor(output_data, data_type), "schema": {"type": "any", "nullable": True}}},
                     }
                     publication = _parallel([])
                     body.parts.append(_sequence([f"exec({publish}, {{({source_port}, {source_data})}} -> {{({output_port}, {output_data})}}, {{{worker}}})", publication]))
@@ -1879,7 +2064,7 @@ class CWLTranslator(AbstractTranslator):
             data_type = _cwl_type_to_swirl(workflow_input.type_)
             raw = self.workflow_inputs.get(name, getattr(workflow_input, "default", ""))
             value = _coerce_cwl_value(raw, data_type, self.cwl_file.parent)
-            context.dependencies[data.payload] = {"type": data_type, "value": value}
+            context.dependencies[data.payload] = {"type": data_type, "schema": _value_schema(workflow_input.type_), "value": value}
             context.available[f"/{name}"] = (port, data, data_type)
             context.value_locations[f"/{name}"] = context.controller
             context.datasets[context.controller].append((port, data))

@@ -22,21 +22,10 @@
           "description": "Data type. Base types: (string, int, bool, file, stdout, directory). Generic lists: list[<type>], nestable e.g. list[file], list[list[string]]."
         },
         "value": {
-          "oneOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "integer"
-            },
-            {
-              "type": "boolean"
-            },
-            {
-              "type": "array"
-            }
-          ],
-          "description": "Value of the data if it is input workflow data. Array when the type is a list."
+          "description": "Workflow input value, preserving structured objects and null."
+        },
+        "schema": {
+          "$ref": "#/$defs/valueSchema"
         }
       },
       "required": [
@@ -73,7 +62,11 @@
           "description": "The SSH private key path for remote locations."
         },
         "checkHostKey": {
-          "enum": [true, false, "accept-new"],
+          "enum": [
+            true,
+            false,
+            "accept-new"
+          ],
           "description": "SSH host key policy. accept-new saves new keys and rejects changed keys."
         },
         "workdir": {
@@ -145,7 +138,11 @@
           "description": "The SSH private key path for remote locations."
         },
         "checkHostKey": {
-          "enum": [true, false, "accept-new"],
+          "enum": [
+            true,
+            false,
+            "accept-new"
+          ],
           "description": "SSH host key policy. accept-new saves new keys and rejects changed keys."
         },
         "outdir": {
@@ -482,6 +479,9 @@
               "type": {
                 "type": "string",
                 "pattern": "^(string|int|bool|file|stdout|directory)$|^list\\[.+\\]$"
+              },
+              "schema": {
+                "$ref": "#/$defs/valueSchema"
               }
             },
             "required": [
@@ -492,9 +492,105 @@
           "propertyNames": {
             "pattern": "^[a-zA-Z_][a-zA-Z0-9_]*$"
           }
+        },
+        "inputSchemas": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/valueSchema"
+          }
+        },
+        "inputOptions": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "properties": {
+              "readContents": {
+                "type": "boolean"
+              },
+              "secondaryFiles": {
+                "$ref": "#/$defs/secondaryFiles"
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "inputTransforms": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "properties": {
+              "select": {
+                "enum": [
+                  "all_non_null",
+                  "first_non_null",
+                  "the_only_non_null"
+                ]
+              },
+              "merge": {
+                "enum": [
+                  "merge_nested",
+                  "merge_flattened"
+                ]
+              },
+              "evaluate": {
+                "$ref": "#/$defs/evaluation"
+              },
+              "default": {}
+            },
+            "additionalProperties": false
+          }
+        },
+        "prepare": {
+          "type": "object",
+          "properties": {
+            "output": {"type": "string", "minLength": 1}
+          },
+          "required": ["output"],
+          "additionalProperties": false
+        },
+        "when": {
+          "$ref": "#/$defs/evaluation"
+        },
+        "acceptedExitCodes": {
+          "type": "array",
+          "items": {
+            "type": "integer"
+          },
+          "uniqueItems": true
+        },
+        "outputNames": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "staging": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "entry": {},
+              "name": {
+                "oneOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "$ref": "#/$defs/evaluation"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "entry"
+            ],
+            "additionalProperties": false
+          }
         }
       },
       "anyOf": [
+        {"required": ["prepare"]},
         {
           "required": [
             "command"
@@ -680,6 +776,12 @@
             },
             "evaluate": {
               "$ref": "#/$defs/evaluation"
+            },
+            "schema": {
+              "$ref": "#/$defs/valueSchema"
+            },
+            "secondaryFiles": {
+              "$ref": "#/$defs/secondaryFiles"
             }
           },
           "required": [
@@ -742,6 +844,12 @@
             },
             "evaluate": {
               "$ref": "#/$defs/evaluation"
+            },
+            "schema": {
+              "$ref": "#/$defs/valueSchema"
+            },
+            "secondaryFiles": {
+              "$ref": "#/$defs/secondaryFiles"
             }
           },
           "required": [
@@ -796,13 +904,19 @@
           "properties": {
             "value": {}
           },
-          "required": ["value"],
+          "required": [
+            "value"
+          ],
           "additionalProperties": false
         },
         {
           "type": "object",
           "properties": {
             "port": {
+              "type": "string",
+              "minLength": 1
+            },
+            "field": {
               "type": "string",
               "minLength": 1
             }
@@ -839,6 +953,21 @@
             "context"
           ],
           "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "items": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/expressionBinding"
+              }
+            }
+          },
+          "required": [
+            "items"
+          ],
+          "additionalProperties": false
         }
       ]
     },
@@ -870,6 +999,120 @@
         "source"
       ],
       "additionalProperties": false
+    },
+    "valueSchema": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "enum": [
+            "string",
+            "int",
+            "bool",
+            "file",
+            "stdout",
+            "directory",
+            "array",
+            "record",
+            "any"
+          ]
+        },
+        "secondaryFiles": {
+          "$ref": "#/$defs/secondaryFiles"
+        },
+        "nullable": {
+          "type": "boolean"
+        },
+        "items": {
+          "$ref": "#/$defs/valueSchema"
+        },
+        "fields": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/valueSchema"
+          }
+        }
+      },
+      "required": [
+        "type"
+      ],
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "array"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "items"
+            ]
+          },
+          "else": {
+            "not": {
+              "required": [
+                "items"
+              ]
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "record"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "fields"
+            ]
+          },
+          "else": {
+            "not": {
+              "required": [
+                "fields"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "secondaryFiles": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "pattern": {
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "$ref": "#/$defs/evaluation"
+              }
+            ]
+          },
+          "required": {
+            "oneOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "$ref": "#/$defs/evaluation"
+              }
+            ]
+          }
+        },
+        "required": [
+          "pattern",
+          "required"
+        ],
+        "additionalProperties": false
+      }
     }
   },
   "properties": {
@@ -952,6 +1195,9 @@
                     "type": {
                       "type": "string",
                       "pattern": "^(string|int|bool|file|stdout|directory)$|^list\\[.+\\]$"
+                    },
+                    "schema": {
+                      "$ref": "#/$defs/valueSchema"
                     }
                   },
                   "required": [

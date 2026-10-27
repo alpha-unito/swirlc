@@ -80,3 +80,53 @@ def test_default_used_as_scatter_dimension_remains_data():
     assert "p_default_process_items_destination" in source
     step = metadata["steps"]["s_process_items_0"]
     assert "port" in step["bindings"]["inputs"]["object"]["destination"]
+
+
+def test_record_literal_files_preserve_shape_and_primitive_values():
+    from swirlc.translator.cwl.cwl_translator import _coerce_cwl_value
+
+    value = {"none": None, "false": False, "zero": 0, "empty": "", "files": [
+        {"class": "File", "basename": "source.txt", "contents": "seed\n",
+         "secondaryFiles": [{"class": "File", "basename": "source.txt.meta", "contents": "meta\n"}]}]}
+    assert _coerce_cwl_value(value, "file", ROOT) == value
+    assert _coerce_cwl_value(None, "list[file]", ROOT) is None
+
+
+def test_relative_file_objects_keep_identity_and_resolve_paths(tmp_path):
+    from swirlc.translator.cwl.cwl_translator import _coerce_cwl_value
+
+    value = {"class": "File", "location": "input.txt", "format": "text/plain",
+             "secondaryFiles": [{"class": "File", "path": "input.txt.meta"}]}
+    result = _coerce_cwl_value(value, "file", tmp_path)
+    assert result["location"] == "input.txt"
+    assert result["path"] == str(tmp_path / "input.txt")
+    assert result["basename"] == "input.txt"
+    assert result["format"] == "text/plain"
+    assert result["secondaryFiles"][0]["path"] == str(tmp_path / "input.txt.meta")
+
+
+def test_missing_features_input_schema_and_literal_companions_survive_validation():
+    _, description = translate(CWLTranslator(ROOT / "examples/cwl/missing-features/streamflow.yml"))
+    dependency = description["dependencies"]["d_items"]
+    assert dependency["schema"]["items"]["fields"]["source"] == {"type": "file"}
+    source = dependency["value"][0]["source"]
+    assert source == {"class": "File", "basename": "source.txt", "contents": "seed\n",
+                      "secondaryFiles": [{"class": "File", "basename": "source.txt.meta", "contents": "meta\n"}]}
+
+
+def test_legacy_type_file_job_values_normalize_at_translation_boundary(tmp_path):
+    from swirlc.translator.cwl.cwl_translator import _coerce_cwl_value
+
+    result = _coerce_cwl_value([{"type": "File", "path": "input.txt"}], "list[file]", tmp_path)
+    assert result == [{"type": "File", "class": "File", "path": str(tmp_path / "input.txt"),
+                       "basename": "input.txt"}]
+
+
+def test_sourced_input_default_is_an_ordered_execution_transform():
+    translator = CWLTranslator(ROOT / "examples/cwl/pipeline/depth-0/metadata/streamflow.yml")
+    translator.cwl_obj.steps[0].in_[0].default = {"class": "File", "path": str(ROOT / "README.md")}
+    _, metadata = translate(translator)
+    step = metadata["steps"]["s_stage_0"]
+    assert step["inputTransforms"]["sample"]["default"] == {
+        "class": "File", "path": str(ROOT / "README.md"), "basename": "README.md"}
+    assert "port" in step["bindings"]["inputs"]["object"]["sample"]
