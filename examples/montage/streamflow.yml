@@ -1,0 +1,7 @@
+version: v1.0
+workflows:
+  montage:
+    type: cwl
+    config:
+      file: main_montage.cwl
+      settings: data-small/config_montage.json

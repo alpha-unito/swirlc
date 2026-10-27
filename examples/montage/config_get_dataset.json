@@ -1,0 +1,25 @@
+{
+  "center": "56.7 24.0",
+  "degrees": 2.0,
+  "bands": [
+    {
+      "bid": 1,
+      "survey": "dss",
+      "band": "DSS2B",
+      "color": "blue"
+    },
+    {
+      "bid": 2,
+      "survey": "dss",
+      "band": "DSS2R",
+      "color": "green"
+    },
+    {
+      "bid": 3,
+      "survey": "dss",
+      "band": "DSS2IR",
+      "color": "red"
+    }
+  ], 
+  "n_iter": 100000
+}

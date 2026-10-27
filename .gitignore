@@ -137,3 +137,5 @@ dmypy.json
 /tmp
 /scratch
 /examples/1000genome/data/
+/.tools/
+/examples/montage/data-small/

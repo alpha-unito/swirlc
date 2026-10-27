@@ -1,0 +1,25 @@
+{
+  "center": "56.7 24.0",
+  "degrees": 0.05,
+  "bands": [
+    {
+      "bid": 1,
+      "survey": "2MASS",
+      "band": "j",
+      "color": "blue"
+    },
+    {
+      "bid": 2,
+      "survey": "2MASS",
+      "band": "h",
+      "color": "green"
+    },
+    {
+      "bid": 3,
+      "survey": "2MASS",
+      "band": "k",
+      "color": "red"
+    }
+  ],
+  "n_iter": 100
+}
