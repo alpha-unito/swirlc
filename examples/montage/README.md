@@ -63,3 +63,34 @@ uv run --no-project --with cwltool --with astropy python -m cwltool \
 
 The generated input for the mosaic workflow is `data-small/config_montage.json`;
 `build/montage/dataset-summary.json` records the local validation results.
+
+## Distributed Fedarcs run
+
+`streamflow-fedarcs.yml` places band-level work on `fd-00`/`fd-01` and scatters
+projection, pairwise fitting, and background correction over `fd-02`–`fd-04`.
+Translate, compile, and launch from the coordinator. The configuration uses
+`tfogliobonda`'s shared paths and ports 25900 and 25910–25914.
+
+Each deployment declares its persistent tool environment in
+`streamflow-fedarcs.yml` (the workers reuse the coordinator's mapping):
+
+```yaml
+environment:
+  PATH: /mnt/shared/tfogliobonda/swirlc/venv/bin:/mnt/shared/tfogliobonda/swirlc/.tools/montage/usr/bin:/usr/local/bin:/usr/bin:/bin
+  LD_LIBRARY_PATH: /mnt/shared/tfogliobonda/swirlc/.tools/montage/usr/lib/x86_64-linux-gnu
+  SWIRLC_PYTHON: /mnt/shared/tfogliobonda/swirlc/venv/bin/python
+```
+
+The compiler writes these exports into every generated launcher, for runtime
+preparation and execution. Recompilation preserves them from configuration;
+generated files need no edits. Values are literal strings: `$PATH`, `${...}`,
+and shell commands are not expanded. Use complete paths. Activating the
+coordinator's venv alone does not configure SSH workers.
+
+The shared library directory includes `libwcstools.so.1` and `libcfitsio.so.10`;
+CFITSIO was absent from the worker nodes and was copied from the coordinator.
+The small distributed run completed successfully. Its artifacts on Fedarcs are
+under `build/montage-env-distributed`: `execution.log`, `validation.json`, and
+`results/`. All six FITS arrays match the coordinator-only run exactly; the four
+PNGs decode successfully at 180×180 pixels. This run used freshly compiled,
+unmodified launchers, with their hashes checked on all worker deployments.

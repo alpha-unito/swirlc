@@ -5,6 +5,7 @@ import hashlib
 import io
 import os
 import pprint
+import shlex
 import stat
 import sys
 import zipfile
@@ -1332,10 +1333,15 @@ class DefaultTarget(StructuredCompiler):
         launcher_path = os.path.join(self.outdir, launcher_name)
         venv_name = f".swirlc-venv-{location.name}"
         marker_name = ".swirlc-requirements.txt"
+        environment_exports = "".join(
+            f"export {name}={shlex.quote(value)}\n"
+            for name, value in location.environment.items()
+        )
         with open(launcher_path, "w") as f:
             f.write(
                 f"""#!/bin/sh
 set -eu
+{environment_exports}
 
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 cd "$SCRIPT_DIR"

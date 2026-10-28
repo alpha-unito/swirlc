@@ -1,0 +1,89 @@
+version: v1.0
+workflows:
+  montage:
+    type: cwl
+    config:
+      file: main_montage.cwl
+      settings: data-small/config_montage.json
+    bindings:
+    - step: /
+      target:
+        deployment: coordinator
+    - step: /band
+      target:
+      - deployment: band_worker1
+      - deployment: band_worker2
+    - step: /band/mProject
+      target:
+      - deployment: image_worker1
+      - deployment: image_worker2
+      - deployment: image_worker3
+    - step: /band/wdiff/diff
+      target:
+      - deployment: image_worker1
+      - deployment: image_worker2
+      - deployment: image_worker3
+    - step: /band/mBackground
+      target:
+      - deployment: image_worker1
+      - deployment: image_worker2
+      - deployment: image_worker3
+deployments:
+  coordinator:
+    type: local
+    config: {}
+    port: 25900
+    environment: &montage_environment
+      PATH: /mnt/shared/tfogliobonda/swirlc/venv/bin:/mnt/shared/tfogliobonda/swirlc/.tools/montage/usr/bin:/usr/local/bin:/usr/bin:/bin
+      LD_LIBRARY_PATH: /mnt/shared/tfogliobonda/swirlc/.tools/montage/usr/lib/x86_64-linux-gnu
+      SWIRLC_PYTHON: /mnt/shared/tfogliobonda/swirlc/venv/bin/python
+  band_worker1:
+    type: ssh
+    config:
+      nodes:
+      - fd-00
+      username: tfogliobonda
+      checkHostKey: accept-new
+    workdir: /mnt/shared/tfogliobonda/swirlc-runs/montage/band_worker1
+    port: 25910
+    environment: *montage_environment
+  band_worker2:
+    type: ssh
+    config:
+      nodes:
+      - fd-01
+      username: tfogliobonda
+      checkHostKey: accept-new
+    workdir: /mnt/shared/tfogliobonda/swirlc-runs/montage/band_worker2
+    port: 25911
+    environment: *montage_environment
+  image_worker1:
+    type: ssh
+    config:
+      nodes:
+      - fd-02
+      username: tfogliobonda
+      checkHostKey: accept-new
+    workdir: /mnt/shared/tfogliobonda/swirlc-runs/montage/image_worker1
+    port: 25912
+    environment: *montage_environment
+  image_worker2:
+    type: ssh
+    config:
+      nodes:
+      - fd-03
+      username: tfogliobonda
+      checkHostKey: accept-new
+    workdir: /mnt/shared/tfogliobonda/swirlc-runs/montage/image_worker2
+    port: 25913
+    environment: *montage_environment
+  image_worker3:
+    type: ssh
+    config:
+      nodes:
+      - fd-04
+      username: tfogliobonda
+      checkHostKey: accept-new
+    workdir: /mnt/shared/tfogliobonda/swirlc-runs/montage/image_worker3
+    port: 25914
+    environment: *montage_environment

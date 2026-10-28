@@ -44,9 +44,16 @@
       ],
       "additionalProperties": false
     },
+    "environment": {
+      "type": "object",
+      "description": "Literal environment variables exported by generated location launchers. Shell expansion is not performed.",
+      "propertyNames": {"pattern": "^[A-Za-z_][A-Za-z0-9_]*$"},
+      "additionalProperties": {"type": "string", "pattern": "^[^\\u0000]*$"}
+    },
     "deployment": {
       "type": "object",
       "properties": {
+        "environment": {"$ref": "#/$defs/environment"},
         "type": {
           "type": "string",
           "enum": [
@@ -108,6 +115,7 @@
     "location": {
       "type": "object",
       "properties": {
+        "environment": {"$ref": "#/$defs/environment"},
         "deployment": {
           "$ref": "#/$defs/deployment"
         },

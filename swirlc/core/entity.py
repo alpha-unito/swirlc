@@ -33,6 +33,7 @@ class Location:
         "ssh_key",
         "check_host_key",
         "deployment",
+        "environment",
     )
 
     def __init__(
@@ -50,10 +51,12 @@ class Location:
         ssh_key: str | None = None,
         check_host_key: bool | Literal["accept-new"] | None = None,
         deployment: Deployment | None = None,
+        environment: MutableMapping[str, str] | None = None,
     ):
         self.data: MutableMapping[str, Any] = data
         self.display_name: str = display_name
         self.name: str = name
+        self.environment = dict(environment or {})
         self.deployment = deployment or make_deployment(
             connection_type=connection_type,
             hostname=hostname,

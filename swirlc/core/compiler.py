@@ -186,6 +186,7 @@ class CompileVisitor(SWIRLVisitor, ABC):
                         ),
                     ),
                     outdir=settings.get("outdir", None),
+                    environment=deployment.get("environment", settings.get("environment", {})),
 
                     slurm=deployment.get("slurm", settings.get("slurm", None)),
                 )

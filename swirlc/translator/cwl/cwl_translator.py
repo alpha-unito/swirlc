@@ -379,6 +379,8 @@ def _scatter_locations(
             details["type"] = deployment["type"]
         if deployment.get("workdir"):
             details["workdir"] = deployment["workdir"]
+        if "environment" in deployment:
+            details["environment"] = deployment["environment"]
         ssh = ssh_config(deployment)
         for source_key, target_key in (
             ("username", "username"),
