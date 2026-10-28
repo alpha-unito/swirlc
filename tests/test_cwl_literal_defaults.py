@@ -10,6 +10,18 @@ from swirlc.translator.cwl.cwl_translator import CWLTranslator
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def test_job_files_are_relative_to_settings_including_record_fields(tmp_path):
+    from swirlc.translator.cwl.cwl_translator import _load_workflow_inputs
+
+    settings = tmp_path / "data" / "job.yml"
+    settings.parent.mkdir()
+    settings.write_text('items:\n  - source: {class: File, path: image.fits}\nregion: {class: File, path: region.hdr}\n')
+    values = _load_workflow_inputs(tmp_path / "main.cwl", {
+        "workflows": {"test": {"config": {"settings": "data/job.yml"}}}})
+    assert values["items"][0]["source"]["path"] == str(settings.parent / "image.fits")
+    assert values["region"]["path"] == str(settings.parent / "region.hdr")
+
+
 def translate(translator):
     source, description = StringIO(), StringIO()
     translator.translate(source, description)

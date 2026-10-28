@@ -429,7 +429,7 @@ def _load_workflow_inputs(cwl_file: Path, streamflow_config: MutableMapping) -> 
     if not path.exists():
         return {}
     with open(path) as input_file:
-        return YAML(typ="safe").load(input_file) or {}
+        return _coerce_cwl_value(YAML(typ="safe").load(input_file) or {}, "file", path.parent)
 
 
 def _coerce_cwl_value(value, value_type: str, base_dir: Path | None = None):
@@ -1257,6 +1257,70 @@ class CWLTranslator(AbstractTranslator):
                 )
                 context.value_locations[path] = context.controller
 
+    def _transform_region_inputs(self, invocation, context, values):
+        """Evaluate subworkflow step inputs together for each invocation."""
+        transforms = {name: transform for name, transform in invocation.transforms.items()
+                      if transform and name in invocation.process.inputs}
+        if not transforms:
+            return []
+        step_name = self._exec_name(context, f"_s_inputs_{_generated_name(invocation.path.strip('/'))}")
+        bindings = {}
+        inputs = {}
+        flow = []
+        for name in invocation.input_bindings:
+            if name in values:
+                port, data, data_type = values[name]
+                bindings[name] = {"port": port}
+                inputs[port] = {"type": data_type, "schema": {"type": "any", "nullable": True}}
+                pair = f"({port}, {data})"
+                if pair not in flow:
+                    flow.append(pair)
+            elif name in invocation.defaults:
+                bindings[name] = {"value": _coerce_cwl_value(
+                    invocation.defaults[name], invocation.input_types.get(name, DATA_TYPE), self.cwl_file.parent)}
+            else:
+                bindings[name] = {"value": None}
+        outputs, output_names, output_flow = {}, {}, []
+        # Nested dispatchers live in separate fragments and need explicit transfers.
+        publication = _parallel([])
+        for name in transforms:
+            data_type = invocation.process.input_types[name]
+            port = _generated_name("p_inputs", step_name, name)
+            identity = _generated_name("d_inputs", step_name, name)
+            data = DataReference(identity, context.task_id, True) if context.task_id else DataReference(identity)
+            schema = {"type": "any", "nullable": True}
+            outputs[port] = {**_output_descriptor(data, data_type), "schema": schema}
+            output_names[name] = port
+            output_flow.append(f"({port}, {data})")
+            path = f"{invocation.process.path.rstrip('/')}/{name}"
+            context.available[path] = (port, data, data_type)
+            context.value_locations[path] = context.controller
+            context.publishers[path] = publication
+            context.pending.pop(path, None)
+            if not context.task_id:
+                context.dependencies[data.payload] = {"type": data_type, "schema": schema}
+        lowered_transforms = {
+            name: {key: _lower_expression(value) if key == "evaluate" else value
+                   for key, value in transform.items()}
+            for name, transform in invocation.transforms.items() if transform
+        }
+        for name, default in invocation.defaults.items():
+            if invocation.input_bindings.get(name):
+                lowered_transforms.setdefault(name, {})["default"] = _coerce_cwl_value(
+                    default, invocation.input_types.get(name, DATA_TYPE), self.cwl_file.parent)
+        context.steps[step_name] = {
+            "displayName": f"Prepare {invocation.path} inputs",
+            "inputs": inputs,
+            "bindings": {"inputs": {"object": bindings}},
+            "inputTransforms": lowered_transforms,
+            "expression": {**_lower_expression("${ return inputs; }"), "outputs": output_names},
+            "outputs": outputs,
+        }
+        return [_sequence([
+            f"exec({step_name}, {{{', '.join(flow)}}} -> {{{', '.join(output_flow)}}}, {{{context.controller}}})",
+            publication,
+        ])]
+
     def _exec_name(self, context: LoweringContext, base: str) -> str:
         """Allocate once per emitted exec, including replicated worker templates."""
         count = context.tool_counts.get(base, 0)
@@ -1367,7 +1431,8 @@ class CWLTranslator(AbstractTranslator):
                     {"expression": _lower_expression(transformation, {"self": argument_source})}
                     if isinstance(transformation, str) and ("$(" in transformation or "${" in transformation)
                     else {"value": transformation} if transformation is not None
-                    else {"expression": _lower_expression(f"$(inputs[{json.dumps(name)}])")} if prepared_port
+                    else {"expression": _lower_expression(f"$(inputs[{json.dumps(name)}])")}
+                    if prepared_port or invocation.transforms.get(name)
                     else literal if literal is not None
                     else {"valueFrom": port}
                 )
@@ -1547,7 +1612,12 @@ class CWLTranslator(AbstractTranslator):
         if isinstance(invocation.process, WorkflowRegion):
             child = context.child(invocation.process)
             self._bind_region_inputs(invocation.process, invocation, child)
-            traces = self.lower_region(invocation.process, child)
+            values = {name: self._value(child, sources[0])
+                      for name, sources in invocation.input_bindings.items()
+                      if len(sources) == 1 and sources[0] in child.available}
+            traces = self._transform_region_inputs(invocation, child, values)
+            region_traces = self.lower_region(invocation.process, child)
+            traces = [*traces, *region_traces]
             for output_name, output_path in invocation.outputs.items():
                 sources = invocation.process.outputs.get(output_name, ())
                 if len(sources) != 1:
@@ -1843,6 +1913,8 @@ class CWLTranslator(AbstractTranslator):
             if name in input_publishers:
                 source_port = f"p_dispatch_input_{dimension}_{index}"
                 input_publishers[name].parts.append(self._send_value(context, value, source_port, producer, producer))
+                source_data = DataReference(
+                    _generated_name("dispatch_d", str(index), str(dimension)), source_data.identity, True)
                 activation.append(f"recv({source_data} -> {source_port}, {producer}, {producer})")
             dispatch_id = f"{dispatch_scope} / {coordinate}"
             context.steps[dispatch] = {
@@ -1911,13 +1983,21 @@ class CWLTranslator(AbstractTranslator):
                     value = (transfer, received, data_type)
                 values[name] = value
             if isinstance(invocation.process, WorkflowRegion):
+                for name, default in invocation.defaults.items():
+                    if name in invocation.process.inputs and name not in values:
+                        values[name] = self._default_value(
+                            invocation.path, name, default, invocation.input_types[name], child)
                 for name, value in values.items():
                     path = f"{invocation.process.path.rstrip('/')}/{name}"
                     child.available[path] = value
                     child.value_locations[path] = worker
-                body.parts.extend(self.lower_region(invocation.process, child))
-                result_paths = {name: sources[0] for name, sources in invocation.process.outputs.items() if len(sources) == 1}
-                if len(result_paths) != len(invocation.process.outputs):
+                preparation = self._transform_region_inputs(invocation, child, values)
+                region_traces = self.lower_region(invocation.process, child)
+                body.parts.extend([*preparation, *region_traces])
+                result_paths = {name: invocation.process.outputs[name][0]
+                                for name in invocation.outputs
+                                if len(invocation.process.outputs.get(name, ())) == 1}
+                if len(result_paths) != len(invocation.outputs):
                     raise ValueError(f"Scatter outputs require one source at {invocation.path}")
             else:
                 publication = _parallel([])

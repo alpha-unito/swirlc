@@ -5,3 +5,12 @@ workflows:
     config:
       file: main_montage.cwl
       settings: data-small/config_montage.json
+    bindings:
+      - step: /
+        target:
+          deployment: local
+deployments:
+  local:
+    type: local
+    config: {}
+    port: 35800

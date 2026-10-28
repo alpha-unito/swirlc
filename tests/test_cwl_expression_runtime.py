@@ -32,6 +32,60 @@ from swirlc.main import main
 from tests.test_pipeline_contract import generated_execs
 
 
+@pytest.mark.parametrize("scattered", [False, True])
+@pytest.mark.parametrize("nested", [False, True])
+def test_subworkflow_valuefrom_uses_original_step_inputs(tmp_path, scattered, nested):
+    child = {
+        "class": "Workflow", "inputs": {"a": "int", "b": "int"},
+        "outputs": {"result": {"type": "int", "outputSource": "echo/result"},
+                    "unused": {"type": "int", "outputSource": "echo/result"}},
+        "steps": {"echo": {"in": {"a": "a", "b": "b"}, "out": ["result"],
+                            "run": {"class": "ExpressionTool", "inputs": {"a": "int", "b": "int"},
+                                    "outputs": {"result": "int"},
+                                    "expression": "${ return {result: inputs.a * 10 + inputs.b}; }"}}},
+    }
+    step = {"run": child, "in": {"x": "x", "a": {"source": "x", "valueFrom": "$(self.n + 1)"},
+                                    "b": {"valueFrom": "$(inputs.a.n + 2)"}}, "out": ["result"]}
+    if nested:
+        child["inputs"]["a"] = "int[]"
+        for output in child["outputs"].values():
+            output["type"] = "int[]"
+        child["steps"]["echo"]["scatter"] = "a"
+        step["in"]["a"]["valueFrom"] = "$([self.n + 1, self.n + 2])"
+    if scattered:
+        step["scatter"] = ["x", "a"]
+        step["scatterMethod"] = "dotproduct"
+    workflow = {
+        "cwlVersion": "v1.2", "class": "Workflow",
+        "requirements": {"InlineJavascriptRequirement": {}, "StepInputExpressionRequirement": {},
+                         "SubworkflowFeatureRequirement": {}, "ScatterFeatureRequirement": {}},
+        "inputs": {"x": {"type": {"type": "array", "items": {"type": "record", "name": "Item", "fields": {"n": "int"}}} if scattered
+                         else {"type": "record", "name": "Item", "fields": {"n": "int"}},
+                         "default": [{"n": 1}, {"n": 3}] if scattered else {"n": 1}}},
+        "outputs": {"result": {"type": "int" + "[]" * (int(scattered) + int(nested)), "outputSource": "child/result"}},
+        "steps": {"child": step},
+    }
+    yaml = YAML()
+    with (tmp_path / "main.cwl").open("w") as stream:
+        yaml.dump(workflow, stream)
+    with (tmp_path / "streamflow.yml").open("w") as stream:
+        yaml.dump({"version": "v1.0", "deployments": {"local": {"type": "local", "port": 0}},
+                   "workflows": {"test": {"type": "cwl", "config": {"file": "main.cwl"},
+                                          "bindings": [{"step": "/", "target": {"deployment": "local"}}]}}}, stream)
+    assert main(["translate", "-l", "cwl", str(tmp_path / "streamflow.yml"), "-o", str(tmp_path)]) == 0
+    assert main(["compile", str(tmp_path / "workflow.swirl"), str(tmp_path / "metadata.yml"),
+                 "--bundle-dependencies", "-o", str(tmp_path)]) == 0
+    run = subprocess.run(["bash", "run.sh"], cwd=tmp_path, timeout=30,
+        env=dict(os.environ, SWIRLC_PYTHON=sys.executable, SWIRLC_RUNTIME_TIMEOUT="10",
+                 SWIRLC_TMP_DIR=str(tmp_path / "scratch"), PIP_NO_INDEX="1",
+                 PIP_DISABLE_PIP_VERSION_CHECK="1"), capture_output=True, text=True)
+    assert run.returncode == 0, (run.stdout, run.stderr)
+    outputs = json.loads((tmp_path / "l0.outputs.json").read_text())
+    values = [record["payload"] for record in outputs if record["id"] == []]
+    expected = ([23, 33], [45, 55]) if nested else (23, 45)
+    assert (list(expected) if scattered else expected[0]) in values
+
+
 def test_expression_tool_uses_self_bootstrapping_javascript_runtime(
     tmp_path: Path,
 ) -> None:
@@ -342,6 +396,7 @@ def test_missing_features_unchanged_workflow(tmp_path, enabled, status):
 
 
 @pytest.mark.parametrize("guard, expected", [
+    (None, "2"),
     ("$(inputs.x === 2)", "3"),
     ("$(inputs.x === 0)", None),
     ("$(inputs.x)", "invalid"),
@@ -364,6 +419,11 @@ def test_when_choice_prepares_inputs_once_and_skips_command(tmp_path, guard, exp
                         "glob": "value.txt", "loadContents": True,
                         "outputEval": "$(self[0].contents)"}}}}}},
     }
+    if guard is None:
+        step = workflow["steps"]["choose"]
+        step.pop("when")
+        step["in"] = {"seed": "x", "x": {"valueFrom": "$(inputs.seed + 1)"}}
+        step["run"]["inputs"]["x"]["inputBinding"].pop("valueFrom")
     yaml = YAML()
     with (tmp_path / "main.cwl").open("w") as stream:
         yaml.dump(workflow, stream)
@@ -373,7 +433,7 @@ def test_when_choice_prepares_inputs_once_and_skips_command(tmp_path, guard, exp
                                           "bindings": [{"step": "/", "target": {"deployment": "local"}}]}}}, stream)
     assert main(["translate", "-l", "cwl", str(tmp_path / "streamflow.yml"), "-o", str(tmp_path)]) == 0
     metadata = YAML(typ="safe").load((tmp_path / "metadata.yml").read_text())
-    assert "+[" in (tmp_path / "workflow.swirl").read_text()
+    assert ("+[" in (tmp_path / "workflow.swirl").read_text()) == (guard is not None)
     assert all("when" not in step for step in metadata["steps"].values())
     assert main(["compile", str(tmp_path / "workflow.swirl"), str(tmp_path / "metadata.yml"),
                  "--bundle-dependencies", "-o", str(tmp_path)]) == 0
