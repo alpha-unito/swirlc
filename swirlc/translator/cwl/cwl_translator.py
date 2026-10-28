@@ -220,6 +220,7 @@ class Invocation:
     when: str | None = None
     transforms: dict = field(default_factory=dict)
     staging: list = field(default_factory=list)
+    container: dict | None = None
 
 
 @dataclass
@@ -917,6 +918,18 @@ class CWLTranslator(AbstractTranslator):
 
         display_cwl_workflow(self.cwl_obj, bundle=self.cwl_bundle)
 
+    def _container(self, *owners):
+        effective = {}
+        for owner in owners:
+            for item in (getattr(owner, "requirements", None) or []) + (getattr(owner, "hints", None) or []):
+                effective[type(item).__name__] = item
+        req = effective.get("DockerRequirement")
+        if req is not None:
+            image = getattr(req, "dockerPull", None) or getattr(req, "dockerImageId", None)
+            if image:
+                return {"type": "docker", "image": str(image)}
+        return None
+
     def _staging(self, *owners):
         effective = {}
         for owner in owners:
@@ -1108,6 +1121,7 @@ class CWLTranslator(AbstractTranslator):
                                 if getattr(item, source, None) is not None
                             } for item in step.in_},
                             staging=self._staging(*owners, wf, step, process_definition),
+                            container=self._container(*owners, wf, step, process_definition),
                         )
                     )
 
@@ -1535,6 +1549,8 @@ class CWLTranslator(AbstractTranslator):
             step["inputTransforms"] = transforms
         if invocation.staging:
             step["staging"] = invocation.staging
+        if invocation.container:
+            step["container"] = invocation.container
         success = getattr(tool, "successCodes", None)
         if success is not None:
             step["acceptedExitCodes"] = success

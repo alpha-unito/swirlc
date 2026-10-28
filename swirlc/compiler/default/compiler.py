@@ -1164,7 +1164,36 @@ def _execute_command(tool, descriptor, bound):
             raise ValueError(f"Invalid stdout destination: {stdout!r}")
         cmd += " > " + shlex.quote(stdout)
     logger.info("Step %s executes command %r", tool, cmd)
-    result = _run_command(cmd, cwd=workdir)
+    exec_cmd = cmd
+    container = descriptor.get("container")
+    if container and container.get("type") == "docker":
+        image = container["image"]
+        docker_args = [
+            "docker", "run", "-i", "--rm",
+            "--user", f"{os.getuid()}:{os.getgid()}",
+            "-v", f"{workdir}:{workdir}",
+            "-w", workdir,
+        ]
+        # Mount directories of bound input files/directories if located outside workdir
+        mounted_dirs = {workdir}
+        def _collect_paths(val):
+            if isinstance(val, dict):
+                if val.get("class") in ("File", "Directory") and "path" in val:
+                    p = os.path.abspath(val["path"])
+                    parent = os.path.dirname(p) if val.get("class") == "File" else p
+                    if parent and not any(os.path.commonpath([m, parent]) == m for m in mounted_dirs):
+                        mounted_dirs.add(parent)
+                        docker_args.extend(["-v", f"{parent}:{parent}:ro"])
+                for sub in val.values():
+                    _collect_paths(sub)
+            elif isinstance(val, (list, tuple)):
+                for sub in val:
+                    _collect_paths(sub)
+        for b_val in bound.values():
+            _collect_paths(b_val)
+        docker_args.extend([image, "/bin/sh", "-c", cmd])
+        exec_cmd = " ".join(shlex.quote(a) for a in docker_args)
+    result = _run_command(exec_cmd, cwd=workdir)
     if result.returncode not in descriptor.get("acceptedExitCodes", [0]):
         raise RuntimeError(f"Step {tool} failed with exit status {result.returncode}: {result.stderr.decode('utf-8')}")
     outputs = {}

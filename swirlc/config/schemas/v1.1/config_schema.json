@@ -595,6 +595,25 @@
             ],
             "additionalProperties": false
           }
+        },
+        "container": {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "enum": [
+                "docker"
+              ]
+            },
+            "image": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "required": [
+            "image"
+          ],
+          "additionalProperties": false
         }
       },
       "anyOf": [

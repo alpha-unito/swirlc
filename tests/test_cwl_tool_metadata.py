@@ -503,3 +503,19 @@ def test_single_source_selection_keeps_source_sequence(selection):
     resolved = namespace["_resolve_bindings"]({"inputs": {"object": {"messages": binding}}}, values,
                                               input_types=step["inputs"])
     assert resolved["inputs"]["messages"] == ["hello"]
+
+
+def test_docker_requirement_propagates_to_step_metadata():
+    translator = CWLTranslator(ROOT / "examples/montage/streamflow.yml")
+    source, description = StringIO(), StringIO()
+    translator.translate(source, description)
+    metadata = YAML(typ="safe").load(description.getvalue())
+    get_diff_step = next(
+        descriptor for descriptor in metadata["steps"].values()
+        if descriptor.get("displayName") == "get_diff"
+    )
+    assert get_diff_step.get("container") == {
+        "type": "docker",
+        "image": "opencadc/astropy:3.9-slim",
+    }
+

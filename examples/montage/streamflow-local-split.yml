@@ -1,0 +1,62 @@
+version: v1.0
+workflows:
+  montage:
+    type: cwl
+    config:
+      file: main_montage.cwl
+      settings: data-small/config_montage.json
+    bindings:
+      - step: /
+        target:
+          deployment: coordinator
+      - step: /band
+        target:
+          - deployment: band_worker1
+          - deployment: band_worker2
+      - step: /band/mProject
+        target:
+          - deployment: image_worker1
+          - deployment: image_worker2
+          - deployment: image_worker3
+      - step: /band/wdiff/diff
+        target:
+          - deployment: image_worker1
+          - deployment: image_worker2
+          - deployment: image_worker3
+      - step: /band/mBackground
+        target:
+          - deployment: image_worker1
+          - deployment: image_worker2
+          - deployment: image_worker3
+deployments:
+  coordinator:
+    type: local
+    config: {}
+    port: 35800
+    environment: &env
+      PATH: /home/tommo/Coding/Alpha/swirlc/.tools/montage/Montage-main/bin:/usr/local/bin:/usr/bin:/bin
+  band_worker1:
+    type: local
+    config: {}
+    port: 35801
+    environment: *env
+  band_worker2:
+    type: local
+    config: {}
+    port: 35802
+    environment: *env
+  image_worker1:
+    type: local
+    config: {}
+    port: 35803
+    environment: *env
+  image_worker2:
+    type: local
+    config: {}
+    port: 35804
+    environment: *env
+  image_worker3:
+    type: local
+    config: {}
+    port: 35805
+    environment: *env
