@@ -1542,12 +1542,6 @@ exec "$PYTHON_BIN" {location.name}.py "$@"
                 for command in copy_commands(loc)
             ]
         )
-        setup_runtimes = _parallel_shell_block(
-            [
-                loc.get_setup_command(f"./{loc.name}.launch.sh --prepare")
-                for loc in workflow.locations.values()
-            ]
-        )
         fetch_addresses = "\n".join(
             [
                 f"{command} >/dev/null 2>&1 || true"
@@ -1654,10 +1648,6 @@ trap "cleanup" EXIT
 {prepare_commands}
 
 {copy_traces}
-
-# Create isolated Python environments and install any trace-specific runtime
-# dependencies before starting locations or submitting Slurm jobs.
-{setup_runtimes}
 
 # Start workflow execution. Locations will publish their address file and then
 # wait until this script distributes address_book.json.

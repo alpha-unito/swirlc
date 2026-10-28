@@ -146,7 +146,6 @@ def test_expression_tool_uses_self_bootstrapping_javascript_runtime(
     assert 'exec "$VENV_DIR/bin/python" l0.py' in launcher
 
     run_script = (tmp_path / "run.sh").read_text()
-    assert "./l0.launch.sh --prepare" in run_script
     assert "./l0.launch.sh --run-id $SWIRLC_RUN_ID" in run_script
     assert "Workflow execution started" in run_script
     assert "wait_workflow_processes" not in run_script

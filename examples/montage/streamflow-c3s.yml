@@ -4,11 +4,12 @@ workflows:
     type: cwl
     config:
       file: main_montage.cwl
-      settings: data-standard/config_montage.json
+      settings: data-small/config_montage.json
     bindings:
     - step: /
       target:
         deployment: coordinator
+        service: worker
     - step: /band
       target:
       - deployment: band_worker1
@@ -41,12 +42,23 @@ workflows:
         service: worker
 deployments:
   coordinator:
-    type: local
-    config: {}
+    type: slurm
+    config:
+      services:
+        worker:
+          partition: broadwell
+          nodes: 1
+          ntasks: 1
+          time: 06:00:00
+          options:
+            cpus_per_task: 8
+            mem: 32G
+    workdir: /beegfs/home/tommaso.fogliobonda/swirlc/runs/montage/coordinator
     port: 26100
     environment: &id001
-      PATH: /beegfs/home/tommaso.fogliobonda/swirlc/venv/bin:/usr/local/bin:/usr/bin:/bin
+      PATH: /beegfs/home/tommaso.fogliobonda/spack/var/spack/environments/singularity/.spack-env/._view/yhln4uvh7u36pcgjwogapjrp2yt34qic/bin:/beegfs/home/tommaso.fogliobonda/swirlc/.tools/montage/Montage-main/bin:/beegfs/home/tommaso.fogliobonda/swirlc/venv/bin:/usr/local/bin:/usr/bin:/bin
       SWIRLC_PYTHON: /beegfs/home/tommaso.fogliobonda/swirlc/venv/bin/python
+      SWIRLC_CONTAINER_ENGINE: apptainer
   band_worker1:
     type: slurm
     config:
