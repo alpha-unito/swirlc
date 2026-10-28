@@ -14,3 +14,5 @@ deployments:
     type: local
     config: {}
     port: 35800
+    environment:
+      PATH: /home/tommo/Coding/Alpha/swirlc/.tools/montage/Montage-main/bin:/usr/local/bin:/usr/bin:/bin

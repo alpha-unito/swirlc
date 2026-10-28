@@ -35,8 +35,8 @@ python_header = f"""#!/usr/bin/env python
 """
 
 javascript_requirements = """\
-Js2Py==0.74; python_version < "3.13"
-Js2Py-3.14==0.74.2; python_version >= "3.13"
+Js2Py==0.74; python_version < "3.11"
+Js2Py-3.14==0.74.2; python_version >= "3.11"
 pyjsparser==2.7.1
 six==1.17.0
 tzlocal==5.4.4

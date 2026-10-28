@@ -135,8 +135,8 @@ def test_expression_tool_uses_self_bootstrapping_javascript_runtime(
     assert "def _expression_s0(inputs):" not in trace
 
     requirements = (tmp_path / "l0.requirements.txt").read_text()
-    assert 'Js2Py==0.74; python_version < "3.13"' in requirements
-    assert 'Js2Py-3.14==0.74.2; python_version >= "3.13"' in requirements
+    assert 'Js2Py==0.74; python_version < "3.11"' in requirements
+    assert 'Js2Py-3.14==0.74.2; python_version >= "3.11"' in requirements
     assert "pyjsparser==2.7.1" in requirements
     assert "six==1.17.0" in requirements
     assert "tzlocal==5.4.4" in requirements

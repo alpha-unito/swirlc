@@ -139,3 +139,4 @@ dmypy.json
 /examples/1000genome/data/
 /.tools/
 /examples/montage/data-small/
+/examples/montage/data-standard/

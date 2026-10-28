@@ -1,0 +1,96 @@
+version: v1.0
+workflows:
+  montage:
+    type: cwl
+    config:
+      file: main_montage.cwl
+      settings: data-standard/config_montage.json
+    bindings:
+    - step: /
+      target:
+        deployment: coordinator
+    - step: /band
+      target:
+      - deployment: band_worker1
+        service: worker
+      - deployment: band_worker2
+        service: worker
+    - step: /band/mProject
+      target:
+      - deployment: image_worker1
+        service: worker
+      - deployment: image_worker2
+        service: worker
+      - deployment: image_worker3
+        service: worker
+    - step: /band/wdiff/diff
+      target:
+      - deployment: image_worker1
+        service: worker
+      - deployment: image_worker2
+        service: worker
+      - deployment: image_worker3
+        service: worker
+    - step: /band/mBackground
+      target:
+      - deployment: image_worker1
+        service: worker
+      - deployment: image_worker2
+        service: worker
+      - deployment: image_worker3
+        service: worker
+deployments:
+  coordinator:
+    type: local
+    config: {}
+    port: 26100
+    environment: &id001
+      PATH: /beegfs/home/tommaso.fogliobonda/swirlc/venv/bin:/usr/local/bin:/usr/bin:/bin
+      SWIRLC_PYTHON: /beegfs/home/tommaso.fogliobonda/swirlc/venv/bin/python
+  band_worker1:
+    type: slurm
+    config:
+      services:
+        worker: &id002
+          partition: broadwell
+          nodes: 1
+          ntasks: 1
+          time: 06:00:00
+          options:
+            cpus_per_task: 8
+            mem: 32G
+    workdir: /beegfs/home/tommaso.fogliobonda/swirlc/runs/montage/band_worker1
+    port: 26101
+    environment: *id001
+  band_worker2:
+    type: slurm
+    config:
+      services:
+        worker: *id002
+    workdir: /beegfs/home/tommaso.fogliobonda/swirlc/runs/montage/band_worker2
+    port: 26102
+    environment: *id001
+  image_worker1:
+    type: slurm
+    config:
+      services:
+        worker: *id002
+    workdir: /beegfs/home/tommaso.fogliobonda/swirlc/runs/montage/image_worker1
+    port: 26103
+    environment: *id001
+  image_worker2:
+    type: slurm
+    config:
+      services:
+        worker: *id002
+    workdir: /beegfs/home/tommaso.fogliobonda/swirlc/runs/montage/image_worker2
+    port: 26104
+    environment: *id001
+  image_worker3:
+    type: slurm
+    config:
+      services:
+        worker: *id002
+    workdir: /beegfs/home/tommaso.fogliobonda/swirlc/runs/montage/image_worker3
+    port: 26105
+    environment: *id001

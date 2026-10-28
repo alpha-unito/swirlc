@@ -94,3 +94,10 @@ under `build/montage-env-distributed`: `execution.log`, `validation.json`, and
 `results/`. All six FITS arrays match the coordinator-only run exactly; the four
 PNGs decode successfully at 180×180 pixels. This run used freshly compiled,
 unmodified launchers, with their hashes checked on all worker deployments.
+
+
+python ./tmp_main.py translate \
+  --language cwl \
+  examples/montage/streamflow.yml \
+  --outdir build
+
