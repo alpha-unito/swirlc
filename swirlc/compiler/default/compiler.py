@@ -183,6 +183,7 @@ import logging
 import os
 import re
 import shlex
+import shutil
 import socket
 import subprocess
 import sys
@@ -1168,14 +1169,9 @@ def _execute_command(tool, descriptor, bound):
     container = descriptor.get("container")
     if container and container.get("type") == "docker":
         image = container["image"]
-        docker_args = [
-            "docker", "run", "-i", "--rm",
-            "--user", f"{os.getuid()}:{os.getgid()}",
-            "-v", f"{workdir}:{workdir}",
-            "-w", workdir,
-        ]
-        # Mount directories of bound input files/directories if located outside workdir
+        # Collect external directories that must be mounted into the container
         mounted_dirs = {workdir}
+        extra_mounts = []
         def _collect_paths(val):
             if isinstance(val, dict):
                 if val.get("class") in ("File", "Directory") and "path" in val:
@@ -1183,7 +1179,7 @@ def _execute_command(tool, descriptor, bound):
                     parent = os.path.dirname(p) if val.get("class") == "File" else p
                     if parent and not any(os.path.commonpath([m, parent]) == m for m in mounted_dirs):
                         mounted_dirs.add(parent)
-                        docker_args.extend(["-v", f"{parent}:{parent}:ro"])
+                        extra_mounts.append(parent)
                 for sub in val.values():
                     _collect_paths(sub)
             elif isinstance(val, (list, tuple)):
@@ -1191,8 +1187,50 @@ def _execute_command(tool, descriptor, bound):
                     _collect_paths(sub)
         for b_val in bound.values():
             _collect_paths(b_val)
-        docker_args.extend([image, "/bin/sh", "-c", cmd])
-        exec_cmd = " ".join(shlex.quote(a) for a in docker_args)
+
+        # Detect container runner: check override, then docker, then apptainer/singularity
+        configured_engine = os.environ.get("SWIRLC_CONTAINER_ENGINE")
+        apptainer_bin = shutil.which("apptainer") or shutil.which("singularity")
+        use_apptainer = False
+        if configured_engine in ("apptainer", "singularity"):
+            use_apptainer = True
+        elif configured_engine == "docker":
+            use_apptainer = False
+        else:
+            docker_bin = shutil.which("docker")
+            docker_available = False
+            if docker_bin:
+                try:
+                    res = subprocess.run(["docker", "info"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=2)
+                    docker_available = (res.returncode == 0)
+                except Exception:
+                    docker_available = False
+            if not docker_available and apptainer_bin:
+                use_apptainer = True
+
+        if use_apptainer:
+            apptainer_cmd = apptainer_bin or "apptainer"
+            apptainer_args = [
+                apptainer_cmd, "exec", "--containall", "--cleanenv",
+                "--bind", f"{workdir}:{workdir}",
+                "--pwd", workdir,
+            ]
+            for m in extra_mounts:
+                apptainer_args.extend(["--bind", f"{m}:{m}:ro"])
+            apptainer_image = image if image.startswith("docker://") else f"docker://{image}"
+            apptainer_args.extend([apptainer_image, "/bin/sh", "-c", cmd])
+            exec_cmd = " ".join(shlex.quote(a) for a in apptainer_args)
+        else:
+            docker_args = [
+                "docker", "run", "-i", "--rm",
+                "--user", f"{os.getuid()}:{os.getgid()}",
+                "-v", f"{workdir}:{workdir}",
+                "-w", workdir,
+            ]
+            for m in extra_mounts:
+                docker_args.extend(["-v", f"{m}:{m}:ro"])
+            docker_args.extend([image, "/bin/sh", "-c", cmd])
+            exec_cmd = " ".join(shlex.quote(a) for a in docker_args)
     result = _run_command(exec_cmd, cwd=workdir)
     if result.returncode not in descriptor.get("acceptedExitCodes", [0]):
         raise RuntimeError(f"Step {tool} failed with exit status {result.returncode}: {result.stderr.decode('utf-8')}")
