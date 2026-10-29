@@ -55,6 +55,13 @@ class Runtime:
         self.stopping = False
         # Bound network operations, never the time spent waiting for workflow data.
         self.timeout = float(__import__('os').environ.get('SWIRLC_RUNTIME_TIMEOUT', '60'))
+        try:
+            self.transfer_limit = int(__import__('os').environ.get('SWIRLC_TRANSFER_LIMIT', '8'))
+            if self.transfer_limit < 1:
+                raise ValueError
+        except ValueError as exc:
+            raise ValueError('SWIRLC_TRANSFER_LIMIT must be a positive integer') from exc
+        self._active_transfers = 0
         self.initial = {name: descriptor['value'] for name, descriptor in metadata.get('dependencies', {}).items() if 'value' in descriptor}
 
     def start(self):
@@ -153,19 +160,35 @@ class Runtime:
             self._wait(lambda: offer['event'].is_set(), 'uncommitted transfer')
             return
         timeout = self.timeout if timeout is None else timeout
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as conn:
-            conn.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            conn.settimeout(timeout)
-            conn.connect(self.addresses[dst])
-            _frame(conn, header)
-            if header["kind"] == "offer" and not header.get("control"):
-                self._send_payload(conn, header['type'], payload)
-            # Offers are acknowledged only when workflow consumers commit them.
-            if header['kind'] == 'offer':
-                conn.settimeout(None)
-            response = _unframe(conn)
-            if 'error' in response:
-                raise RuntimeError(response['error'])
+        transferring = header['kind'] == 'offer' and not header.get('control')
+        if transferring:
+            with self.condition:
+                self._wait(lambda: self._active_transfers < self.transfer_limit, 'outgoing transfer admission')
+                self._active_transfers += 1
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as conn:
+                conn.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                conn.settimeout(timeout)
+                conn.connect(self.addresses[dst])
+                _frame(conn, header)
+                if transferring:
+                    self._send_payload(conn, header['type'], payload)
+                    # Consumer commits must not hold transport slots needed by other branches.
+                    self._release_transfer_slot()
+                    transferring = False
+                if header['kind'] == 'offer':
+                    conn.settimeout(None)
+                response = _unframe(conn)
+                if 'error' in response:
+                    raise RuntimeError(response['error'])
+        finally:
+            if transferring:
+                self._release_transfer_slot()
+
+    def _release_transfer_slot(self):
+        with self.condition:
+            self._active_transfers -= 1
+            self.condition.notify_all()
 
     def _send_payload(self, conn, data_type, value):
         if isinstance(data_type, list):

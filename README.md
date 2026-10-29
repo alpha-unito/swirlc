@@ -78,6 +78,12 @@ swirlc compile [SWIRL_FILE] [METADATA_FILE]
 
 Note that all the target locations need to have the Python interpreter installed. 
 
+Generated Python workers allow eight active outgoing payload transfers each.
+Set `SWIRLC_TRANSFER_LIMIT` to a positive integer in each worker's environment to
+override this limit. Local delivery and control messages do not use transfer
+slots. Slots are released after sending the payload, before waiting for consumer
+acknowledgement, so this limits active transfers rather than all open connections.
+
 ## Case studies 
 
 In this [artifact](https://zenodo.org/records/12523000), we describe how users can rely on swirlc to reproduce the 1000 Genomes workflow experiment.
