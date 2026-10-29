@@ -40,9 +40,9 @@ def offer():
             'type': 'int', 'control': None}
 
 
-def test_transfer_limit_defaults_to_eight(runtime_factory, monkeypatch):
+def test_transfer_limit_defaults_to_sixty_four(runtime_factory, monkeypatch):
     monkeypatch.delenv('SWIRLC_TRANSFER_LIMIT', raising=False)
-    assert runtime_factory().transfer_limit == 8
+    assert runtime_factory().transfer_limit == 64
 
 
 @pytest.mark.parametrize('value', ['0', '-1', 'many', '1.5'])

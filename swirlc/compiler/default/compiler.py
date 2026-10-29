@@ -1723,7 +1723,7 @@ echo "Workflow execution terminated"
 
 SCOPED_MAIN = r"""
 ACTIVE_RUNTIME = None
-COMMAND_SLOTS = BoundedSemaphore(8)
+COMMAND_SLOTS = BoundedSemaphore(int(os.environ.get("SWIRLC_COMMAND_SLOTS", max(1, (os.cpu_count() or 4) * 2))))
 
 
 def _run_command(command, cwd=None):
@@ -1731,23 +1731,47 @@ def _run_command(command, cwd=None):
         if ACTIVE_RUNTIME is not None and ACTIVE_RUNTIME.error is not None:
             raise RuntimeError(f"Command cancelled after scoped failure: {ACTIVE_RUNTIME.error}")
         import signal
+        import threading
+        import time
         process = subprocess.Popen(command, shell=True, cwd=cwd, stdout=subprocess.PIPE,
                                    stderr=subprocess.PIPE, start_new_session=True)
-        try:
-            while True:
-                try:
-                    stdout, stderr = process.communicate(timeout=.1)
-                    return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
-                except subprocess.TimeoutExpired:
+        if ACTIVE_RUNTIME is not None:
+            def _watch_runtime():
+                while process.poll() is None:
                     if ACTIVE_RUNTIME is not None and ACTIVE_RUNTIME.error is not None:
-                        raise RuntimeError(f"Command cancelled after scoped failure: {ACTIVE_RUNTIME.error}")
+                        if process.poll() is None:
+                            try:
+                                os.killpg(process.pid, signal.SIGTERM)
+                            except OSError:
+                                pass
+                            time.sleep(0.1)
+                            if process.poll() is None:
+                                try:
+                                    os.killpg(process.pid, signal.SIGKILL)
+                                except OSError:
+                                    pass
+                        break
+                    time.sleep(0.02)
+            threading.Thread(target=_watch_runtime, daemon=True).start()
+
+        try:
+            stdout, stderr = process.communicate()
+            if ACTIVE_RUNTIME is not None and ACTIVE_RUNTIME.error is not None:
+                raise RuntimeError(f"Command cancelled after scoped failure: {ACTIVE_RUNTIME.error}")
+            return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
         except BaseException:
             if process.poll() is None:
-                os.killpg(process.pid, signal.SIGTERM)
+                try:
+                    os.killpg(process.pid, signal.SIGTERM)
+                except OSError:
+                    pass
                 try:
                     process.communicate(timeout=1)
                 except subprocess.TimeoutExpired:
-                    os.killpg(process.pid, signal.SIGKILL)
+                    try:
+                        os.killpg(process.pid, signal.SIGKILL)
+                    except OSError:
+                        pass
                     process.communicate()
             raise
 

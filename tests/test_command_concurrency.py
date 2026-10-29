@@ -1,4 +1,5 @@
 import ast
+import os
 import subprocess
 import threading
 import unittest
@@ -16,12 +17,13 @@ class CommandConcurrencyTests(unittest.TestCase):
                  or isinstance(node, ast.Assign) and any(
                      isinstance(target, ast.Name) and target.id in ("ACTIVE_RUNTIME", "COMMAND_SLOTS")
                      for target in node.targets)]
-        namespace = {"BoundedSemaphore": threading.BoundedSemaphore, "subprocess": subprocess}
+        namespace = {"BoundedSemaphore": threading.BoundedSemaphore, "subprocess": subprocess, "os": os}
         exec(compile(ast.Module(body=nodes, type_ignores=[]), "<runner>", "exec"), namespace)
         return namespace
 
     def test_at_most_eight_commands_and_releases_slots(self):
-        namespace = self.runner()
+        with patch.dict(os.environ, {"SWIRLC_COMMAND_SLOTS": "8"}):
+            namespace = self.runner()
         gate, full = threading.Event(), threading.Event()
         lock = threading.Lock()
         active, peak, calls, errors = 0, 0, 0, []
@@ -38,7 +40,7 @@ class CommandConcurrencyTests(unittest.TestCase):
                     if active == 8:
                         full.set()
 
-            def communicate(self, timeout):
+            def communicate(self, *args, **kwargs):
                 nonlocal active
                 gate.wait(5)
                 with lock:

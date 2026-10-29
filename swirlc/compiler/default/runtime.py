@@ -56,7 +56,7 @@ class Runtime:
         # Bound network operations, never the time spent waiting for workflow data.
         self.timeout = float(__import__('os').environ.get('SWIRLC_RUNTIME_TIMEOUT', '60'))
         try:
-            self.transfer_limit = int(__import__('os').environ.get('SWIRLC_TRANSFER_LIMIT', '8'))
+            self.transfer_limit = int(__import__('os').environ.get('SWIRLC_TRANSFER_LIMIT', '64'))
             if self.transfer_limit < 1:
                 raise ValueError
         except ValueError as exc:
