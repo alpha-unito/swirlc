@@ -40,9 +40,9 @@ inputs:
           images_fits: File[]
           color: string
 outputs: 
-  red: File 
-  green: File
-  blue: File
+  red: File?
+  green: File?
+  blue: File?
 expression: |
   ${
     var red = null;

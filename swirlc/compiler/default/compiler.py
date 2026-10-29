@@ -194,7 +194,7 @@ import zipfile
 
 from pathlib import Path
 from io import BytesIO
-from threading import Condition, Event, RLock, Thread
+from threading import BoundedSemaphore, Condition, Event, RLock, Thread
 from typing import Any, MutableMapping, MutableSequence
 """
 
@@ -1723,29 +1723,33 @@ echo "Workflow execution terminated"
 
 SCOPED_MAIN = r"""
 ACTIVE_RUNTIME = None
+COMMAND_SLOTS = BoundedSemaphore(8)
 
 
 def _run_command(command, cwd=None):
-    import signal
-    process = subprocess.Popen(command, shell=True, cwd=cwd, stdout=subprocess.PIPE,
-                               stderr=subprocess.PIPE, start_new_session=True)
-    try:
-        while True:
-            try:
-                stdout, stderr = process.communicate(timeout=.1)
-                return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
-            except subprocess.TimeoutExpired:
-                if ACTIVE_RUNTIME is not None and ACTIVE_RUNTIME.error is not None:
-                    raise RuntimeError(f"Command cancelled after scoped failure: {ACTIVE_RUNTIME.error}")
-    except BaseException:
-        if process.poll() is None:
-            os.killpg(process.pid, signal.SIGTERM)
-            try:
-                process.communicate(timeout=1)
-            except subprocess.TimeoutExpired:
-                os.killpg(process.pid, signal.SIGKILL)
-                process.communicate()
-        raise
+    with COMMAND_SLOTS:
+        if ACTIVE_RUNTIME is not None and ACTIVE_RUNTIME.error is not None:
+            raise RuntimeError(f"Command cancelled after scoped failure: {ACTIVE_RUNTIME.error}")
+        import signal
+        process = subprocess.Popen(command, shell=True, cwd=cwd, stdout=subprocess.PIPE,
+                                   stderr=subprocess.PIPE, start_new_session=True)
+        try:
+            while True:
+                try:
+                    stdout, stderr = process.communicate(timeout=.1)
+                    return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
+                except subprocess.TimeoutExpired:
+                    if ACTIVE_RUNTIME is not None and ACTIVE_RUNTIME.error is not None:
+                        raise RuntimeError(f"Command cancelled after scoped failure: {ACTIVE_RUNTIME.error}")
+        except BaseException:
+            if process.poll() is None:
+                os.killpg(process.pid, signal.SIGTERM)
+                try:
+                    process.communicate(timeout=1)
+                except subprocess.TimeoutExpired:
+                    os.killpg(process.pid, signal.SIGKILL)
+                    process.communicate()
+            raise
 
 
 def _execute_bound(tool, inputs):
