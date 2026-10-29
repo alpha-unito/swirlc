@@ -143,6 +143,15 @@ class Runtime:
                 self.condition.wait()
 
     def _send_header(self, dst, header, payload=None, timeout=None):
+        if dst == self.location and header['kind'] == 'offer':
+            control = header.get('control')
+            value = control if control is not None else self._coerce(payload, header['type'])
+            offer = dict(header, value=value, id=_freeze(header['id']), event=threading.Event())
+            with self.condition:
+                self.offers.append(offer)
+                self.condition.notify_all()
+            self._wait(lambda: offer['event'].is_set(), 'uncommitted transfer')
+            return
         timeout = self.timeout if timeout is None else timeout
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as conn:
             conn.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)

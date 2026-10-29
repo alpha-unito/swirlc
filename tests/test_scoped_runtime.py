@@ -7,6 +7,7 @@ import unittest
 import uuid
 from pathlib import Path
 from typing import Any
+from unittest.mock import patch
 
 from swirlc.compiler.default.runtime import Runtime, _frame, _unframe
 
@@ -95,6 +96,54 @@ class ScopedRuntimeTests(unittest.TestCase):
         self.assertIsNone(runtime.values[0]['payload'])
         self.assertEqual(runtime.values[0]['id'], ())
 
+    def test_local_send_and_move_preserve_port_semantics_without_sockets(self):
+        for moving in (False, True):
+            with self.subTest(moving=moving):
+                runtime = self.runtime({'steps': {'dispatch': {
+                    'type': 'scatter_dispatch', 'operationId': 'local-test', 'outputs': {'p': {}},
+                    'routes': [{'controller': 'local', 'workers': ['local']}],
+                }}, 'dependencies': {}})
+                runtime._store('p', (), 7, 'int')
+                pattern = envelope(term('variable', 'value'), ROOT)
+                env, errors = {}, []
+
+                def transfer():
+                    try:
+                        if moving:
+                            runtime.move(env, 'p', pattern, 'int', 'local', 'local')
+                        else:
+                            self.assertTrue(runtime.try_send(env, 'p', pattern))
+                            runtime.send(env, 'p', pattern, 'int', 'local', 'local')
+                    except Exception as exc:
+                        errors.append(exc)
+
+                with patch('swirlc.compiler.default.runtime.socket.socket',
+                           side_effect=AssertionError('local transfer opened a socket')):
+                    worker = threading.Thread(target=transfer, daemon=True)
+                    worker.start()
+                    deadline = time.monotonic() + 1
+                    while not runtime.offers and not errors and time.monotonic() < deadline:
+                        time.sleep(.001)
+                    try:
+                        self.assertEqual(errors, [])
+                        self.assertEqual(len(runtime.offers), 1)
+                        self.assertTrue(worker.is_alive())
+                        self.assertEqual(len(runtime.values), 0 if moving else 1)
+                        received = {}
+                        self.assertTrue(runtime.try_receive(received, 'p', pattern, 'local'))
+                        worker.join(1)
+                        self.assertFalse(worker.is_alive())
+                        self.assertEqual(errors, [])
+                        self.assertEqual(received['value'], 7)
+                        self.assertEqual(len(runtime.values), 1 if moving else 2)
+                        self.assertNotIn('_claimed', env)
+                        if moving:
+                            self.assertEqual(runtime.values[0]['received_from'], 'local')
+                            self.assertFalse(runtime.try_move({}, 'p', pattern, 'local'))
+                    finally:
+                        runtime.fail(RuntimeError('test finished'), broadcast=False)
+                        worker.join(1)
+
     def test_control_like_payloads_are_data_and_controls_never_match_data(self):
         for value in ['begin', 'eof', ('begin', 'eof')]:
             with self.subTest(value=value):
@@ -141,6 +190,7 @@ class ScopedRuntimeTests(unittest.TestCase):
             'file': {'type': 'file'}, 'tail': {'type': 'string'}
         }}
         runtime = self.runtime(metadata)
+        runtime.addresses['remote'] = runtime.addresses['local']
         namespace = {'socket': socket, 'Any': Any, 'os': os, 'uuid': uuid,
                      'SCRATCH_DIR': temporary.name, 'BUF_SIZE': 4096}
         exec(list_helper + value_helpers + framing_helpers, namespace)
@@ -150,7 +200,7 @@ class ScopedRuntimeTests(unittest.TestCase):
         action = {'kind': 'send', 'src': 'local', 'dst': 'local', 'port': 'p',
                   'data_type': 'string', 'term': envelope(payload, ROOT)}
         sender = threading.Thread(target=runtime.send, args=(
-                  {'text': 'begin', 'number': 42, 'file': str(source), 'tail': 'eof'}, 'p', action['term'], 'string', 'local', 'local'))
+                  {'text': 'begin', 'number': 42, 'file': str(source), 'tail': 'eof'}, 'p', action['term'], 'string', 'local', 'remote'))
         sender.start()
         bindings = {}
         receive = {'kind': 'recv', 'src': 'local', 'port': 'p', 'term': envelope(term('variable', 'pair'), ROOT)}
@@ -166,7 +216,7 @@ class ScopedRuntimeTests(unittest.TestCase):
         self.assertEqual(received[2][1], 'eof')
         self.assertEqual(bindings['_payload_types']['pair'], ['string', 'int', ['file', 'string']])
         forward = dict(action, port='q', data_type='dynamic', term=envelope(term('variable', 'pair'), ROOT))
-        sender = threading.Thread(target=runtime.send, args=(bindings, 'q', forward['term'], 'dynamic', 'local', 'local'))
+        sender = threading.Thread(target=runtime.send, args=(bindings, 'q', forward['term'], 'dynamic', 'local', 'remote'))
         sender.start()
         rebound = {}
         runtime.recv(rebound, 'q', receive['term'], 'local')
@@ -479,12 +529,13 @@ class ScopedRuntimeTests(unittest.TestCase):
 
     def test_transfer_acknowledgement_waits_for_delayed_consumer(self):
         runtime = self.runtime()
+        runtime.addresses['remote'] = runtime.addresses['local']
         runtime.timeout = .02
         errors = []
         def send():
             try:
                 runtime.send({'value': 7}, 'p', envelope(term('variable', 'value'), ROOT),
-                             'int', 'local', 'local')
+                             'int', 'local', 'remote')
             except Exception as exc:
                 errors.append(exc)
         worker = threading.Thread(target=send, daemon=True)
