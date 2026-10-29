@@ -47,6 +47,15 @@ def render_translator():
     return translator, tool
 
 
+def test_writable_initial_workdir_entries_are_preserved():
+    translator, tool = render_translator()
+    entry = SimpleNamespace(entry="$(inputs.sample)", entryname="copy.txt", writable=True)
+    requirement = type("InitialWorkDirRequirement", (), {"listing": [entry]})()
+    tool.requirements = [*(getattr(tool, "requirements", None) or []), requirement]
+    assert translator._staging(tool) == [{
+        "entry": _lower_expression("$(inputs.sample)"), "name": "copy.txt", "writable": True}]
+
+
 def test_unsorted_bindings_preserve_negative_positions_and_binding_options():
     translator, tool = render_translator()
     tool.baseCommand = ["printf", "fixed-base-token"]

@@ -589,6 +589,7 @@ if __name__ == '__main__':
 
 def test_send_activation_requires_matching_data_and_scoped_eof_emptiness():
     runtime = Runtime.__new__(Runtime)
+    runtime._watching = threading.local()
     runtime.condition = threading.Condition()
     runtime.values = [{'port': 'p', 'id': (3,), 'payload': 7, 'type': 'int'}]
     runtime.condition_ports = set()
@@ -607,6 +608,7 @@ def test_send_activation_requires_matching_data_and_scoped_eof_emptiness():
 
 def test_exec_activation_waits_for_all_inputs_without_leaking_bindings():
     runtime = Runtime.__new__(Runtime)
+    runtime._watching = threading.local()
     runtime.condition = threading.Condition(threading.RLock())
     runtime.condition_ports = set()
     runtime.metadata = {'steps': {'work': {}}}
@@ -627,6 +629,7 @@ def test_exec_activation_waits_for_all_inputs_without_leaking_bindings():
 
 def test_collection_exec_activation_waits_for_closed_or_finite_stream():
     runtime = Runtime.__new__(Runtime)
+    runtime._watching = threading.local()
     runtime.condition = threading.Condition(threading.RLock())
     runtime.metadata = {'steps': {'gather': {'routes': [{'port': 'p', 'source': 'worker'}]}, 'local': {}}}
     runtime.closed, runtime.finite = set(), set()

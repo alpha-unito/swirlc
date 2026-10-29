@@ -36,14 +36,64 @@ class Scope(tuple):
     """Distinguish a bound complete identity from a Cartesian coordinate tuple."""
 
 
+class _Records(list):
+    """Keep publication order while indexing candidates by port and identity."""
+
+    def __init__(self, records=()):
+        super().__init__()
+        self.by_port, self.by_key = {}, {}
+        for record in records:
+            self.append(record)
+
+    def append(self, record):
+        super().append(record)
+        self.by_port.setdefault(record['port'], []).append(record)
+        self.by_key.setdefault((record['port'], _freeze(record['id'])), []).append(record)
+
+    def remove(self, record):
+        super().remove(record)
+        for index, key in ((self.by_port, record['port']),
+                           (self.by_key, (record['port'], _freeze(record['id'])))):
+            index[key].remove(record)
+            if not index[key]:
+                del index[key]
+
+    def clear(self):
+        super().clear()
+        self.by_port.clear()
+        self.by_key.clear()
+
+    def candidates(self, port, identity=None):
+        return self.by_port.get(port, ()) if identity is None else self.by_key.get((port, _freeze(identity)), ())
+
+
 class Runtime:
+    @property
+    def values(self):
+        return self._values
+
+    @values.setter
+    def values(self, records):
+        self._values = _Records(records)
+
+    @property
+    def offers(self):
+        return self._offers
+
+    @offers.setter
+    def offers(self, records):
+        self._offers = _Records(records)
+
     def __init__(self, metadata, location, addresses, listener, send_value, recv_value, execute, evaluate_condition=None):
         self.metadata, self.location, self.addresses = metadata, location, addresses
         self.listener, self.send_value, self.recv_value, self.execute = listener, send_value, recv_value, execute
         self.evaluate_condition = evaluate_condition
         self.condition_ports = {port for spec in metadata.get('conditions', {}).values()
                                 if spec['type'] == 'expression' for port in spec['inputs']}
-        self.condition = threading.Condition(threading.RLock())
+        self._lock = threading.RLock()
+        self.condition = threading.Condition(self._lock)
+        self._waiters = {}
+        self._watching = threading.local()
         self.values = []
         self.offers = []
         self.closed = set()
@@ -71,7 +121,7 @@ class Runtime:
     def close(self):
         with self.condition:
             self.stopping = True
-            self.condition.notify_all()
+            self._notify()
         self.listener.close()
 
     def _accept(self):
@@ -95,12 +145,12 @@ class Runtime:
             elif header['kind'] == 'done':
                 with self.condition:
                     self.completed.add(header['src'])
-                    self.condition.notify_all()
+                    self._notify(('done',))
                 _frame(conn, {'ok': True})
             elif header['kind'] == 'shape':
                 with self.condition:
                     self.shapes[(header['dispatch'], _freeze(header['scope']))] = header['length']
-                    self.condition.notify_all()
+                    self._notify(('shape', header['dispatch'], _freeze(header['scope'])))
                 _frame(conn, {'ok': True})
             else:
                 value = header.get('control') or self._recv_payload(conn, header['type'])
@@ -109,8 +159,8 @@ class Runtime:
                 offer = dict(header, value=value, id=_freeze(header['id']), event=threading.Event())
                 with self.condition:
                     self.offers.append(offer)
-                    self.condition.notify_all()
-                self._wait(lambda: offer['event'].is_set(), 'uncommitted transfer')
+                    self._notify(('offer', offer['port']))
+                self._wait(lambda: offer['event'].is_set(), 'uncommitted transfer', [('ack', id(offer))])
                 _frame(conn, {'ok': True})
         except Exception as exc:
             try:
@@ -126,7 +176,7 @@ class Runtime:
             if self.error is not None:
                 return
             self.error = error
-            self.condition.notify_all()
+            self._notify()
         if broadcast:
             for dst in self.addresses:
                 if dst != self.location:
@@ -138,16 +188,45 @@ class Runtime:
         except Exception:
             pass
 
-    def _wait(self, predicate, description):
+    def _watch(self, *keys):
+        watched = getattr(self._watching, 'keys', None)
+        if watched is not None:
+            watched.update(keys)
+
+    def _notify(self, *keys):
+        self.condition.notify_all()
+        waiters = set(self._waiters.get(None, ()))
+        for key in keys or tuple(self._waiters):
+            waiters.update(self._waiters.get(key, ()))
+        for waiter in waiters:
+            waiter.notify()
+
+    def _wait(self, predicate, description, keys=()):
         with self.condition:
+            waiter = threading.Condition(self._lock)
             while True:
                 if self.error:
                     raise RuntimeError(f'{description}: {self.error}') from self.error
                 if self.stopping:
                     raise RuntimeError(f'{description}: runtime closed')
-                if predicate():
-                    return
-                self.condition.wait()
+                watched = set(keys)
+                previous = getattr(self._watching, 'keys', None)
+                self._watching.keys = watched
+                try:
+                    if predicate():
+                        return
+                finally:
+                    self._watching.keys = previous
+                watched = watched or {None}
+                for key in watched:
+                    self._waiters.setdefault(key, set()).add(waiter)
+                try:
+                    waiter.wait()
+                finally:
+                    for key in watched:
+                        self._waiters[key].remove(waiter)
+                        if not self._waiters[key]:
+                            del self._waiters[key]
 
     def _send_header(self, dst, header, payload=None, timeout=None):
         if dst == self.location and header['kind'] == 'offer':
@@ -156,14 +235,14 @@ class Runtime:
             offer = dict(header, value=value, id=_freeze(header['id']), event=threading.Event())
             with self.condition:
                 self.offers.append(offer)
-                self.condition.notify_all()
-            self._wait(lambda: offer['event'].is_set(), 'uncommitted transfer')
+                self._notify(('offer', offer['port']))
+            self._wait(lambda: offer['event'].is_set(), 'uncommitted transfer', [('ack', id(offer))])
             return
         timeout = self.timeout if timeout is None else timeout
         transferring = header['kind'] == 'offer' and not header.get('control')
         if transferring:
             with self.condition:
-                self._wait(lambda: self._active_transfers < self.transfer_limit, 'outgoing transfer admission')
+                self._wait(lambda: self._active_transfers < self.transfer_limit, 'outgoing transfer admission', [('transfer',)])
                 self._active_transfers += 1
         try:
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as conn:
@@ -188,7 +267,7 @@ class Runtime:
     def _release_transfer_slot(self):
         with self.condition:
             self._active_transfers -= 1
-            self.condition.notify_all()
+            self._notify(('transfer',))
 
     def _send_payload(self, conn, data_type, value):
         if isinstance(data_type, list):
@@ -330,8 +409,16 @@ class Runtime:
         self.values.append(value)
 
     def _snapshot(self, port, scope, source=False):
-        return [v for v in self.values if v['port'] == port and v['id'][:-1] == scope and len(v['id']) == len(scope) + 1
+        self._watch(('value', port))
+        return [v for v in self.values.candidates(port) if v['id'][:-1] == scope and len(v['id']) == len(scope) + 1
                 and not (source and 'received_from' in v)]
+
+    def _candidates(self, records, port, identity, env):
+        try:
+            wanted = self._identity(identity, env)
+        except KeyError:
+            wanted = None
+        return records.candidates(port, wanted)
 
     def _bind_condition_input(self, env, port, value):
         if port in self.condition_ports:
@@ -339,9 +426,10 @@ class Runtime:
 
     def try_receive(self, env, port, term, src):
         with self.condition:
+            self._watch(('offer', port))
             payload, identity = term['items']
             expected_control = payload['name'] if payload['kind'] == 'literal' and payload['name'] in ('begin', 'eof') else None
-            for offer in self.offers:
+            for offer in self._candidates(self.offers, port, identity, env):
                 if offer['src'] != src or offer['port'] != port:
                     continue
                 if offer.get('control') != expected_control:
@@ -358,7 +446,7 @@ class Runtime:
                     elif not offer.get('control'):
                         self._store(port, offer['id'], offer['value'], offer['type'], received_from=src)
                     offer['event'].set()
-                    self.condition.notify_all()
+                    self._notify(('offer', port), ('value', port), ('ack', id(offer)))
                     return True
             if expected_control is None:
                 try:
@@ -367,20 +455,22 @@ class Runtime:
                     wanted = None
                 if wanted is not None:
                     exhausted = (src, port, wanted[:-1]) in self.closed
-                    exhausted |= any(offer['src'] == src and offer['port'] == port and offer.get('control') == 'eof' and offer['id'] == wanted[:-1] for offer in self.offers)
+                    exhausted |= any(offer['src'] == src and offer.get('control') == 'eof'
+                                     for offer in self.offers.candidates(port, wanted[:-1]))
                     if exhausted:
                         raise ValueError(f"Closed stream {port} is missing required key {wanted}")
             return False
 
     def try_send(self, env, port, term, dst=None):
         with self.condition:
+            self._watch(('value', port))
             payload, identity = term['items']
             if payload['kind'] == 'literal' and payload['name'] in ('begin', 'eof'):
                 scope = self._identity(identity, env)
                 return payload['name'] == 'begin' or not any(
                     value['port'] == port and value['id'][:len(scope)] == scope and 'received_from' not in value
-                    for value in self.values)
-            for value in self.values:
+                    for value in self.values.candidates(port))
+            for value in self._candidates(self.values, port, identity, env):
                 if value['port'] != port:
                     continue
                 candidate = dict(env)
@@ -393,9 +483,10 @@ class Runtime:
 
     def try_move(self, env, port, term, dst=None):
         with self.condition:
+            self._watch(('value', port))
             payload, identity = term['items']
             workers = self._dispatch_workers(port) if dst is not None else []
-            for value in self.values:
+            for value in self._candidates(self.values, port, identity, env):
                 if value['port'] != port or (workers and 'received_from' in value):
                     continue
                 candidate = dict(env)
@@ -410,6 +501,7 @@ class Runtime:
                     self._bind_types(payload, value['type'], candidate)
                     self._bind_condition_input(candidate, port, value['payload'])
                     self.values.remove(value)
+                    self._notify(('value', port))
                     env.update(candidate)
                     env['_claimed'] = value
                     return True
@@ -506,7 +598,8 @@ class Runtime:
 
     def _shape(self, step, scope):
         names = step.get('shapeFrom') or step['keySpace']['dispatches']
-        self._wait(lambda: all((name, scope) in self.shapes for name in names), 'scatter cardinalities')
+        self._wait(lambda: all((name, scope) in self.shapes for name in names), 'scatter cardinalities',
+                   [('shape', name, scope) for name in names])
         lengths = [self.shapes[name, scope] for name in names]
         if step['scatterMethod'] == 'dotproduct' and len(set(lengths)) > 1:
             raise ValueError(f"{step['operationId']}: dotproduct cardinalities differ: {lengths}")
@@ -525,6 +618,7 @@ class Runtime:
             step = self.metadata['steps'][name]
             for port, term in input_flow:
                 if term['kind'] == 'collection':
+                    self._watch(('offer', port), ('value', port))
                     scope = self._identity(term['items'][1], candidate)
                     routes = [route for route in step.get('routes', []) if route['port'] == port]
                     if routes:
@@ -560,7 +654,7 @@ class Runtime:
                 raise ValueError(f'{name}: scatter input must be a list')
             with self.condition:
                 self.shapes[name, scope] = len(items)
-                self.condition.notify_all()
+                self._notify(('shape', name, scope))
             for dst in self.addresses:
                 if dst != self.location:
                     self._send_header(dst, {'kind': 'shape', 'dispatch': name, 'scope': scope, 'length': len(items)})
@@ -579,7 +673,7 @@ class Runtime:
                             # Shared ports can serve invocations with different reserved pools.
                             self.routing[port, scope + (key,)] = self._route_worker(port, scope + (key,), workers)
                     self.finite.add((port, scope))
-                    self.condition.notify_all()
+                    self._notify(('value', port))
             return
         if helper == 'scatter_gather':
             first = input_flow[0][1]
@@ -620,7 +714,7 @@ class Runtime:
             env.update(candidate)
             with self.condition:
                 self._store(port, self._identity(identity, env), value, output_type)
-                self.condition.notify_all()
+                self._notify(('value', port))
 
     def parallel(self, env, owner, *branches):
         if self.error:
@@ -678,9 +772,6 @@ class Runtime:
                 body(env, owner)
             except Exception as exc:
                 self.fail(exc)
-            finally:
-                with self.condition:
-                    self.condition.notify_all()
         thread = threading.Thread(target=instance)
         owner['threads'].append(thread)
         thread.start()
@@ -696,11 +787,13 @@ class Runtime:
             raise ValueError('No replication owner to close')
         with self.condition:
             owner['closed'] = True
-            self.condition.notify_all()
+            self._notify(('owner', id(owner)))
 
     def admit(self, env, owner, selector):
         chosen = []
         def select():
+            if owner is not None:
+                self._watch(('owner', id(owner)))
             if owner is not None and owner['closed']:
                 return True
             candidate = dict(env)
@@ -738,6 +831,7 @@ class Runtime:
     def exhausted(self, port, scope, env):
         identity = self._identity(scope, env)
         with self.condition:
+            self._watch(('value', port))
             return (port, identity) in self.finite and not self._snapshot(port, identity, source=True)
 
     def initialize(self, initial, env):
@@ -756,4 +850,4 @@ class Runtime:
         for dst in self.addresses:
             if dst != self.location:
                 self._send_header(dst, {'kind': 'done', 'src': self.location})
-        self._wait(lambda: self.completed == set(self.addresses), 'location completion barrier')
+        self._wait(lambda: self.completed == set(self.addresses), 'location completion barrier', [('done',)])

@@ -217,7 +217,7 @@ def test_structured_cwl_execution_descriptors_are_valid():
     ("acceptedExitCodes", [True]),
     ("acceptedExitCodes", [0, 0]),
     ("staging", [{"name": "missing-entry"}]),
-    ("staging", [{"entry": "text", "writable": True}]),
+    ("staging", [{"entry": "text", "writable": "true"}]),
     ("when", "$(true)"),
     ("inputTransforms", {"source": {"select": "unknown"}}),
     ("inputTransforms", {"source": {"merge": "unknown"}}),

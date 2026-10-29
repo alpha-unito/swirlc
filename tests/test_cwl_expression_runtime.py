@@ -119,7 +119,7 @@ def test_expression_tool_uses_self_bootstrapping_javascript_runtime(
 
     trace = (tmp_path / "l0.py").read_text()
     assert "import js2py_ as js2py" in trace
-    assert "js2py.eval_js(invocation)" in trace
+    assert "compiled = _compiled_javascript(source, names)" in trace
     program = ast.parse(trace)
     metadata = ast.literal_eval(next(
         node.value for node in program.body if isinstance(node, ast.Assign)
@@ -234,7 +234,7 @@ def test_compile_can_embed_runtime_dependencies(tmp_path: Path) -> None:
     trace = (bundled / "l0.py").read_text()
     assert "_BUNDLED_DEPENDENCIES_B85" in trace
     assert "_activate_bundled_dependencies()" in trace
-    assert "js2py.eval_js(invocation)" in trace
+    assert "compiled = _compiled_javascript(source, names)" in trace
     assert (bundled / "l0.requirements.txt").read_text() == ""
 
     launcher = (bundled / "l0.launch.sh").read_text()

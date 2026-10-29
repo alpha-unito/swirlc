@@ -377,7 +377,9 @@ list_helper = """def _list_inner(data_type: str) -> str | None:
     return None
 """
 
-expression_function = r"""_javascript_lock = RLock()
+expression_function = r"""from functools import lru_cache
+
+_javascript_lock = RLock()
 
 
 def _expression_value(value: Any, data_type: str) -> Any:
@@ -430,21 +432,42 @@ def _to_python(value: Any) -> Any:
     return value
 
 
-def _run_javascript_expression(source: str, bindings: MutableMapping[str, Any]) -> Any:
+@lru_cache(maxsize=256)
+def _javascript_reference(source):
+    match = re.fullmatch(r"\s*return\s+(.+?);\s*", source, re.DOTALL)
+    if not match:
+        return None
+    reference = match[1].strip()
+    if reference.startswith("(") and reference.endswith(")"):
+        reference = reference[1:-1].strip()
+    root = re.match(r"[A-Za-z_$][\w$]*", reference)
+    if not root:
+        return None
+    keys, rest = [], reference[root.end():]
+    while rest:
+        part = re.match(r'\.([A-Za-z_$][\w$]*)|\[(0|[1-9][0-9]*|"(?:[^"\\]|\\.)*")\]', rest)
+        if not part:
+            return None
+        try:
+            keys.append(part[1] if part[1] is not None else json.loads(part[2]))
+        except ValueError:
+            return None
+        rest = rest[part.end():]
+    return root[0], tuple(keys)
+
+
+def _javascript_module():
     try:
         import js2py
     except ImportError:
         # Python 3.14 distribution retains the same API under a separate name.
         import js2py_ as js2py
-    names = list(bindings)
-    if any(not re.fullmatch(r"[A-Za-z_$][\w$]*", name) for name in names):
-        raise ValueError("Invalid JavaScript binding name")
-    invocation = ("(function(" + ",".join(names) + ") {\n" + source
-                  + "\n})(" + ",".join(json.dumps(bindings[name]) for name in names) + ");")
-    # Js2Py code generation shares mutable translator state across contexts.
-    with _javascript_lock:
-        js2py.disable_pyimport()
-        invocation = '''
+    return js2py
+
+
+@lru_cache(maxsize=256)
+def _compiled_javascript(source, names):
+    program = '''
 if (!String.prototype.includes) String.prototype.includes = function(search, start) {
     if (search instanceof RegExp) throw new TypeError('RegExp is not a string');
     return this.indexOf(String(search), start || 0) !== -1;
@@ -464,8 +487,53 @@ if (!Array.prototype.flat) Array.prototype.flat = function(depth) {
     append(this, depth);
     return result;
 };
-''' + invocation
-        return _to_python(js2py.eval_js(invocation))
+''' + ("function __swirl_expression(" + ",".join(names) + ") {\n" + source + "\n}")
+    return compile(_javascript_module().translate_js(program, ""), "<SWIRL JavaScript>", "exec")
+
+
+def _javascript_value(value, js2py):
+    # Js2Py maps Python None to undefined, rather than JSON null.
+    if value is None:
+        return js2py.base.null
+    if isinstance(value, str) and any(ord(character) > 0xffff for character in value):
+        encoded = value.encode("utf-16-le", "surrogatepass")
+        value = "".join(chr(int.from_bytes(encoded[index:index + 2], "little")) for index in range(0, len(encoded), 2))
+    elif isinstance(value, dict):
+        value = {_javascript_value(key, js2py).to_python(): _javascript_value(item, js2py)
+                 for key, item in value.items()}
+    elif isinstance(value, list):
+        value = [_javascript_value(item, js2py) for item in value]
+    return js2py.base.Js(value)
+
+
+def _run_javascript_expression(source: str, bindings: MutableMapping[str, Any]) -> Any:
+    names = tuple(bindings)
+    if any(not re.fullmatch(r"[A-Za-z_$][\w$]*", name) for name in names):
+        raise ValueError("Invalid JavaScript binding name")
+    reference = _javascript_reference(source)
+    if reference and reference[0] in bindings:
+        value = bindings[reference[0]]
+        for key in reference[1]:
+            if isinstance(value, dict) and isinstance(key, str) and key in value:
+                value = value[key]
+            elif isinstance(value, list) and type(key) is int and key < len(value):
+                value = value[key]
+            elif isinstance(value, list) and key == "length":
+                value = len(value)
+            else:
+                break
+        else:
+            # Keep expression results independent of their input objects.
+            return json.loads(json.dumps(value)) if isinstance(value, (dict, list, tuple)) else value
+    # Translation shares mutable state; each evaluation still gets a fresh scope.
+    with _javascript_lock:
+        js2py = _javascript_module()
+        js2py.disable_pyimport()
+        compiled = _compiled_javascript(source, names)
+        context = js2py.EvalJs()
+        exec(compiled, context._context)
+        values = json.loads(json.dumps([bindings[name] for name in names]))
+        return _to_python(context.__swirl_expression(*[_javascript_value(value, js2py) for value in values]))
 
 
 def _coerce_expression_output(value: Any, data_type: str) -> Any:
@@ -1101,10 +1169,26 @@ def _execute_command(tool, descriptor, bound):
     """Execute a bound command with explicit expression and output descriptors."""
     workdir = os.path.join(SCRATCH_DIR, f"exec_{tool}_{uuid.uuid4()}")
     os.makedirs(workdir, exist_ok=True)
-    bound = {port: _stage_value(value, workdir, allow_collisions=True) for port, value in bound.items()}
+    bound = dict(bound)
+    if "inputSchemas" not in descriptor:
+        bound = {port: _stage_value(value, workdir, allow_collisions=True) for port, value in bound.items()}
     bindings = _resolve_bindings(descriptor.get("bindings", {}), bound, input_types=descriptor.get("inputs", {}))
     bindings["runtime"] = {"outdir": workdir, "tmpdir": workdir}
-    bindings["inputs"] = _stage_value(bindings.get("inputs", {}), workdir, allow_collisions=True)
+    named = bindings.get("inputs", {})
+    if "inputSchemas" in descriptor:
+        named = {name: value for name, value in named.items() if name in descriptor["inputSchemas"]}
+    bindings["inputs"] = _stage_value(named, workdir, allow_collisions=True)
+    # Rebind command ports to staged tool inputs, leaving step-only expression inputs unstaged.
+    sources = METADATA["steps"][tool].get("bindings", {}).get("inputs", {})
+    if "object" in sources:
+        for name, spec in sources["object"].items():
+            if name in bindings["inputs"] and "port" in spec:
+                if "field" in spec:
+                    bound[spec["port"]] = {**bound[spec["port"]], spec["field"]: bindings["inputs"][name]}
+                else:
+                    bound[spec["port"]] = bindings["inputs"][name]
+    elif "port" in sources:
+        bound[sources["port"]] = bindings["inputs"]
     for entry in descriptor.get("staging", []):
         value = _evaluate_value(entry["entry"], bindings, bound, input_types=descriptor.get("inputs", {}))
         name = entry.get("name")
@@ -1118,11 +1202,11 @@ def _execute_command(tool, descriptor, bound):
                 with open(destination, "x", encoding="utf-8") as stream:
                     stream.write(value)
             elif isinstance(value, dict):
-                _stage_value({**value, "basename": name}, workdir)
+                _stage_value({**value, "basename": name}, workdir, writable=entry.get("writable", False))
             else:
                 raise TypeError("Named staging entry must be text or a File/Directory")
         else:
-            _stage_value(_prepare_value(value), workdir)
+            _stage_value(_prepare_value(value), workdir, writable=entry.get("writable", False))
     def scalar(value):
         if isinstance(value, dict):
             if value.get("class") in ("File", "Directory"):
@@ -1135,6 +1219,8 @@ def _execute_command(tool, descriptor, bound):
             value = _evaluate_value(arg["expression"], bindings, bound, input_types=descriptor.get("inputs", {}))
         elif "valueFrom" in arg:
             value = bound[arg["valueFrom"]]
+        elif "input" in arg:
+            value = bindings["inputs"][arg["input"]]
         else:
             value = arg["value"]
         if value is None or value is False:
@@ -1175,7 +1261,7 @@ def _execute_command(tool, descriptor, bound):
         def _collect_paths(val):
             if isinstance(val, dict):
                 if val.get("class") in ("File", "Directory") and "path" in val:
-                    p = os.path.abspath(val["path"])
+                    p = os.path.realpath(val["path"])
                     parent = os.path.dirname(p) if val.get("class") == "File" else p
                     if parent and not any(os.path.commonpath([m, parent]) == m for m in mounted_dirs):
                         mounted_dirs.add(parent)
@@ -1187,6 +1273,7 @@ def _execute_command(tool, descriptor, bound):
                     _collect_paths(sub)
         for b_val in bound.values():
             _collect_paths(b_val)
+        _collect_paths(bindings["inputs"])
 
         # Detect container runner: check override, then docker, then apptainer/singularity
         configured_engine = os.environ.get("SWIRLC_CONTAINER_ENGINE")

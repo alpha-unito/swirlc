@@ -40,6 +40,55 @@ def offer():
             'type': 'int', 'control': None}
 
 
+def test_unrelated_port_waiters_are_not_woken_and_failure_wakes_everyone(runtime_factory):
+    runtime = runtime_factory()
+    pattern = envelope(term('variable', 'value'), ROOT)
+    waiting = {port: threading.Event() for port in ('p', 'q')}
+    retried_q = threading.Event()
+    original = runtime.try_receive
+    calls = {'p': 0, 'q': 0}
+    def receive(env, port, term, src):
+        calls[port] += 1
+        if port == 'q' and calls[port] > 1:
+            retried_q.set()
+        result = original(env, port, term, src)
+        waiting[port].set()
+        return result
+    runtime.try_receive = receive
+    with ThreadPoolExecutor(max_workers=3) as pool:
+        first = pool.submit(runtime.recv, {}, 'p', pattern, 'local')
+        other = pool.submit(runtime.recv, {}, 'q', pattern, 'local')
+        try:
+            assert all(event.wait(2) for event in waiting.values())
+            sent = pool.submit(runtime._send_header, 'local', offer(), 7)
+            first.result(timeout=2)
+            sent.result(timeout=2)
+            assert not retried_q.wait(.05)
+        finally:
+            runtime.fail(RuntimeError('stop test'), broadcast=False)
+        with pytest.raises(RuntimeError, match='stop test'):
+            other.result(timeout=2)
+    assert not runtime._waiters
+
+
+def test_indexed_values_preserve_duplicates_and_move_consumption(runtime_factory):
+    runtime = runtime_factory()
+    runtime.values = [
+        {'port': 'unrelated', 'id': (i,), 'payload': i, 'type': 'int'} for i in range(1000)
+    ] + [
+        {'port': 'p', 'id': (), 'payload': value, 'type': 'int'} for value in (7, 8)
+    ]
+    pattern = envelope(term('variable', 'value'), ROOT)
+    for expected in (7, 8):
+        env = {}
+        assert runtime.try_move(env, 'p', pattern)
+        assert env['value'] == expected
+    assert not runtime.try_send({}, 'p', pattern)
+    assert len(runtime.values) == 1000
+    runtime.values.clear()
+    assert not runtime.values.by_port and not runtime.values.by_key
+
+
 def test_transfer_limit_defaults_to_sixty_four(runtime_factory, monkeypatch):
     monkeypatch.delenv('SWIRLC_TRANSFER_LIMIT', raising=False)
     assert runtime_factory().transfer_limit == 64

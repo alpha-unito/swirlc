@@ -269,6 +269,9 @@
               "valueFrom": {
                 "type": "string"
               },
+              "input": {
+                "type": "string"
+              },
               "expression": {
                 "$ref": "#/$defs/evaluation"
               },
@@ -297,6 +300,11 @@
               {
                 "required": [
                   "valueFrom"
+                ]
+              },
+              {
+                "required": [
+                  "input"
                 ]
               },
               {
@@ -579,6 +587,9 @@
             "type": "object",
             "properties": {
               "entry": {},
+              "writable": {
+                "type": "boolean"
+              },
               "name": {
                 "oneOf": [
                   {

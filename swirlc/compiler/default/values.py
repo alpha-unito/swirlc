@@ -20,12 +20,13 @@ def _value_walk(value, visit, include_secondaries=True):
     return value
 
 
-def _entry_path(root, name):
+def _entry_path(root, name, allow_symlink=False):
     if not isinstance(name, str) or not name or os.path.isabs(name):
         raise ValueError("Invalid staging entry name: %r" % (name,))
     path = os.path.abspath(os.path.join(root, name))
+    checked = os.path.dirname(path) if allow_symlink else path
     if (os.path.commonpath([os.path.abspath(root), path]) != os.path.abspath(root)
-            or os.path.commonpath([os.path.realpath(root), os.path.realpath(path)]) != os.path.realpath(root)):
+            or os.path.commonpath([os.path.realpath(root), os.path.realpath(checked)]) != os.path.realpath(root)):
         raise ValueError("Staging entry escapes work directory: " + name)
     return path
 
@@ -145,9 +146,10 @@ def _prepare_value(value, schema=None, base_dir=None):
 
 _STAGED_VALUES = {}
 _STAGED_RELOCATIONS = {}
+_STAGED_WRITABLE = set()
 
 
-def _stage_value(value, workdir, allow_collisions=False):
+def _stage_value(value, workdir, allow_collisions=False, writable=False):
     occupied = _STAGED_VALUES.setdefault(os.path.abspath(workdir), {})
     relocated = _STAGED_RELOCATIONS.setdefault(os.path.abspath(workdir), {})
     def stage(item, root):
@@ -157,8 +159,10 @@ def _stage_value(value, workdir, allow_collisions=False):
             return item
         if item.get("class") not in ("File", "Directory"):
             return {key: stage(child, root) for key, child in item.items()}
-        source = item["path"]
-        target = _entry_path(root, item.get("basename", os.path.basename(source)))
+        source = os.path.abspath(item["path"])
+        name = item.get("basename", os.path.basename(source))
+        proposed = os.path.abspath(os.path.join(root, name))
+        target = _entry_path(root, name, allow_symlink=proposed in occupied)
         original_target = target
         if allow_collisions:
             target = relocated.get((source, target), target)
@@ -166,7 +170,9 @@ def _stage_value(value, workdir, allow_collisions=False):
         conflict = (previous is not None and previous != source) or (os.path.lexists(target) and previous is None)
         if allow_collisions and item["class"] == "File":
             for companion in item.get("secondaryFiles", []):
-                companion_target = _entry_path(os.path.dirname(target), companion["basename"])
+                companion_path = os.path.join(os.path.dirname(target), companion["basename"])
+                companion_target = _entry_path(os.path.dirname(target), companion["basename"],
+                                              allow_symlink=companion_path in occupied)
                 companion_source = companion["path"]
                 existing = occupied.get(companion_target)
                 if ((existing is not None and existing != companion_source)
@@ -178,17 +184,55 @@ def _stage_value(value, workdir, allow_collisions=False):
             root = tempfile.mkdtemp(prefix="input_", dir=root)
             target = _entry_path(root, item.get("basename", os.path.basename(source)))
             relocated[(source, original_target)] = target
-        occupied.setdefault(target, source)
+        # A named writable entry may upgrade an automatically staged read-only link.
+        if source == target and target in occupied:
+            if not os.path.islink(target) and (not writable or target in _STAGED_WRITABLE):
+                return _file_identity(item, target)
+            source = occupied[target]
+            if os.path.islink(target) and item["class"] == "Directory":
+                item = _relocate_value(item, target, source)
+        previous = occupied.get(target)
         os.makedirs(os.path.dirname(target), exist_ok=True)
         result = dict(item)
         if item["class"] == "Directory":
-            os.makedirs(target, exist_ok=True)
-            result["listing"] = [stage(child, target) for child in item.get("listing", [])]
-        elif os.path.abspath(source) != target:
-            shutil.copy2(source, target)
+            listing = item.get("listing", [])
+            # Literal directories can describe children outside their physical directory.
+            physical = all(isinstance(child, dict)
+                           and os.path.abspath(child["path"]) == os.path.join(source, child["basename"])
+                           for child in listing)
+            if physical and source != target:
+                if writable and (previous is None or target not in _STAGED_WRITABLE):
+                    if os.path.islink(target):
+                        os.unlink(target)
+                    shutil.copytree(source, target, dirs_exist_ok=True)
+                elif not os.path.lexists(target):
+                    os.symlink(source, target, target_is_directory=True)
+                result["listing"] = [_relocate_value(child, source, target) for child in listing]
+            else:
+                os.makedirs(target, exist_ok=True)
+                result["listing"] = [stage(child, target) for child in listing]
+        elif source != target and (previous is None or writable and target not in _STAGED_WRITABLE):
+            if writable:
+                if os.path.islink(target):
+                    os.unlink(target)
+                shutil.copy2(source, target)
+            else:
+                os.symlink(source, target)
+        occupied.setdefault(target, source)
+        if writable:
+            _STAGED_WRITABLE.add(target)
         result["secondaryFiles"] = [stage(child, os.path.dirname(target)) for child in item.get("secondaryFiles", [])]
         return _file_identity(result, target)
     return stage(value, workdir)
+
+
+def _relocate_value(value, source, target):
+    def relocate(item):
+        path = item["path"]
+        if os.path.commonpath([source, path]) == source:
+            return _file_identity(item, os.path.join(target, os.path.relpath(path, source)))
+        return item
+    return _value_walk(value, relocate)
 
 
 def _load_contents(value):

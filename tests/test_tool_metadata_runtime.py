@@ -23,22 +23,22 @@ def test_javascript_engine_is_serialized_across_parallel_tasks(tool_runtime, mon
         import js2py
     except ImportError:
         import js2py_ as js2py
-    original = js2py.eval_js
+    original = js2py.translate_js
     active = maximum = 0
     lock = threading.Lock()
     barrier = threading.Barrier(8)
-    def evaluate(source):
+    def evaluate(source, *args, **kwargs):
         nonlocal active, maximum
         with lock:
             active += 1
             maximum = max(maximum, active)
         try:
             time.sleep(.005)
-            return original(source)
+            return original(source, *args, **kwargs)
         finally:
             with lock:
                 active -= 1
-    monkeypatch.setattr(js2py, "eval_js", evaluate)
+    monkeypatch.setattr(js2py, "translate_js", evaluate)
     def task(index):
         barrier.wait(timeout=5)
         return tool_runtime["_run_javascript_expression"](
@@ -48,6 +48,151 @@ def test_javascript_engine_is_serialized_across_parallel_tasks(tool_runtime, mon
         results = list(executor.map(task, range(8)))
     assert results == [{"label": f"AFR{i}", "values": [i, i]} for i in range(8)]
     assert maximum == 1
+    assert tool_runtime["_compiled_javascript"].cache_info().misses == 1
+
+
+def test_simple_references_do_not_enter_javascript(tool_runtime):
+    def unexpected():
+        raise AssertionError("A reference should not need Js2Py")
+    tool_runtime["_javascript_module"] = unexpected
+    evaluate = tool_runtime["_run_javascript_expression"]
+    inputs = {"file": {"basename": "image.fits"}, "values": [False, None, 0]}
+    for source, expected in [
+        ('return (inputs.file.basename);', 'image.fits'),
+        ('return inputs["values"][0];', False),
+        ('return inputs.values[1];', None),
+        ('return inputs.values.length;', 3),
+    ]:
+        assert evaluate(source, {"inputs": inputs}) == expected
+    result = evaluate("return inputs;", {"inputs": inputs})
+    result["file"]["basename"] = "changed"
+    assert inputs["file"]["basename"] == "image.fits"
+
+
+def test_cached_javascript_uses_fresh_data_and_global_scope(tool_runtime):
+    evaluate = tool_runtime["_run_javascript_expression"]
+    source = "if (typeof remembered === 'undefined') remembered = inputs.value; return [remembered, inputs.empty === null];"
+    for value in [1, 2, "quote'\\\n", False]:
+        assert evaluate(source, {"inputs": {"value": value, "empty": None}}) == [value, True]
+    assert tool_runtime["_compiled_javascript"].cache_info().misses == 1
+    assert evaluate("return inputs.value.length + 0;", {"inputs": {"value": "\U0001f600"}}) == 2
+
+
+def test_reference_fast_path_falls_back_for_javascript_string_escapes(tool_runtime):
+    evaluate = tool_runtime["_run_javascript_expression"]
+    assert evaluate(r'return inputs["\x61"];', {"inputs": {"a": 7}}) == 7
+    assert evaluate('return inputs[01];', {"inputs": [7, 8]}) == 8
+
+
+@pytest.mark.parametrize("directory", [False, True])
+@pytest.mark.parametrize("writable", [False, True])
+def test_local_staging_links_readonly_and_copies_writable(tool_runtime, tmp_path, directory, writable):
+    source = tmp_path / "source"
+    if directory:
+        source.mkdir()
+        (source / "data.txt").write_text("original")
+    else:
+        source.write_text("original")
+    value = tool_runtime["_prepare_value"]({"class": "Directory" if directory else "File", "path": str(source)})
+    workdir = tmp_path / "work"
+    workdir.mkdir()
+    stage = tool_runtime["_stage_value"]
+    staged = stage(value, str(workdir), writable=writable)
+    target = Path(staged["path"])
+    assert target.is_symlink() is not writable
+    assert stage(value, str(workdir), writable=writable) == staged
+    assert stage(staged, str(workdir), writable=writable) == staged
+    if writable:
+        output = target / "data.txt" if directory else target
+        output.write_text("changed")
+        stage(value, str(workdir), writable=True)
+        assert output.read_text() == "changed"
+        assert (source / "data.txt" if directory else source).read_text() == "original"
+
+
+@pytest.mark.parametrize("directory", [False, True])
+def test_writable_entry_upgrades_staged_link_without_modifying_source(tool_runtime, tmp_path, directory):
+    source = tmp_path / "source"
+    if directory:
+        source.mkdir()
+        (source / "data.txt").write_text("original")
+    else:
+        source.write_text("original")
+    value = tool_runtime["_prepare_value"]({"class": "Directory" if directory else "File", "path": str(source)})
+    workdir = tmp_path / "work"
+    workdir.mkdir()
+    stage = tool_runtime["_stage_value"]
+    readonly = stage(value, str(workdir))
+    writable = stage(readonly, str(workdir), writable=True)
+    target = Path(writable["path"])
+    assert not target.is_symlink()
+    output = target / "data.txt" if directory else target
+    output.write_text("changed")
+    assert (source / "data.txt" if directory else source).read_text() == "original"
+
+
+def test_synthetic_directory_can_contain_optional_outputs(tool_runtime, tmp_path):
+    value = tool_runtime["_prepare_value"]({"class": "Directory", "basename": "data", "listing": [
+        None, {"class": "File", "basename": "status.txt", "contents": "status"}]})
+    staged = tool_runtime["_stage_value"](value, str(tmp_path / "work"))
+    assert (Path(staged["path"]) / "status.txt").read_text() == "status"
+
+
+def test_staging_rejects_unregistered_symlinks_outside_workdir(tool_runtime, tmp_path):
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    source = tmp_path / "source.txt"
+    source.write_text("source")
+    workdir = tmp_path / "work"
+    workdir.mkdir()
+    (workdir / "escape").symlink_to(outside, target_is_directory=True)
+    value = tool_runtime["_prepare_value"]({"class": "File", "path": str(source), "basename": "escape/file.txt"})
+    with pytest.raises(ValueError, match="escapes"):
+        tool_runtime["_stage_value"](value, str(workdir))
+    assert not (outside / "file.txt").exists()
+
+
+def test_command_does_not_stage_inputs_used_only_by_step_expressions(tool_runtime, tmp_path, monkeypatch):
+    source = tmp_path / "large.fits"
+    source.write_text("contents must not be copied")
+    step = descriptor([{"input": "name"}], command="printf", inputs={"image": "p_image"}, input_types={"image": "file"})
+    step["inputSchemas"] = {"name": {"type": "string"}}
+    step["inputTransforms"] = {"name": {"evaluate": expression("return inputs.image.basename;")}}
+    def unexpected(*args, **kwargs):
+        raise AssertionError("Expression-only files must not be staged")
+    monkeypatch.setattr(tool_runtime["shutil"], "copy2", unexpected)
+    monkeypatch.setattr(tool_runtime["os"], "symlink", unexpected)
+    assert execute(tool_runtime, step, {"p_image": str(source)}) == "large.fits"
+
+
+def test_writable_initial_workdir_entry_is_an_independent_copy(tool_runtime, tmp_path):
+    source = tmp_path / "source.txt"
+    source.write_text("original")
+    step = descriptor([{"value": "-c"}, {"value": "printf changed > source.txt; cat source.txt"}],
+                      command="/bin/sh", inputs={"source": "p_source"}, input_types={"source": "file"})
+    step["inputSchemas"] = {"source": {"type": "file"}}
+    step["staging"] = [{"entry": expression("return inputs.source;"), "writable": True}]
+    assert execute(tool_runtime, step, {"p_source": str(source)}) == "changed"
+    assert source.read_text() == "original"
+
+
+def test_container_mounts_include_readonly_symlink_sources(tool_runtime, tmp_path, monkeypatch):
+    source_dir = tmp_path / "external"
+    source_dir.mkdir()
+    source = source_dir / "source.txt"
+    source.write_text("original")
+    step = descriptor([{"valueFrom": "p_source"}], command="cat",
+                      inputs={"source": "p_source"}, input_types={"source": "file"})
+    step["inputSchemas"] = {"source": {"type": "file"}}
+    step["container"] = {"type": "docker", "image": "test-image"}
+    monkeypatch.setenv("SWIRLC_CONTAINER_ENGINE", "docker")
+    def run(command, cwd=None):
+        assert f"{source_dir}:{source_dir}:ro" in shlex.split(command)
+        assert (Path(cwd) / "source.txt").is_symlink()
+        (Path(cwd) / "result.txt").write_text("original")
+        return __import__('subprocess').CompletedProcess(command, 0, b'', b'')
+    tool_runtime["_run_command"] = run
+    assert execute(tool_runtime, step, {"p_source": str(source)}) == "original"
 
 
 @pytest.fixture

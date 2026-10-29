@@ -373,7 +373,7 @@ class CompileVisitor(SWIRLVisitor, ABC):
                 (
                     arg["value"]
                     if "value" in arg
-                    else (arg if "expression" in arg else self.workflow.ports[arg["valueFrom"]])
+                    else (arg if "expression" in arg or "input" in arg else self.workflow.ports[arg["valueFrom"]])
                 )
                 for arg in step_args
             ]

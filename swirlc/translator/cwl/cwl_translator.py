@@ -939,9 +939,9 @@ class CWLTranslator(AbstractTranslator):
         result = []
         for item in getattr(requirement, "listing", None) or []:
             if hasattr(item, "entry"):
-                if getattr(item, "writable", False):
-                    raise ValueError("Writable InitialWorkDir entries are unsupported")
                 descriptor = {"entry": _lower_value(item.entry)}
+                if getattr(item, "writable", False):
+                    descriptor["writable"] = True
                 if getattr(item, "entryname", None) is not None:
                     descriptor["name"] = _lower_value(item.entryname)
             else:
@@ -1447,7 +1447,7 @@ class CWLTranslator(AbstractTranslator):
                     {"expression": _lower_expression(transformation, {"self": argument_source})}
                     if isinstance(transformation, str) and ("$(" in transformation or "${" in transformation)
                     else {"value": transformation} if transformation is not None
-                    else {"expression": _lower_expression(f"$(inputs[{json.dumps(name)}])")}
+                    else {"input": name}
                     if prepared_port or invocation.transforms.get(name)
                     else literal if literal is not None
                     else {"valueFrom": port}

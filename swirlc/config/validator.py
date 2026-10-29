@@ -128,6 +128,8 @@ class SwirlValidator:
             names = set(step.get("bindings", {}).get("inputs", {}).get("object", {}))
             names.update(step.get("expression", {}).get("bindings", {}).get("inputs", {}).get("object", {}))
             names.update(step.get("inputSchemas", {}))
+            if any(argument["input"] not in names for argument in step.get("arguments", []) if "input" in argument):
+                raise ValueError(f"Step {name} argument references an unknown input name.")
             for field in ("inputOptions", "inputTransforms"):
                 if any(input_name not in names for input_name in step.get(field, {})):
                     raise ValueError(f"Step {name} {field} references an unknown input name.")
