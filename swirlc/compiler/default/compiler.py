@@ -34,13 +34,7 @@ python_header = f"""#!/usr/bin/env python
 # using command swirlc {" ".join(sys.argv[1:])}
 """
 
-javascript_requirements = """\
-Js2Py==0.74; python_version < "3.11"
-Js2Py-3.14==0.74.2; python_version >= "3.11"
-pyjsparser==2.7.1
-six==1.17.0
-tzlocal==5.4.4
-"""
+javascript_requirements = "quickjs-ng==0.17.0.2\n"
 
 
 def _build_dependency_archive(root_distributions: tuple[str, ...]) -> tuple[str, str]:
@@ -75,7 +69,7 @@ def _build_dependency_archive(root_distributions: tuple[str, ...]) -> tuple[str,
                 continue
             source = Path(distribution.locate_file(entry))
             if source.is_file() and "__pycache__" not in relative.parts:
-                if source.suffix.lower() in {".so", ".pyd", ".dylib"}:
+                if source.suffix.lower() in {".so", ".pyd", ".dylib"} and canonical_name != "quickjs-ng":
                     raise RuntimeError(
                         f"Cannot portably bundle {requested_name!r}: {relative} is "
                         "a compiled native extension. Use deployment-time "
@@ -122,7 +116,22 @@ def _activate_bundled_dependencies():
         temporary_path = archive_path.with_suffix(f".{{os.getpid()}}.tmp")
         temporary_path.write_bytes(archive_bytes)
         os.replace(temporary_path, archive_path)
-    sys.path.insert(0, str(archive_path))
+    import zipfile
+    with zipfile.ZipFile(archive_path) as archive:
+        if any(Path(name).suffix.lower() in {{".so", ".pyd", ".dylib"}} for name in archive.namelist()):
+            import tempfile
+            directory = archive_path.with_suffix(".d")
+            if not directory.is_dir():
+                with tempfile.TemporaryDirectory(prefix=directory.name + ".", dir=directory.parent) as temporary:
+                    archive.extractall(temporary)
+                    try:
+                        os.rename(temporary, directory)
+                    except OSError:
+                        if not directory.is_dir():
+                            raise
+            sys.path.insert(0, str(directory))
+        else:
+            sys.path.insert(0, str(archive_path))
 
 
 _activate_bundled_dependencies()
@@ -418,20 +427,6 @@ def _expression_value(value: Any, data_type: str) -> Any:
     }
 
 
-def _to_python(value: Any) -> Any:
-    if getattr(getattr(value, "_obj", None), "Class", None) == "Array":
-        value = value.to_list()
-    elif hasattr(value, "to_dict"):
-        value = value.to_dict()
-    elif hasattr(value, "to_list"):
-        value = value.to_list()
-    if isinstance(value, dict):
-        return {str(key): _to_python(item) for key, item in value.items()}
-    if isinstance(value, (list, tuple)):
-        return [_to_python(item) for item in value]
-    return value
-
-
 @lru_cache(maxsize=256)
 def _javascript_reference(source):
     match = re.fullmatch(r"\s*return\s+(.+?);\s*", source, re.DOTALL)
@@ -456,54 +451,61 @@ def _javascript_reference(source):
     return root[0], tuple(keys)
 
 
-def _javascript_module():
-    try:
-        import js2py
-    except ImportError:
-        # Python 3.14 distribution retains the same API under a separate name.
-        import js2py_ as js2py
-    return js2py
-
-
-@lru_cache(maxsize=256)
-def _compiled_javascript(source, names):
-    program = '''
-if (!String.prototype.includes) String.prototype.includes = function(search, start) {
-    if (search instanceof RegExp) throw new TypeError('RegExp is not a string');
-    return this.indexOf(String(search), start || 0) !== -1;
-};
-if (!Number.isInteger) Number.isInteger = function(value) {
-    return typeof value === 'number' && isFinite(value) && Math.floor(value) === value;
-};
-if (!Array.prototype.flat) Array.prototype.flat = function(depth) {
-    depth = depth === undefined ? 1 : Math.max(0, Math.floor(Number(depth) || 0));
-    var result = [];
-    function append(array, remaining) {
-        for (var i = 0; i < array.length; i++) if (i in array) {
-            if (Array.isArray(array[i]) && remaining > 0) append(array[i], remaining - 1);
-            else result.push(array[i]);
+_QUICKJS_DISPATCHER = r'''
+var __swirl_evaluate = (function() {
+    "use strict";
+    const cache = new Map();
+    const compile = Function;
+    const keys = Object.keys;
+    const stringify = JSON.stringify;
+    const freeze = Object.freeze;
+    function evaluate(source, bindings) {
+        const names = keys(bindings);
+        const key = stringify([source, names]);
+        let fn = cache.get(key);
+        if (!fn) {
+            fn = compile(...names, '"use strict";\n' + source);
+            if (cache.size >= 256) cache.delete(cache.keys().next().value);
+            cache.set(key, fn);
         }
+        return stringify(fn(...names.map(name => bindings[name])));
     }
-    append(this, depth);
-    return result;
-};
-''' + ("function __swirl_expression(" + ",".join(names) + ") {\n" + source + "\n}")
-    return compile(_javascript_module().translate_js(program, ""), "<SWIRL JavaScript>", "exec")
+    // Expressions share an engine, but cannot mutate its globals or built-ins.
+    function freezeGraph(value, seen) {
+        if (value === null || (typeof value !== "object" && typeof value !== "function") || seen.has(value)) return;
+        seen.add(value);
+        for (const key of Reflect.ownKeys(value)) {
+            const descriptor = Object.getOwnPropertyDescriptor(value, key);
+            freezeGraph(descriptor.value, seen);
+            freezeGraph(descriptor.get, seen);
+            freezeGraph(descriptor.set, seen);
+        }
+        freezeGraph(Object.getPrototypeOf(value), seen);
+        freeze(value);
+    }
+    // Freeze after the dispatcher is installed on the global object.
+    return {evaluate, freezeGraph};
+})();
+var __swirl_freeze = __swirl_evaluate.freezeGraph;
+__swirl_evaluate = __swirl_evaluate.evaluate;
+for (const value of [[][Symbol.iterator](), ""[Symbol.iterator](), new Map().entries(),
+                     new Set().values(), function*() {}, (function*() {})(),
+                     async function() {}, (async function*() {})()]) {
+    __swirl_freeze(Object.getPrototypeOf(value), new Set());
+}
+__swirl_freeze(globalThis, new Set());
+'''
+
+_javascript_dispatcher = None
 
 
-def _javascript_value(value, js2py):
-    # Js2Py maps Python None to undefined, rather than JSON null.
-    if value is None:
-        return js2py.base.null
-    if isinstance(value, str) and any(ord(character) > 0xffff for character in value):
-        encoded = value.encode("utf-16-le", "surrogatepass")
-        value = "".join(chr(int.from_bytes(encoded[index:index + 2], "little")) for index in range(0, len(encoded), 2))
-    elif isinstance(value, dict):
-        value = {_javascript_value(key, js2py).to_python(): _javascript_value(item, js2py)
-                 for key, item in value.items()}
-    elif isinstance(value, list):
-        value = [_javascript_value(item, js2py) for item in value]
-    return js2py.base.Js(value)
+def _get_javascript_dispatcher():
+    global _javascript_dispatcher
+    with _javascript_lock:
+        if _javascript_dispatcher is None:
+            import quickjs
+            _javascript_dispatcher = quickjs.Function("__swirl_evaluate", _QUICKJS_DISPATCHER)
+        return _javascript_dispatcher
 
 
 def _run_javascript_expression(source: str, bindings: MutableMapping[str, Any]) -> Any:
@@ -525,15 +527,10 @@ def _run_javascript_expression(source: str, bindings: MutableMapping[str, Any]) 
         else:
             # Keep expression results independent of their input objects.
             return json.loads(json.dumps(value)) if isinstance(value, (dict, list, tuple)) else value
-    # Translation shares mutable state; each evaluation still gets a fresh scope.
-    with _javascript_lock:
-        js2py = _javascript_module()
-        js2py.disable_pyimport()
-        compiled = _compiled_javascript(source, names)
-        context = js2py.EvalJs()
-        exec(compiled, context._context)
-        values = json.loads(json.dumps([bindings[name] for name in names]))
-        return _to_python(context.__swirl_expression(*[_javascript_value(value, js2py) for value in values]))
+    # Function owns one context and dispatches every call to the same worker thread.
+    result = _get_javascript_dispatcher()(source, bindings, run_gc=False)
+    return json.loads(result) if result is not None else None
+
 
 
 def _coerce_expression_output(value: Any, data_type: str) -> Any:
@@ -1451,7 +1448,7 @@ class DefaultTarget(StructuredCompiler):
             (step.expression is not None or _contains_expression(step.metadata))
             for step in self.current_workflow.get_location_steps(location)
         ):
-            roots.append("Js2Py-3.14")
+            roots.append("quickjs-ng")
         return tuple(sorted(set(roots), key=canonicalize_name))
 
     def _dependency_archive_for_location(
@@ -1810,7 +1807,8 @@ echo "Workflow execution terminated"
 
 SCOPED_MAIN = r"""
 ACTIVE_RUNTIME = None
-COMMAND_SLOTS = BoundedSemaphore(int(os.environ.get("SWIRLC_COMMAND_SLOTS", max(1, (os.cpu_count() or 4) * 2))))
+COMMAND_SLOTS = (BoundedSemaphore(int(os.environ.get("SWIRLC_COMMAND_SLOTS", max(1, (os.cpu_count() or 4) * 2))))
+                 if os.environ.get("SWIRLC_COMMAND_SLOTS") != "0" else __import__("contextlib").nullcontext())
 
 
 def _run_command(command, cwd=None):
@@ -2034,6 +2032,7 @@ class _PythonEmitter:
 
     def __init__(self):
         self.lines = []
+        self.functions = []
         self.counter = 0
 
     def _write(self, depth, text=""):
@@ -2091,6 +2090,9 @@ class _PythonEmitter:
         return "True"
 
     def _selector(self, alternatives, depth):
+        parent_lines = self.lines
+        self.lines = []
+        depth = 1
         name = self._name("select")
         self._write(depth, f"def {name}(env):")
         has_named = any("id" in guard for _nodes, conditions in alternatives for guard, _expected in conditions)
@@ -2115,6 +2117,8 @@ class _PythonEmitter:
             self._write(depth + 1, f"if {condition}:")
             self._write(depth + 2, f"return {index}")
         self._write(depth + 1, "return None")
+        self.functions.extend(self.lines)
+        self.lines = parent_lines
         return name
 
     @staticmethod
@@ -2143,8 +2147,12 @@ class _PythonEmitter:
             branches = []
             for branch in node.children.values():
                 name = self._name("parallel_branch")
-                self._write(depth, f"def {name}(env, owner):")
-                self._emit(branch, depth + 1)
+                parent_lines = self.lines
+                self.lines = []
+                self._write(1, f"def {name}(env, owner):")
+                self._emit(branch, 2)
+                self.functions.extend(self.lines)
+                self.lines = parent_lines
                 branches.append(name)
             self._write(depth, f"runtime.parallel(env, owner, {', '.join(branches)})")
         elif kind == "repl":
@@ -2155,8 +2163,12 @@ class _PythonEmitter:
             branches = []
             for nodes, _conditions in alternatives:
                 name = self._name("replica")
-                self._write(depth, f"def {name}(env, owner):")
-                self._emit_nodes(self._continuation(nodes), depth + 1)
+                parent_lines = self.lines
+                self.lines = []
+                self._write(1, f"def {name}(env, owner):")
+                self._emit_nodes(self._continuation(nodes), 2)
+                self.functions.extend(self.lines)
+                self.lines = parent_lines
                 branches.append(name)
             self._write(depth, "try:")
             self._write(depth + 1, f"while not {owner}['closed']:")
@@ -2205,4 +2217,6 @@ class _PythonEmitter:
         self._write(0, "")
         self._write(0, "def workflow(runtime, env, owner=None):")
         self._emit(root, 1)
-        return "\n".join(self.lines) + "\n"
+        # Helpers capture only runtime; keep them at one lexical depth so large
+        # traces cannot exceed Python's indentation limit.
+        return "\n".join(self.lines[:2] + self.functions + self.lines[2:]) + "\n"

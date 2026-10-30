@@ -49,8 +49,9 @@ compile_parser.add_argument(
 
     action="store_true",
     help=(
-        "Embed required pure-Python runtime dependencies in generated Python "
-        "traces so deployed locations do not need pip or network access"
+        "Embed runtime dependencies in generated Python traces so deployed "
+        "locations do not need pip or network access. QuickJS native bundles "
+        "require a compatible target platform"
     ),
 )
 compile_parser.add_argument(

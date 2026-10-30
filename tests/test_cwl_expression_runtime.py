@@ -118,8 +118,8 @@ def test_expression_tool_uses_self_bootstrapping_javascript_runtime(
     )
 
     trace = (tmp_path / "l0.py").read_text()
-    assert "import js2py_ as js2py" in trace
-    assert "compiled = _compiled_javascript(source, names)" in trace
+    assert "import quickjs" in trace
+    assert 'quickjs.Function("__swirl_evaluate", _QUICKJS_DISPATCHER)' in trace
     program = ast.parse(trace)
     metadata = ast.literal_eval(next(
         node.value for node in program.body if isinstance(node, ast.Assign)
@@ -135,11 +135,7 @@ def test_expression_tool_uses_self_bootstrapping_javascript_runtime(
     assert "def _expression_s0(inputs):" not in trace
 
     requirements = (tmp_path / "l0.requirements.txt").read_text()
-    assert 'Js2Py==0.74; python_version < "3.11"' in requirements
-    assert 'Js2Py-3.14==0.74.2; python_version >= "3.11"' in requirements
-    assert "pyjsparser==2.7.1" in requirements
-    assert "six==1.17.0" in requirements
-    assert "tzlocal==5.4.4" in requirements
+    assert requirements == "quickjs-ng==0.17.0.2\n"
 
     launcher = (tmp_path / "l0.launch.sh").read_text()
     assert 'python" -m pip install' in launcher
@@ -234,7 +230,7 @@ def test_compile_can_embed_runtime_dependencies(tmp_path: Path) -> None:
     trace = (bundled / "l0.py").read_text()
     assert "_BUNDLED_DEPENDENCIES_B85" in trace
     assert "_activate_bundled_dependencies()" in trace
-    assert "compiled = _compiled_javascript(source, names)" in trace
+    assert 'quickjs.Function("__swirl_evaluate", _QUICKJS_DISPATCHER)' in trace
     assert (bundled / "l0.requirements.txt").read_text() == ""
 
     launcher = (bundled / "l0.launch.sh").read_text()
@@ -242,14 +238,11 @@ def test_compile_can_embed_runtime_dependencies(tmp_path: Path) -> None:
 
 
 def test_dependency_archive_includes_transitive_pure_python_packages() -> None:
-    payload, _digest = _build_dependency_archive(("Js2Py-3.14",))
+    payload, _digest = _build_dependency_archive(("pytest",))
     with zipfile.ZipFile(io.BytesIO(base64.b85decode(payload))) as archive:
         names = set(archive.namelist())
-
-    assert any(name.startswith("js2py_/") for name in names)
-    assert any(name.startswith("pyjsparser/") for name in names)
-    assert "six.py" in names
-    assert any(name.startswith("tzlocal/") for name in names)
+    assert any(name.startswith("_pytest/") for name in names)
+    assert any(name.startswith("pluggy/") for name in names)
 
 
 def test_dependency_archive_rejects_native_extensions() -> None:
@@ -257,9 +250,13 @@ def test_dependency_archive_rejects_native_extensions() -> None:
         _build_dependency_archive(("rpds-py",))
 
 
-def test_bundled_dependency_bootstrap_concurrent_startup(tmp_path: Path) -> None:
+@pytest.mark.parametrize("native", [False, True])
+def test_bundled_dependency_bootstrap_concurrent_startup(tmp_path: Path, native: bool) -> None:
     archive_buffer = io.BytesIO()
-    with zipfile.ZipFile(archive_buffer, "w") as archive:
+    if native:
+        payload, _digest = _build_dependency_archive(("quickjs-ng",))
+        archive_buffer = io.BytesIO(base64.b85decode(payload))
+    with zipfile.ZipFile(archive_buffer, "a" if native else "w") as archive:
         archive.writestr("bootstrap_probe.py", "VALUE = 'available'\n")
     archive_bytes = archive_buffer.getvalue()
     digest = hashlib.sha256(archive_bytes).hexdigest()
@@ -286,8 +283,9 @@ Path.write_bytes = synchronized_write
 """
     scripts = [tmp_path / f"location_{index}.py" for index in range(2)]
     for script in scripts:
-        script.write_text(barrier + bootstrap + "\nfrom bootstrap_probe import VALUE\nassert VALUE == 'available'\n")
-    processes = [subprocess.Popen([sys.executable, str(script)],
+        script.write_text(barrier + bootstrap + "\nfrom bootstrap_probe import VALUE\nassert VALUE == 'available'\n"
+                          + ("import quickjs\nassert quickjs.Context().eval('21*2') == 42\n" if native else ""))
+    processes = [subprocess.Popen([sys.executable, "-S", str(script)],
                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
                  for script in scripts]
     try:

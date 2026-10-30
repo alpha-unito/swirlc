@@ -19,26 +19,18 @@ from tests.test_scoped_runtime import ROOT, envelope, term
 
 
 def test_javascript_engine_is_serialized_across_parallel_tasks(tool_runtime, monkeypatch):
-    try:
-        import js2py
-    except ImportError:
-        import js2py_ as js2py
-    original = js2py.translate_js
-    active = maximum = 0
-    lock = threading.Lock()
+    import quickjs
+    owners, callers = [], set()
+    original_compile, original_call = quickjs.Function._compile, quickjs.Function._call
+    def compile_context(self, *args, **kwargs):
+        owners.append(threading.get_ident())
+        return original_compile(self, *args, **kwargs)
+    def call(self, *args, **kwargs):
+        callers.add(threading.get_ident())
+        return original_call(self, *args, **kwargs)
+    monkeypatch.setattr(quickjs.Function, "_compile", compile_context)
+    monkeypatch.setattr(quickjs.Function, "_call", call)
     barrier = threading.Barrier(8)
-    def evaluate(source, *args, **kwargs):
-        nonlocal active, maximum
-        with lock:
-            active += 1
-            maximum = max(maximum, active)
-        try:
-            time.sleep(.005)
-            return original(source, *args, **kwargs)
-        finally:
-            with lock:
-                active -= 1
-    monkeypatch.setattr(js2py, "translate_js", evaluate)
     def task(index):
         barrier.wait(timeout=5)
         return tool_runtime["_run_javascript_expression"](
@@ -47,14 +39,14 @@ def test_javascript_engine_is_serialized_across_parallel_tasks(tool_runtime, mon
     with ThreadPoolExecutor(max_workers=8) as executor:
         results = list(executor.map(task, range(8)))
     assert results == [{"label": f"AFR{i}", "values": [i, i]} for i in range(8)]
-    assert maximum == 1
-    assert tool_runtime["_compiled_javascript"].cache_info().misses == 1
+    assert len(owners) == 1
+    assert callers == set(owners)
 
 
 def test_simple_references_do_not_enter_javascript(tool_runtime):
     def unexpected():
-        raise AssertionError("A reference should not need Js2Py")
-    tool_runtime["_javascript_module"] = unexpected
+        raise AssertionError("A reference should not need QuickJS")
+    tool_runtime["_get_javascript_dispatcher"] = unexpected
     evaluate = tool_runtime["_run_javascript_expression"]
     inputs = {"file": {"basename": "image.fits"}, "values": [False, None, 0]}
     for source, expected in [
@@ -69,19 +61,47 @@ def test_simple_references_do_not_enter_javascript(tool_runtime):
     assert inputs["file"]["basename"] == "image.fits"
 
 
-def test_cached_javascript_uses_fresh_data_and_global_scope(tool_runtime):
+def test_cached_javascript_uses_fresh_data_and_local_scope(tool_runtime):
     evaluate = tool_runtime["_run_javascript_expression"]
-    source = "if (typeof remembered === 'undefined') remembered = inputs.value; return [remembered, inputs.empty === null];"
+    source = "var remembered = inputs.value; return [remembered, inputs.empty === null];"
     for value in [1, 2, "quote'\\\n", False]:
         assert evaluate(source, {"inputs": {"value": value, "empty": None}}) == [value, True]
-    assert tool_runtime["_compiled_javascript"].cache_info().misses == 1
+    assert evaluate("return typeof remembered;", {}) == "undefined"
     assert evaluate("return inputs.value.length + 0;", {"inputs": {"value": "\U0001f600"}}) == 2
+
+
+@pytest.mark.parametrize("source", [
+    "leaked = 1; return null;",
+    "globalThis.leaked = 1; return null;",
+    "Object.prototype.leaked = 1; return null;",
+    "Array.prototype.leaked = 1; return null;",
+    "Object.getPrototypeOf([][Symbol.iterator]()).leaked = 1; return null;",
+    "Object.getPrototypeOf(function*() {}).leaked = 1; return null;",
+    "delete Array.prototype.map; return null;",
+])
+def test_shared_javascript_state_cannot_be_mutated(tool_runtime, source):
+    import quickjs
+    evaluate = tool_runtime["_run_javascript_expression"]
+    with pytest.raises(quickjs.JSException):
+        evaluate(source, {})
+    assert evaluate("return [typeof leaked, typeof Object.prototype.leaked, [1,2].map(x => x + 1)];", {}) == [
+        "undefined", "undefined", [2, 3]]
+
+
+def test_javascript_can_mutate_its_own_inputs_without_changing_other_calls(tool_runtime):
+    evaluate = tool_runtime["_run_javascript_expression"]
+    bindings = {"inputs": {"values": [1]}}
+    for _ in range(2):
+        assert evaluate("inputs.values.push(2); return inputs.values;", bindings) == [1, 2]
+    assert bindings == {"inputs": {"values": [1]}}
 
 
 def test_reference_fast_path_falls_back_for_javascript_string_escapes(tool_runtime):
     evaluate = tool_runtime["_run_javascript_expression"]
     assert evaluate(r'return inputs["\x61"];', {"inputs": {"a": 7}}) == 7
-    assert evaluate('return inputs[01];', {"inputs": [7, 8]}) == 8
+    import quickjs
+    with pytest.raises(quickjs.JSException, match="SyntaxError"):
+        evaluate('return inputs[01];', {"inputs": [7, 8]})
 
 
 @pytest.mark.parametrize("directory", [False, True])

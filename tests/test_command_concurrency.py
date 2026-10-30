@@ -22,7 +22,13 @@ class CommandConcurrencyTests(unittest.TestCase):
         return namespace
 
     def test_at_most_eight_commands_and_releases_slots(self):
-        with patch.dict(os.environ, {"SWIRLC_COMMAND_SLOTS": "8"}):
+        self.check_concurrency("8", 8)
+
+    def test_zero_allows_all_commands_without_waiting_for_slots(self):
+        self.check_concurrency("0", 24)
+
+    def check_concurrency(self, slots, expected_peak):
+        with patch.dict(os.environ, {"SWIRLC_COMMAND_SLOTS": slots}):
             namespace = self.runner()
         gate, full = threading.Event(), threading.Event()
         lock = threading.Lock()
@@ -37,7 +43,7 @@ class CommandConcurrencyTests(unittest.TestCase):
                     active += 1
                     calls += 1
                     peak = max(peak, active)
-                    if active == 8:
+                    if active == expected_peak:
                         full.set()
 
             def communicate(self, *args, **kwargs):
@@ -61,7 +67,7 @@ class CommandConcurrencyTests(unittest.TestCase):
                     worker.start()
                 self.assertTrue(full.wait(2))
                 with lock:
-                    self.assertEqual(calls, 8)
+                    self.assertEqual(calls, expected_peak)
             finally:
                 gate.set()
                 for worker in workers:
@@ -69,7 +75,7 @@ class CommandConcurrencyTests(unittest.TestCase):
             self.assertFalse(any(worker.is_alive() for worker in workers))
             self.assertEqual(errors, [])
             self.assertEqual(calls, 24)
-            self.assertEqual(peak, 8)
+            self.assertEqual(peak, expected_peak)
             self.assertEqual(active, 0)
 
     def test_failure_and_start_errors_release_slots(self):
