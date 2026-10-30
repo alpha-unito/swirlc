@@ -89,3 +89,132 @@ status=$?
 printf 'Workflow exit status: %s\n' "$status"
 ```
 
+
+
+## Prepared C3S configurations (swirlc)
+
+Use `streamflow-c3s-1.yml`, `streamflow-c3s-2.yml`,
+`streamflow-c3s-5.yml`, `streamflow-c3s-10.yml`, or
+`streamflow-c3s-20.yml`. These are input files for the swirlc translator,
+using its persistent Slurm-location deployment format.
+
+| Locations | Chromosome workers | Interval workers | Mapping |
+| --- | --- | --- | --- |
+| 1 | 1 | Same worker | Everything local to one location |
+| 2 | 2 | Same workers | Five chromosomes per worker |
+| 5 | 5 | Same workers | Two chromosomes per worker |
+| 10 | 10 | Same workers | One chromosome per worker |
+| 20 | 10 | 10 separate workers | Chromosome preparation/merge and population scatters use the first pool; interval tasks use the extra pool |
+
+The root coordinator shares worker01, avoiding an idle coordinator allocation.
+Chromosome ownership is assigned by the translator's scatter distribution.
+Non-scattered preparation, merge and sifting steps execute on the owning
+chromosome worker. Nested scatters (intervals and the two population analyses)
+are distributed over their target pool, not pinned to the outer chromosome
+owner. Thus these YAML bindings do not guarantee chromosome-local population
+analysis: merged archives and sifted data can cross locations. The 1-location
+configuration is the locality baseline. The 20-location layout gives the 80
+interval jobs a separate pool while keeping the 140 population-analysis jobs
+on the 10 chromosome workers. It is a proposed starting point, not a measured
+optimum; strict outer-scatter affinity would require translator support or a
+workflow restructure.
+
+Each location requests one exclusive Broadwell node, 8 CPUs, 32 GB and 1 hour.
+Exclusive allocation keeps locations on distinct nodes. Command concurrency is unlimited (`SWIRLC_COMMAND_SLOTS=0`) for the new
+comparison runs; outgoing payload transfers remain capped at 64. The runtime
+default for other workflows remains `os.cpu_count() * 2`. The completed initial
+SWIRL baseline used the previous explicit eight-slot override. BLAS/OpenMP threading uses library defaults. Run only one copy of
+a given configuration at a time: ports and work directories are fixed, with
+separate ranges for each size. Distinct work directories on BeeGFS do not imply
+that cross-location transfers are free.
+
+The configs assume checkout `/beegfs/home/tommaso.fogliobonda/swirlc` and its
+`venv`. Python tools resolve `python3` through that venv's PATH, rather than a
+hardcoded Fedarcs interpreter. Before any execution, prepare the dataset with
+`download_data.sh`, verify every input in `config.yml`, install
+`requirements.txt` into the shared venv, and ensure Bash, GNU awk, gzip, tar,
+pr and the other GNU utilities are available on the compute nodes.
+
+To prepare a build on C3S, without launching it:
+
+```bash
+cd /beegfs/home/tommaso.fogliobonda/swirlc
+mkdir -p build-genome-c3s-10
+venv/bin/swirlc translate --language cwl \
+  examples/1000genome/streamflow-c3s-10.yml --outdir build-genome-c3s-10
+venv/bin/swirlc compile build-genome-c3s-10/workflow.swirl \
+  build-genome-c3s-10/metadata.yml --outdir build-genome-c3s-10 \
+  --tmpdir /beegfs/home/tommaso.fogliobonda/swirlc/runs/1000genome/scratch \
+  --bundle-dependencies
+```
+
+Bundling covers runtime pure-Python dependencies; it does not install NumPy or
+Matplotlib for the analysis commands. Executing the generated `run.sh` submits
+jobs; the preparation commands above do not execute it.
+
+
+### Prepare the smaller input with a script
+
+`config-1chr.yml` selects chromosome 1, all seven populations, and eight intervals.
+Run on C3S from the checkout root:
+
+```bash
+venv/bin/python examples/1000genome/prepare-c3s.py
+# Or prepare only selected location counts:
+venv/bin/python examples/1000genome/prepare-c3s.py 1 5
+# Select another input file explicitly:
+venv/bin/python examples/1000genome/prepare-c3s.py 10 --settings examples/1000genome/config.yml
+```
+
+The default builds go in `build-genome-c3s-config-1chr/{1,2,5,10,20}`.
+Each build has `prepare.log` and its generated `streamflow.yml`, SWIRL,
+metadata and launch files. `--build-root PATH` overrides the parent directory.
+Preparation stops on a failed translation or compilation. It never runs
+`run.sh` or submits jobs. Re-running overwrites generated build files; do not
+prepare the same build while it is executing. With just one chromosome, the
+chromosome worker pool will be underused; these layouts retain their original
+mapping for comparison.
+
+
+### Benchmark prepared C3S builds
+
+After preparing all requested builds, run from the C3S checkout root:
+
+```bash
+venv/bin/python examples/1000genome/benchmark-c3s.py --csv genome-benchmark.csv
+# Optional subset or alternate prepared build directory:
+venv/bin/python examples/1000genome/benchmark-c3s.py 1 5 --repetitions 10 \
+  --build-root build-genome-c3s-config-1chr --csv genome-benchmark-1-5.csv
+```
+
+This command **submits jobs**. It runs each requested layout ten times,
+sequentially, cycling through the sizes once per repetition. Parallel runs
+would share filesystem bandwidth and compete for nodes, so they are excluded.
+A project-wide lock prevents simultaneous copies of this benchmark. Do not
+manually run these builds or prepare/overwrite them during a benchmark.
+Other cluster users can still affect queue times and shared-storage performance.
+
+CSV `execution_seconds` is the Slurm timestamp span from the last location's
+start to the last location's end (one-second accounting resolution). Locations
+wait at a startup barrier, so this approximates execution after all locations
+are allocated; it includes startup overhead and is not pure task CPU time.
+`wall_seconds` uses a monotonic clock from launcher invocation until all jobs
+finish, including queueing and up to one polling interval (default 15 seconds).
+The generated `run.sh` alone is insufficient for timing: it returns after Slurm
+startup rather than waiting for location jobs to finish.
+
+The CSV also records repetition, UTC start time, status, job IDs, log path and
+errors. Results are flushed after every run; existing CSV files are never
+overwritten. A failure or interruption stops the benchmark and cancels only
+that run's submitted jobs, waiting until they leave the queue. No later runs
+start after a failure. Slurm accounting must be available. There are no
+unreported warm-up runs or cache flushing; results reflect normal repeated runs
+with potentially warm input filesystem caches. Each invocation uses its own
+`SWIRLC_TMP_DIR` under `runs/1000genome/benchmark-tmp`. After all its jobs stop,
+the benchmark copies Slurm logs and output manifests to a per-run `.artifacts`
+directory beside the CSV, then removes that invocation's scratch (including
+generated workflow outputs). Prepared builds, source datasets, CSV and benchmark
+logs are retained. Cleanup also follows failed/cancelled runs once job shutdown
+is confirmed; if shutdown cannot be confirmed, scratch is retained for safety.
+Cleanup is outside the recorded successful-run times. Previous scratch from
+manual runs or other invocations is never removed.

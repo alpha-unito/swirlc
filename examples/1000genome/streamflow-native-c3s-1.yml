@@ -1,0 +1,22 @@
+version: v1.0
+workflows:
+  genome:
+    type: cwl
+    config:
+      file: main.cwl
+      settings: config-1chr.yml
+    bindings:
+    - step: /
+      target:
+        deployment: local
+deployments:
+  local:
+    type: local
+    config: {}
+    workdir: 
+      /beegfs/home/tommaso.fogliobonda/swirlc/runs/1000genome/streamflow-1/scratch
+database:
+  type: sqlite
+  config:
+    connection: 
+      /beegfs/home/tommaso.fogliobonda/swirlc/runs/1000genome/streamflow-1/streamflow.sqlite

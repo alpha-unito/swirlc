@@ -78,7 +78,15 @@ swirlc compile [SWIRL_FILE] [METADATA_FILE]
 
 Note that all the target locations need to have the Python interpreter installed. 
 
-Generated Python workers allow eight active outgoing payload transfers each.
+Locations evaluating JavaScript install `quickjs-ng==0.17.0.2` into their generated
+runtime environment during setup. Each location reuses one QuickJS context on a
+dedicated thread, with cached expressions and fresh input objects. Expressions
+run in strict mode; shared globals and built-ins are frozen to prevent state
+leaking between invocations. Simple parameter references bypass the engine.
+`--bundle-dependencies` also includes QuickJS for offline execution, but its native
+library requires a target compatible with the compiler's platform and Python ABI.
+
+Generated Python workers allow 64 active outgoing payload transfers each.
 Set `SWIRLC_TRANSFER_LIMIT` to a positive integer in each worker's environment to
 override this limit. Local delivery and control messages do not use transfer
 slots. Slots are released after sending the payload, before waiting for consumer

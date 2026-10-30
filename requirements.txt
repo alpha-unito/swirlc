@@ -5,5 +5,5 @@ jsonschema==4.26.0
 referencing==0.37.0
 ruamel.yaml==0.19.1
 cwl_utils==0.42
-Js2Py-3.14==0.74.2
+quickjs-ng==0.17.0.2
 packaging==26.2

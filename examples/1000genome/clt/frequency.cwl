@@ -22,8 +22,8 @@ requirements:
   InitialWorkDirRequirement:
     listing: [ $(inputs.input_file), $(inputs.columns_file), $(inputs.sift_file), $(inputs.population) ]
 
-# shortcut: fedarcs shared venv; replace when deployment environments are configured.
-baseCommand: ["/mnt/shared/tfogliobonda/swirlc/venv/bin/python"]
+# Resolve Python from the deployment environment (C3S/Fedarcs shared venv).
+baseCommand: ["python3"]
 
 inputs:
   script:

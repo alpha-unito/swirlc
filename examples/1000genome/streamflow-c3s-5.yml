@@ -1,0 +1,132 @@
+# 5 persistent Broadwell location(s); translate/compile on C3S.
+# Chromosome and population scatters share a pool; 20 adds 10 interval workers.
+version: v1.0
+workflows:
+  genome:
+    type: cwl
+    config:
+      file: main.cwl
+      settings: config.yml
+    bindings:
+      - step: /
+        target:
+          deployment: worker01
+          service: worker
+      - step: /chromosome
+        target:
+          - deployment: worker01
+            service: worker
+          - deployment: worker02
+            service: worker
+          - deployment: worker03
+            service: worker
+          - deployment: worker04
+            service: worker
+          - deployment: worker05
+            service: worker
+deployments:
+  worker01:
+    type: slurm
+    config:
+      services:
+        worker:
+          partition: broadwell
+          nodes: 1
+          ntasks: 1
+          time: 01:00:00
+          options:
+            cpus_per_task: 8
+            mem: 32G
+            exclusive: true
+    workdir: 
+      /beegfs/home/tommaso.fogliobonda/swirlc/runs/1000genome/5-locations/worker01
+    port: 27125
+    environment:
+      PATH: 
+        /beegfs/home/tommaso.fogliobonda/swirlc/venv/bin:/usr/local/bin:/usr/bin:/bin
+      SWIRLC_PYTHON: /beegfs/home/tommaso.fogliobonda/swirlc/venv/bin/python
+      SWIRLC_COMMAND_SLOTS: '0'
+  worker02:
+    type: slurm
+    config:
+      services:
+        worker:
+          partition: broadwell
+          nodes: 1
+          ntasks: 1
+          time: 01:00:00
+          options:
+            cpus_per_task: 8
+            mem: 32G
+            exclusive: true
+    workdir: 
+      /beegfs/home/tommaso.fogliobonda/swirlc/runs/1000genome/5-locations/worker02
+    port: 27126
+    environment:
+      PATH: 
+        /beegfs/home/tommaso.fogliobonda/swirlc/venv/bin:/usr/local/bin:/usr/bin:/bin
+      SWIRLC_PYTHON: /beegfs/home/tommaso.fogliobonda/swirlc/venv/bin/python
+      SWIRLC_COMMAND_SLOTS: '0'
+  worker03:
+    type: slurm
+    config:
+      services:
+        worker:
+          partition: broadwell
+          nodes: 1
+          ntasks: 1
+          time: 01:00:00
+          options:
+            cpus_per_task: 8
+            mem: 32G
+            exclusive: true
+    workdir: 
+      /beegfs/home/tommaso.fogliobonda/swirlc/runs/1000genome/5-locations/worker03
+    port: 27127
+    environment:
+      PATH: 
+        /beegfs/home/tommaso.fogliobonda/swirlc/venv/bin:/usr/local/bin:/usr/bin:/bin
+      SWIRLC_PYTHON: /beegfs/home/tommaso.fogliobonda/swirlc/venv/bin/python
+      SWIRLC_COMMAND_SLOTS: '0'
+  worker04:
+    type: slurm
+    config:
+      services:
+        worker:
+          partition: broadwell
+          nodes: 1
+          ntasks: 1
+          time: 01:00:00
+          options:
+            cpus_per_task: 8
+            mem: 32G
+            exclusive: true
+    workdir: 
+      /beegfs/home/tommaso.fogliobonda/swirlc/runs/1000genome/5-locations/worker04
+    port: 27128
+    environment:
+      PATH: 
+        /beegfs/home/tommaso.fogliobonda/swirlc/venv/bin:/usr/local/bin:/usr/bin:/bin
+      SWIRLC_PYTHON: /beegfs/home/tommaso.fogliobonda/swirlc/venv/bin/python
+      SWIRLC_COMMAND_SLOTS: '0'
+  worker05:
+    type: slurm
+    config:
+      services:
+        worker:
+          partition: broadwell
+          nodes: 1
+          ntasks: 1
+          time: 01:00:00
+          options:
+            cpus_per_task: 8
+            mem: 32G
+            exclusive: true
+    workdir: 
+      /beegfs/home/tommaso.fogliobonda/swirlc/runs/1000genome/5-locations/worker05
+    port: 27129
+    environment:
+      PATH: 
+        /beegfs/home/tommaso.fogliobonda/swirlc/venv/bin:/usr/local/bin:/usr/bin:/bin
+      SWIRLC_PYTHON: /beegfs/home/tommaso.fogliobonda/swirlc/venv/bin/python
+      SWIRLC_COMMAND_SLOTS: '0'

@@ -4,7 +4,7 @@ workflows:
     type: cwl
     config:
       file: main_montage.cwl
-      settings: data-small/config_montage.json
+      settings: data-intermediate/config_montage.json
     bindings:
       - step: /
         target:

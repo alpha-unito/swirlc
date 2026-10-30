@@ -1,0 +1,63 @@
+# 2 persistent Broadwell location(s); translate/compile on C3S.
+# Chromosome and population scatters share a pool; 20 adds 10 interval workers.
+version: v1.0
+workflows:
+  genome:
+    type: cwl
+    config:
+      file: main.cwl
+      settings: config.yml
+    bindings:
+      - step: /
+        target:
+          deployment: worker01
+          service: worker
+      - step: /chromosome
+        target:
+          - deployment: worker01
+            service: worker
+          - deployment: worker02
+            service: worker
+deployments:
+  worker01:
+    type: slurm
+    config:
+      services:
+        worker:
+          partition: broadwell
+          nodes: 1
+          ntasks: 1
+          time: 01:00:00
+          options:
+            cpus_per_task: 8
+            mem: 32G
+            exclusive: true
+    workdir: 
+      /beegfs/home/tommaso.fogliobonda/swirlc/runs/1000genome/2-locations/worker01
+    port: 27050
+    environment:
+      PATH: 
+        /beegfs/home/tommaso.fogliobonda/swirlc/venv/bin:/usr/local/bin:/usr/bin:/bin
+      SWIRLC_PYTHON: /beegfs/home/tommaso.fogliobonda/swirlc/venv/bin/python
+      SWIRLC_COMMAND_SLOTS: '0'
+  worker02:
+    type: slurm
+    config:
+      services:
+        worker:
+          partition: broadwell
+          nodes: 1
+          ntasks: 1
+          time: 01:00:00
+          options:
+            cpus_per_task: 8
+            mem: 32G
+            exclusive: true
+    workdir: 
+      /beegfs/home/tommaso.fogliobonda/swirlc/runs/1000genome/2-locations/worker02
+    port: 27051
+    environment:
+      PATH: 
+        /beegfs/home/tommaso.fogliobonda/swirlc/venv/bin:/usr/local/bin:/usr/bin:/bin
+      SWIRLC_PYTHON: /beegfs/home/tommaso.fogliobonda/swirlc/venv/bin/python
+      SWIRLC_COMMAND_SLOTS: '0'
