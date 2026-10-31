@@ -59,6 +59,8 @@ class Deployment:
         return "0.0.0.0"
 
     def get_advertise_command(self) -> str:
+        if self.connection_type is None:
+            return "printf '%s\\n' 127.0.0.1"
         return "hostname -f"
 
 
