@@ -136,6 +136,7 @@ dmypy.json
 # swirlc
 /tmp
 /scratch
+/runs/
 /examples/1000genome/data/
 /.tools/
 /examples/montage/data-*/
