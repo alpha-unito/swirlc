@@ -29,6 +29,9 @@ can take over an hour and generate tens of gigabytes of temporary files. Watch d
 space and keep other heavy workloads stopped while measuring.
 
 ```bash
+# Smaller processing range: chromosome 1, 10,000 lines, eight intervals:
+bash examples/1000genome/benchmark.sh --small
+
 # Ten sequential repetitions, with five workers per engine:
 bash examples/1000genome/benchmark.sh --workers 5 --repetitions 10
 
@@ -38,6 +41,10 @@ bash examples/1000genome/benchmark.sh --prepare-only
 # Opt into the original full ten-chromosome input:
 bash examples/1000genome/benchmark.sh --full
 ```
+
+`--small` uses `config-small.yml` for both engines, with `total: 10000` and
+`step: 1250`. It still reads the original compressed chromosome input; the
+processing range is smaller, rather than the source VCF being truncated.
 
 The bootstrap creates an ignored environment at `.tools/1000genome-venv/`, installs
 this checkout in editable mode, installs NumPy/Matplotlib, and pins StreamFlow to

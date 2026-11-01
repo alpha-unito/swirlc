@@ -1,0 +1,42 @@
+columns_file:
+  class: File
+  path: data/20130502/columns.txt
+frequency_script:
+  class: File
+  path: scripts/frequency.py
+individuals_script:
+  class: File
+  path: scripts/individuals
+individuals_merge_script:
+  class: File
+  path: scripts/individuals_merge
+mutation_overlap_script:
+  class: File
+  path: scripts/mutation_overlap.py
+populations:
+- class: File
+  path: data/populations/AFR
+- class: File
+  path: data/populations/ALL
+- class: File
+  path: data/populations/AMR
+- class: File
+  path: data/populations/EAS
+- class: File
+  path: data/populations/EUR
+- class: File
+  path: data/populations/GBR
+- class: File
+  path: data/populations/SAS
+sift_files:
+- class: File
+  path: 
+    data/20130502/sifting/ALL.chr1.phase3_shapeit2_mvncall_integrated_v5.20130502.sites.annotation.vcf.gz
+sifting_script:
+  class: File
+  path: scripts/sifting
+snp_files:
+- class: File
+  path: data/20130502/ALL.chr1.250000.vcf.gz
+step: 1250
+total: 10000

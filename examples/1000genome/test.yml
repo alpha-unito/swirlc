@@ -1,0 +1,19 @@
+version: v1.0
+
+workflows:
+  genome:
+    type: cwl
+    config:
+      file: /home/tommo/Coding/Alpha/swirlc/examples/1000genome/main.cwl
+      settings: /home/tommo/Coding/Alpha/swirlc/examples/1000genome/config.yml
+    bindings:
+      - step: /
+        target:
+          deployment: local
+deployments:
+  local:
+    type: local
+    config: {}
+    port: 35800
+    environment:
+      PATH: /home/ubuntu/.vscode-server/cli/servers/Stable-e646868227c3e3a9e3f24277c8c7220be42c0be7/server/bin/remote-cli:/home/ubuntu/.local/bin:/home/ubuntu/.nvm/versions/node/v24.13.0/bin:/home/ubuntu/.cargo/bin:/home/ubuntu/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:/usr/local/games:/snap/bin:/home/ubuntu/cmake-3.29.7-linux-x86_64/bin:/home/ubuntu/cmake-3.29.7-linux-x86_64/bin

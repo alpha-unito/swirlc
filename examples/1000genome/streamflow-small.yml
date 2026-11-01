@@ -1,0 +1,67 @@
+# One chromosome, 10,000 input lines, eight intervals, all seven populations.
+version: v1.0
+
+workflows:
+  genome:
+    type: cwl
+    config:
+      file: main.cwl
+      settings: config-small.yml
+    bindings:
+    - step: /
+      target:
+        deployment: coordinator
+
+    - step: /chromosome
+      target:
+      - deployment: chromosome_worker1
+      - deployment: chromosome_worker2
+
+    - step: /chromosome/individuals
+      target:
+      - deployment: inner_worker1
+      - deployment: inner_worker2
+      - deployment: inner_worker3
+
+    - step: /chromosome/mutation_overlap
+      target:
+      - deployment: inner_worker1
+      - deployment: inner_worker2
+      - deployment: inner_worker3
+
+    - step: /chromosome/frequency
+      target:
+      - deployment: inner_worker1
+      - deployment: inner_worker2
+      - deployment: inner_worker3
+
+deployments:
+  coordinator:
+    type: local
+    config: {}
+    port: 25400
+
+  chromosome_worker1:
+    type: local
+    config: {}
+    port: 25410
+
+  chromosome_worker2:
+    type: local
+    config: {}
+    port: 25411
+
+  inner_worker1:
+    type: local
+    config: {}
+    port: 25420
+
+  inner_worker2:
+    type: local
+    config: {}
+    port: 25421
+
+  inner_worker3:
+    type: local
+    config: {}
+    port: 25422
